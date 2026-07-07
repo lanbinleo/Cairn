@@ -10,6 +10,7 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
+    "tauri:dev:isolated": "powershell -ExecutionPolicy Bypass -File scripts/dev-isolated.ps1",
     "tauri:build": "tauri build",
     "release:check": "powershell -ExecutionPolicy Bypass -File scripts/release.ps1"
   },

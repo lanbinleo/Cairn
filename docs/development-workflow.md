@@ -58,6 +58,20 @@ Important files and folders:
 
 Codex-launched development builds can resolve the same Tauri app data directory through the Codex app container. Do not copy or delete production user data while the app is running.
 
+For isolated development, use:
+
+```powershell
+pnpm tauri:dev:isolated
+```
+
+This sets `CAIRN_DATA_DIR` to:
+
+```text
+%LOCALAPPDATA%\Cairn\dev-profile
+```
+
+Use `powershell -ExecutionPolicy Bypass -File scripts/dev-isolated.ps1 -Reset` when the isolated profile should be cleared before launch.
+
 ## Automatic Backups
 
 Cairn creates one automatic backup the first time local state is loaded each local calendar day. Automatic backups are JSON snapshots stored in:

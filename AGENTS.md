@@ -49,4 +49,5 @@ Use `docs/software-design.md` as the current source of truth. Historical migrati
 
 - Required final checks include frontend typecheck/build and Rust/Tauri checks.
 - Release executable verification uses `cargo build --manifest-path src-tauri/Cargo.toml --release --features tauri/custom-protocol` after `pnpm build`.
+- Use `pnpm tauri:dev:isolated` for local app testing when production data must not be touched.
 - Browser or Playwright verification is not required for this goal.

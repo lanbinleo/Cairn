@@ -1,5 +1,6 @@
 mod db;
 mod diagnostics;
+mod paths;
 
 use serde_json::Value;
 use tauri::{

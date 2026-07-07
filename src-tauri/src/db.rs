@@ -9,7 +9,9 @@ use chrono::{Duration, Local, NaiveDate};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tauri::{AppHandle, Manager};
+use tauri::AppHandle;
+
+use crate::paths;
 
 const AUTO_BACKUP_RETENTION_DAYS: i64 = 7;
 const AUTO_BACKUP_PREFIX: &str = "cairn-auto-backup-";
@@ -45,7 +47,7 @@ pub fn init(app: &AppHandle) -> Result<Db, String> {
 }
 
 fn database_path(app: &AppHandle) -> Result<PathBuf, String> {
-    let dir = app.path().app_data_dir().map_err(|err| err.to_string())?;
+    let dir = paths::app_data_dir(app)?;
     Ok(dir.join("cairn.sqlite3"))
 }
 
@@ -248,11 +250,7 @@ pub fn restore_state(db: &Db, state: AppState) -> Result<AppState, String> {
 pub fn export_backup(app: &AppHandle, db: &Db) -> Result<PathBuf, String> {
     let conn = db.conn.lock().map_err(|err| err.to_string())?;
     let now = now_ms();
-    let dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|err| err.to_string())?
-        .join("backups");
+    let dir = paths::app_data_dir(app)?.join("backups");
     fs::create_dir_all(&dir).map_err(|err| err.to_string())?;
     let path = dir.join(format!("cairn-backup-{now}.json"));
     write_backup_file(&conn, path.clone(), "manual")?;
@@ -261,12 +259,7 @@ pub fn export_backup(app: &AppHandle, db: &Db) -> Result<PathBuf, String> {
 
 pub fn export_daily_backup_if_due(app: &AppHandle, db: &Db) -> Result<Option<PathBuf>, String> {
     let today = Local::now().date_naive();
-    let dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|err| err.to_string())?
-        .join("backups")
-        .join("auto");
+    let dir = paths::app_data_dir(app)?.join("backups").join("auto");
     fs::create_dir_all(&dir).map_err(|err| err.to_string())?;
     prune_auto_backups(&dir, today)?;
 

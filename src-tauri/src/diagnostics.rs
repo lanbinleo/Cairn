@@ -5,7 +5,9 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use tauri::{AppHandle, Manager};
+use tauri::AppHandle;
+
+use crate::paths;
 
 pub fn install_panic_hook() {
     std::panic::set_hook(Box::new(|info| {
@@ -23,7 +25,7 @@ pub fn install_panic_hook() {
 }
 
 pub fn app_log(app: &AppHandle, message: impl AsRef<str>) {
-    match app.path().app_data_dir() {
+    match paths::app_data_dir(app) {
         Ok(dir) => write_file(&dir.join("cairn-startup.log"), message.as_ref()),
         Err(_) => write_temp(message.as_ref()),
     }
