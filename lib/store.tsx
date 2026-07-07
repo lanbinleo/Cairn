@@ -10,6 +10,7 @@ import { loadLocalState, saveLocalRecord, deleteLocalRecord, restoreLocalState, 
 import type { CairnStateSnapshot } from './seed'
 import { seedState } from './seed'
 import { logFrontendError, logFrontendMessage } from './frontend-log'
+import { parseNoteMentions } from './note-mentions'
 import type { Account, Attachment, ImportBatch, Period, Trade, TagDef, TagColor } from './types'
 
 /* ---------- Context ---------- */
@@ -60,6 +61,23 @@ interface CairnStore {
 
 const StoreContext = createContext<CairnStore | null>(null)
 
+function migrateTradeChartData(trade: Trade): { trade: Trade; changed: boolean } {
+  const legacyBars = trade.chartBars
+  const chartData = trade.chartData ?? {}
+  if (!legacyBars?.length || chartData['5m']?.length) return { trade, changed: false }
+  return { trade: { ...trade, chartData: { ...chartData, '5m': legacyBars } }, changed: true }
+}
+
+function normalizeSnapshot(snapshot: CairnStateSnapshot): { snapshot: CairnStateSnapshot; migratedTrades: Trade[] } {
+  const migratedTrades: Trade[] = []
+  const trades = snapshot.trades.map((trade) => {
+    const migrated = migrateTradeChartData(trade)
+    if (migrated.changed) migratedTrades.push(migrated.trade)
+    return migrated.trade
+  })
+  return { snapshot: { ...snapshot, trades }, migratedTrades }
+}
+
 export function CairnProvider({ children }: { children: React.ReactNode }) {
   const [accounts, setAccounts] = useState<Account[]>(seedState.accounts)
   const [periods, setPeriods] = useState<Period[]>(seedState.periods)
@@ -97,7 +115,7 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
 
   const createNote = useCallback((input: Omit<(typeof seedState.notes)[number], 'id' | 'createdAt' | 'updatedAt'>) => {
     const now = Date.now()
-    const created = { ...input, id: makeId('note'), createdAt: now, updatedAt: now }
+    const created = { ...input, mentions: parseNoteMentions(input.content), id: makeId('note'), createdAt: now, updatedAt: now }
     setNotes((prev) => [...prev, created])
     void saveLocalRecord('notes', created)
     return created
@@ -178,14 +196,15 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
   }, [])
 
   const applySnapshot = useCallback((snapshot: CairnStateSnapshot) => {
-    setAccounts(snapshot.accounts)
-    setPeriods(snapshot.periods)
-    setTrades(snapshot.trades)
-    setSymbols(snapshot.symbols)
-    setNotes(snapshot.notes)
-    setTagDefs(snapshot.tagDefs)
-    setImportBatches(snapshot.importBatches)
-    setAttachments(snapshot.attachments)
+    const normalized = normalizeSnapshot(snapshot).snapshot
+    setAccounts(normalized.accounts)
+    setPeriods(normalized.periods)
+    setTrades(normalized.trades)
+    setSymbols(normalized.symbols)
+    setNotes(normalized.notes)
+    setTagDefs(normalized.tagDefs)
+    setImportBatches(normalized.importBatches)
+    setAttachments(normalized.attachments)
   }, [])
 
   const restoreState = useCallback(async (snapshot: CairnStateSnapshot) => {
@@ -200,8 +219,10 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
     loadLocalState()
       .then((snapshot) => {
         if (cancelled) return
-        void logFrontendMessage(`local state loaded: accounts=${snapshot.accounts.length}, periods=${snapshot.periods.length}, trades=${snapshot.trades.length}`)
-        applySnapshot(snapshot)
+        const normalized = normalizeSnapshot(snapshot)
+        void logFrontendMessage(`local state loaded: accounts=${normalized.snapshot.accounts.length}, periods=${normalized.snapshot.periods.length}, trades=${normalized.snapshot.trades.length}`)
+        applySnapshot(normalized.snapshot)
+        normalized.migratedTrades.forEach((trade) => void saveLocalRecord('trades', trade))
       })
       .catch((err) => {
         console.error('Failed to load local CAIRN state', err)
@@ -249,7 +270,7 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
     setNotes((prev) =>
       prev.map((note) => {
         if (note.id !== id) return note
-        const next = { ...note, ...patch, updatedAt: Date.now() }
+        const next = { ...note, ...patch, mentions: parseNoteMentions(patch.content ?? note.content), updatedAt: Date.now() }
         void saveLocalRecord('notes', next)
         return next
       }),

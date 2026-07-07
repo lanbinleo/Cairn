@@ -20,7 +20,7 @@ import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { insertAtCursor, readPastedImage } from '@/lib/clipboard-images'
 import { useCairn } from '@/lib/store'
-import type { TagColor, Trade } from '@/lib/types'
+import type { Execution, ExecutionAction, OrderType, TagColor, Trade } from '@/lib/types'
 import { cn } from '@/lib/utils'
 
 export function EditTradeDialog({ trade }: { trade: Trade }) {
@@ -30,6 +30,7 @@ export function EditTradeDialog({ trade }: { trade: Trade }) {
   /* 表单状态：打开时从 trade 初始化 */
   const [note, setNote] = useState(trade.note ?? '')
   const [sl, setSl] = useState(trade.initialStopLoss?.toString() ?? '')
+  const [executionRows, setExecutionRows] = useState<Execution[]>(trade.executions)
   const [selectedTags, setSelectedTags] = useState<string[]>(trade.tags)
   const [newTagName, setNewTagName] = useState('')
   const [newTagColor, setNewTagColor] = useState<TagColor>('blue')
@@ -37,6 +38,7 @@ export function EditTradeDialog({ trade }: { trade: Trade }) {
   function resetForm() {
     setNote(trade.note ?? '')
     setSl(trade.initialStopLoss?.toString() ?? '')
+    setExecutionRows(trade.executions.map((execution) => ({ ...execution })))
     setSelectedTags(trade.tags)
     setNewTagName('')
     setNewTagColor('blue')
@@ -59,9 +61,48 @@ export function EditTradeDialog({ trade }: { trade: Trade }) {
     updateTrade(trade.id, {
       note: note.trim() === '' ? undefined : note.trim(),
       initialStopLoss: parsedSl != null && Number.isFinite(parsedSl) ? parsedSl : undefined,
+      executions: executionRows
+        .map((execution) => ({
+          ...execution,
+          tradeId: trade.id,
+          price: Number(execution.price),
+          quantity: Number(execution.quantity),
+        }))
+        .filter((execution) => Number.isFinite(execution.time) && Number.isFinite(execution.price) && Number.isFinite(execution.quantity) && execution.quantity > 0),
       tags: selectedTags,
     })
     setOpen(false)
+  }
+
+  function updateExecution(index: number, patch: Partial<Execution>) {
+    setExecutionRows((prev) => prev.map((execution, i) => (i === index ? { ...execution, ...patch } : execution)))
+  }
+
+  function addExecution() {
+    const last = executionRows[executionRows.length - 1]
+    setExecutionRows((prev) => [
+      ...prev,
+      {
+        id: `ex-manual-${Date.now()}`,
+        tradeId: trade.id,
+        action: last?.action ?? 'entry',
+        orderType: 'market',
+        time: last?.time ?? Date.now(),
+        price: last?.price ?? 0,
+        quantity: last?.quantity ?? 1,
+      },
+    ])
+  }
+
+  function toDateTimeLocal(ms: number) {
+    const date = new Date(ms)
+    const offsetMs = date.getTimezoneOffset() * 60_000
+    return new Date(ms - offsetMs).toISOString().slice(0, 16)
+  }
+
+  function fromDateTimeLocal(value: string) {
+    const ms = Date.parse(value)
+    return Number.isFinite(ms) ? ms : Date.now()
   }
 
   return (
@@ -94,6 +135,79 @@ export function EditTradeDialog({ trade }: { trade: Trade }) {
               onChange={(e) => setSl(e.target.value)}
             />
             <FieldDescription>R 倍数的计算基准；留空表示未设置（该笔不参与 R 统计）</FieldDescription>
+          </Field>
+
+          <Field>
+            <div className="flex items-center justify-between gap-3">
+              <FieldLabel>Executions</FieldLabel>
+              <Button type="button" variant="secondary" size="sm" onClick={addExecution}>
+                <Plus data-icon="inline-start" />
+                添加
+              </Button>
+            </div>
+            <div className="flex max-h-80 flex-col gap-3 overflow-y-auto rounded-lg border p-3">
+              {executionRows.map((execution, index) => (
+                <div key={execution.id} className="grid grid-cols-2 gap-2 rounded-md border bg-muted/20 p-2">
+                  <Input
+                    type="datetime-local"
+                    value={toDateTimeLocal(execution.time)}
+                    onChange={(event) => updateExecution(index, { time: fromDateTimeLocal(event.target.value) })}
+                    className="col-span-2"
+                  />
+                  <select
+                    value={execution.action}
+                    onChange={(event) => updateExecution(index, { action: event.target.value as ExecutionAction })}
+                    className="h-8 rounded-lg border border-input bg-background px-2 text-sm"
+                  >
+                    <option value="entry">entry</option>
+                    <option value="scale-in">scale-in</option>
+                    <option value="scale-out">scale-out</option>
+                    <option value="exit">exit</option>
+                  </select>
+                  <select
+                    value={execution.orderType}
+                    onChange={(event) => updateExecution(index, { orderType: event.target.value as OrderType })}
+                    className="h-8 rounded-lg border border-input bg-background px-2 text-sm"
+                  >
+                    <option value="market">market</option>
+                    <option value="limit">limit</option>
+                    <option value="stop">stop</option>
+                    <option value="stop-limit">stop-limit</option>
+                    <option value="stop-loss">stop-loss</option>
+                    <option value="take-profit">take-profit</option>
+                    <option value="trailing-stop">trailing-stop</option>
+                  </select>
+                  <Input
+                    type="number"
+                    inputMode="decimal"
+                    value={execution.price}
+                    onChange={(event) => updateExecution(index, { price: Number(event.target.value) })}
+                    placeholder="价格"
+                  />
+                  <Input
+                    type="number"
+                    inputMode="decimal"
+                    value={execution.quantity}
+                    onChange={(event) => updateExecution(index, { quantity: Number(event.target.value) })}
+                    placeholder="数量"
+                  />
+                  <Input
+                    value={execution.signal ?? ''}
+                    onChange={(event) => updateExecution(index, { signal: event.target.value || undefined })}
+                    placeholder="Signal"
+                  />
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    className="text-muted-foreground"
+                    onClick={() => setExecutionRows((prev) => prev.filter((_, i) => i !== index))}
+                  >
+                    <Trash2 data-icon="inline-start" />
+                    删除
+                  </Button>
+                </div>
+              ))}
+            </div>
           </Field>
 
           <Field>

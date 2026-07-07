@@ -10,7 +10,8 @@ The workflow is:
 2. Import TradingView trade exports, optional chart CSV, and reference images.
 3. Review grouped Trades, Executions, TradeEvents, charts, tags, and notes.
 4. Analyze account/period/trade performance.
-5. Back up or restore local data.
+5. Create notes that mention trades and trade images.
+6. Back up or restore local data.
 
 ## Platform
 
@@ -139,7 +140,7 @@ Metrics are computed from Executions:
 - Expectancy
 - Max drawdown
 
-Trade status is stored for workflow, but closed-trade metrics still derive from execution data.
+Trade status is stored for workflow, but closed-trade metrics still derive from execution data. Trade detail editing can update executions, tags, initial stop loss, notes, and reference images.
 
 ## Tags
 
@@ -154,7 +155,13 @@ Notes are Markdown text with mentions encoded as:
 - `[[trade:ID]]`
 - `[[image:URL_OR_PATH]]`
 
-The editor supports creating and editing notes. Inline trade mentions render with trade-aware UI.
+The editor supports creating and editing notes. Typing `@` in the note editor opens a mention picker for trades and trade reference images. Inline trade mentions render with trade-aware UI.
+
+## Chart Data
+
+Trade chart data is imported from TradingView OHLC CSV/Excel files. The import flow asks the user to choose the K-line timeframe instead of inferring it from the file name.
+
+Supported display timeframes are 5 minutes, 15 minutes, 1 hour, 4 hours, and 1 day. Existing legacy `chartBars` data is treated as 5-minute chart data. If a trade does not have data for the selected timeframe, the detail page shows an empty chart state instead of generated synthetic bars.
 
 ## Backup
 

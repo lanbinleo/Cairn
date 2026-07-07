@@ -50,6 +50,7 @@ export interface TradingSymbol {
 
 export type TradeDirection = 'long' | 'short'
 export type TradeStatus = 'open' | 'closed'
+export type ChartTimeframe = '5m' | '15m' | '1h' | '4h' | '1d'
 
 /** 标签七色：红橙黄绿青蓝紫 */
 export type TagColor = 'red' | 'orange' | 'yellow' | 'green' | 'cyan' | 'blue' | 'purple'
@@ -111,8 +112,10 @@ export interface Trade {
   events: TradeEvent[]
   /** 参考图（备份截图）地址 */
   referenceImages: string[]
-  /** 导入时附带的 K 线数据；缺失时详情页使用合成数据展示 */
+  /** 兼容旧数据：导入时附带的 5m K 线数据 */
   chartBars?: ChartBar[]
+  /** 按周期保存的 K 线数据 */
+  chartData?: Partial<Record<ChartTimeframe, ChartBar[]>>
   tags: string[]
   note?: string
   createdAt: number

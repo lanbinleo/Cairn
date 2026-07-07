@@ -182,7 +182,7 @@ export function TradeChart({
         className="flex items-center justify-center rounded-lg border border-dashed text-sm text-muted-foreground"
         style={{ height }}
       >
-        暂无图表数据，可在导入时附带 OHLC 数据文件
+        没有当前 K 线数据
       </div>
     )
   }

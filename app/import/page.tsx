@@ -35,7 +35,8 @@ import {
 } from '@/components/ui/table'
 import { useCairn } from '@/lib/store'
 import { groupRows, parseChartBars, parseChartEvents, parseTradingViewRows, readFileAsDataUrl, type ParsedChartEvent, type ProposedTrade } from '@/lib/tradingview-import'
-import type { ChartBar, Execution, ImportBatch, OrderType, Trade, TradeDirection, TradeEvent } from '@/lib/types'
+import { CHART_TIMEFRAMES, chartTimeframeLabel } from '@/lib/chart-timeframes'
+import type { ChartBar, ChartTimeframe, Execution, ImportBatch, OrderType, Trade, TradeDirection, TradeEvent } from '@/lib/types'
 import { cn } from '@/lib/utils'
 
 const STEPS = ['选择归属', '上传文件', '归组预览', '完成'] as const
@@ -107,6 +108,7 @@ export default function ImportPage() {
   const [periodId, setPeriodId] = useState('')
   const [symbolId, setSymbolId] = useState('')
   const [files, setFiles] = useState<Partial<Record<SlotKey, File>>>({})
+  const [chartTimeframe, setChartTimeframe] = useState<ChartTimeframe>('5m')
   const [proposedTrades, setProposedTrades] = useState<ProposedTrade[]>([])
   const [chartBars, setChartBars] = useState<ChartBar[]>([])
   const [chartEvents, setChartEvents] = useState<ParsedChartEvent[]>([])
@@ -173,6 +175,7 @@ export default function ImportPage() {
         const sl = executions.find((execution) => execution.orderType === 'stop-loss')?.price
         const lastAction = executions[executions.length - 1]?.action
         const events = chartEventsForExecutions(chartEvents, executions, tradeId)
+        const selectedChartBars = chartBarsForExecutions(chartBars, executions)
         return {
           id: tradeId,
           seq: maxSeq + index + 1,
@@ -187,7 +190,8 @@ export default function ImportPage() {
           executions,
           events,
           referenceImages: referenceImage ? [referenceImage] : [],
-          chartBars: chartBarsForExecutions(chartBars, executions),
+          chartBars: chartTimeframe === '5m' ? selectedChartBars : undefined,
+          chartData: selectedChartBars ? { [chartTimeframe]: selectedChartBars } : undefined,
           tags: [],
           createdAt: now,
         }
@@ -391,6 +395,9 @@ export default function ImportPage() {
                     {isUploaded ? (
                       <div className="flex flex-col items-center gap-2">
                         <span className="font-mono text-xs text-muted-foreground">{file?.name}</span>
+                        {slot.key === 'chart' && (
+                          <span className="text-xs text-muted-foreground">周期：{chartTimeframeLabel(chartTimeframe)}</span>
+                        )}
                         <Button
                           variant="ghost"
                           size="sm"
@@ -407,6 +414,23 @@ export default function ImportPage() {
                       >
                         选择文件
                       </Button>
+                    )}
+                    {slot.key === 'chart' && (
+                      <div className="flex items-center gap-2 pt-1">
+                        <span className="text-xs text-muted-foreground">K 线周期</span>
+                        <Select value={chartTimeframe} onValueChange={(value) => setChartTimeframe(value as ChartTimeframe)}>
+                          <SelectTrigger size="sm" className="w-28">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {CHART_TIMEFRAMES.map((item) => (
+                              <SelectItem key={item.value} value={item.value}>
+                                {item.label}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
                     )}
                     <input
                       ref={(node) => {
@@ -583,6 +607,7 @@ export default function ImportPage() {
                 onClick={() => {
                   setStep(0)
                   setFiles({})
+                  setChartTimeframe('5m')
                   setProposedTrades([])
                   setChartBars([])
                   setChartEvents([])

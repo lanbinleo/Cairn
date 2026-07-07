@@ -9,8 +9,7 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Field, FieldGroup, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
-import { Textarea } from '@/components/ui/textarea'
-import { insertAtCursor, readPastedImage } from '@/lib/clipboard-images'
+import { MentionTextarea } from '@/components/mention-textarea'
 import { useCairn } from '@/lib/store'
 
 export default function NoteEditPage() {
@@ -81,18 +80,11 @@ export default function NoteEditPage() {
               </Field>
               <Field>
                 <FieldLabel htmlFor="edit-note-content">正文</FieldLabel>
-                <Textarea
+                <MentionTextarea
                   id="edit-note-content"
                   rows={18}
                   value={content}
-                  onChange={(event) => setContent(event.target.value)}
-                  onPaste={(event) => {
-                    const start = event.currentTarget.selectionStart
-                    const end = event.currentTarget.selectionEnd
-                    void readPastedImage(event).then((dataUrl) => {
-                      if (dataUrl) setContent((prev) => insertAtCursor(prev, `[[image:${dataUrl}]]`, start, end))
-                    })
-                  }}
+                  onChange={setContent}
                 />
               </Field>
             </FieldGroup>
