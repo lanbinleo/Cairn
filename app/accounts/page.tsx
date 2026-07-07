@@ -1,14 +1,14 @@
 'use client'
 
 import { Link } from 'react-router-dom'
-import { ChevronRight, Plus } from 'lucide-react'
+import { ChevronRight } from 'lucide-react'
 
 import { PageHeader } from '@/components/page-header'
 import { PnlText } from '@/components/pnl-text'
 import { Sparkline } from '@/components/sparkline'
 import { EditAccountDialog } from '@/components/edit-account-dialog'
+import { CreateAccountDialog } from '@/components/create-account-dialog'
 import { Badge } from '@/components/ui/badge'
-import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { useCairn } from '@/lib/store'
 import { computeStats, computeEquityCurve } from '@/lib/metrics'
@@ -21,12 +21,7 @@ export default function AccountsPage() {
       <PageHeader
         title="账户"
         description="每个账户是一个独立的交易环境 / 账本"
-        actions={
-          <Button>
-            <Plus data-icon="inline-start" />
-            新建账户
-          </Button>
-        }
+        actions={<CreateAccountDialog />}
       />
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">

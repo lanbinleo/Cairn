@@ -1,10 +1,10 @@
 import { Link, useSearchParams } from 'react-router-dom'
-import { Plus, NotebookPen } from 'lucide-react'
+import { NotebookPen } from 'lucide-react'
 
 import { PageHeader } from '@/components/page-header'
 import { NoteContent } from '@/components/note-content'
+import { CreateNoteDialog } from '@/components/create-note-dialog'
 import { Badge } from '@/components/ui/badge'
-import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from '@/components/ui/empty'
 import { useCairn } from '@/lib/store'
@@ -23,12 +23,7 @@ export default function NotesPage() {
       <PageHeader
         title="笔记"
         description="复盘笔记独立于交易存在，可在正文中 @提及 任意交易或图片"
-        actions={
-          <Button>
-            <Plus data-icon="inline-start" />
-            新建笔记
-          </Button>
-        }
+        actions={<CreateNoteDialog />}
       />
 
       {sorted.length === 0 ? (

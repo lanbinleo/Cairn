@@ -1,15 +1,15 @@
 'use client'
 
 import { Link, Navigate, useParams } from 'react-router-dom'
-import { ChevronRight, Plus } from 'lucide-react'
+import { ChevronRight } from 'lucide-react'
 
 import { PnlText } from '@/components/pnl-text'
 import { StatCard } from '@/components/stat-card'
 import { EquityChart } from '@/components/equity-chart'
 import { EditAccountDialog } from '@/components/edit-account-dialog'
 import { EditPeriodDialog } from '@/components/edit-period-dialog'
+import { CreatePeriodDialog } from '@/components/create-period-dialog'
 import { Badge } from '@/components/ui/badge'
-import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { useCairn } from '@/lib/store'
 import { computeStats, computeEquityCurve } from '@/lib/metrics'
@@ -48,10 +48,7 @@ export default function AccountDetailPage() {
         </div>
         <div className="flex items-center gap-2">
           <EditAccountDialog account={account} />
-          <Button>
-            <Plus data-icon="inline-start" />
-            新建 Period
-          </Button>
+          <CreatePeriodDialog accountId={account.id} />
         </div>
       </header>
 

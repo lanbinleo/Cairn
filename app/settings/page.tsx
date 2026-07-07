@@ -2,11 +2,10 @@
 
 import { useTheme } from 'next-themes'
 import { useEffect, useState } from 'react'
-import { Plus } from 'lucide-react'
 
 import { PageHeader } from '@/components/page-header'
+import { CreateSymbolDialog } from '@/components/create-symbol-dialog'
 import { Badge } from '@/components/ui/badge'
-import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Label } from '@/components/ui/label'
 import {
@@ -50,10 +49,7 @@ export default function SettingsPage() {
           <CardDescription>
             导入数据时必须选择品种归属；品种以「交易所:代码」唯一标识
           </CardDescription>
-          <Button className="ml-auto" size="sm">
-            <Plus data-icon="inline-start" />
-            新建品种
-          </Button>
+          <CreateSymbolDialog />
         </CardHeader>
         <CardContent>
           <Table>

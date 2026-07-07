@@ -32,6 +32,10 @@ interface CairnStore {
   updateAccount: (id: string, patch: Partial<Account>) => void
   updatePeriod: (id: string, patch: Partial<Period>) => void
   updateTrade: (id: string, patch: Partial<Trade>) => void
+  createAccount: (input: Omit<Account, 'id' | 'createdAt'>) => Account
+  createPeriod: (input: Omit<Period, 'id' | 'createdAt'>) => Period
+  createSymbol: (input: Omit<(typeof seedState.symbols)[number], 'id'>) => (typeof seedState.symbols)[number]
+  createNote: (input: Omit<(typeof seedState.notes)[number], 'id' | 'createdAt' | 'updatedAt'>) => (typeof seedState.notes)[number]
   /** 快速平仓 / 重新打开 */
   setTradeStatus: (id: string, status: Trade['status']) => void
   /* 标签 */
@@ -49,6 +53,39 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
   const [symbols, setSymbols] = useState(seedState.symbols)
   const [notes, setNotes] = useState(seedState.notes)
   const [tagDefs, setTagDefs] = useState<TagDef[]>(seedState.tagDefs)
+
+  const makeId = useCallback((prefix: string) => {
+    return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+  }, [])
+
+  const createAccount = useCallback((input: Omit<Account, 'id' | 'createdAt'>): Account => {
+    const created: Account = { ...input, id: makeId('acc'), createdAt: Date.now() }
+    setAccounts((prev) => [...prev, created])
+    void saveLocalRecord('accounts', created)
+    return created
+  }, [makeId])
+
+  const createPeriod = useCallback((input: Omit<Period, 'id' | 'createdAt'>): Period => {
+    const created: Period = { ...input, id: makeId('per'), createdAt: Date.now() }
+    setPeriods((prev) => [...prev, created])
+    void saveLocalRecord('periods', created)
+    return created
+  }, [makeId])
+
+  const createSymbol = useCallback((input: Omit<(typeof seedState.symbols)[number], 'id'>) => {
+    const created = { ...input, id: makeId('sym') }
+    setSymbols((prev) => [...prev, created])
+    void saveLocalRecord('symbols', created)
+    return created
+  }, [makeId])
+
+  const createNote = useCallback((input: Omit<(typeof seedState.notes)[number], 'id' | 'createdAt' | 'updatedAt'>) => {
+    const now = Date.now()
+    const created = { ...input, id: makeId('note'), createdAt: now, updatedAt: now }
+    setNotes((prev) => [...prev, created])
+    void saveLocalRecord('notes', created)
+    return created
+  }, [makeId])
 
   useEffect(() => {
     let cancelled = false
@@ -194,12 +231,16 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
       updateAccount,
       updatePeriod,
       updateTrade,
+      createAccount,
+      createPeriod,
+      createSymbol,
+      createNote,
       setTradeStatus,
       createTag,
       updateTag,
       deleteTag,
     }),
-    [accounts, periods, trades, tagDefs, symbols, notes, updateAccount, updatePeriod, updateTrade, setTradeStatus, createTag, updateTag, deleteTag],
+    [accounts, periods, trades, tagDefs, symbols, notes, updateAccount, updatePeriod, updateTrade, createAccount, createPeriod, createSymbol, createNote, setTradeStatus, createTag, updateTag, deleteTag],
   )
 
   return <StoreContext.Provider value={value}>{children}</StoreContext.Provider>
