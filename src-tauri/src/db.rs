@@ -227,6 +227,17 @@ pub fn save_record(db: &Db, collection: &str, id: &str, data: Value) -> Result<(
     Ok(())
 }
 
+pub fn save_records(db: &Db, collection: &str, records: Vec<Value>) -> Result<(), String> {
+    let mut conn = db.conn.lock().map_err(|err| err.to_string())?;
+    let tx = conn.transaction().map_err(|err| err.to_string())?;
+    for record in records {
+        let id = record_id(&record)?.to_string();
+        save_record_in_tx(&tx, collection, &id, record)?;
+    }
+    tx.commit().map_err(|err| err.to_string())?;
+    Ok(())
+}
+
 pub fn delete_record(db: &Db, collection: &str, id: &str) -> Result<(), String> {
     let conn = db.conn.lock().map_err(|err| err.to_string())?;
     if collection == "trades" {

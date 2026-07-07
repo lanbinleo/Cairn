@@ -66,8 +66,14 @@ export function EquityChart({ points, height = 260 }: { points: EquityPoint[]; h
       priceLineVisible: false,
       lastValueVisible: true,
     })
+    const dataBySecond = new Map<number, number>()
+    for (const pt of points) {
+      dataBySecond.set(Math.floor(pt.time / 1000), pt.equity)
+    }
     series.setData(
-      points.map((pt) => ({ time: Math.floor(pt.time / 1000) as UTCTimestamp, value: pt.equity })),
+      [...dataBySecond.entries()]
+        .sort((a, b) => a[0] - b[0])
+        .map(([time, value]) => ({ time: time as UTCTimestamp, value })),
     )
     chart.timeScale().fitContent()
 

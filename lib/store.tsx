@@ -6,7 +6,7 @@
  */
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react'
-import { loadLocalState, saveLocalRecord, deleteLocalRecord, restoreLocalState, exportLocalBackup } from './local-db'
+import { loadLocalState, saveLocalRecord, saveLocalRecords, deleteLocalRecord, restoreLocalState, exportLocalBackup } from './local-db'
 import type { CairnStateSnapshot } from './seed'
 import { seedState } from './seed'
 import { logFrontendError, logFrontendMessage } from './frontend-log'
@@ -143,16 +143,17 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
   const createChartImport = useCallback((record: ChartImport, candles: ChartCandle[]) => {
     setChartImports((prev) => [record, ...prev.filter((item) => item.id !== record.id)])
     void saveLocalRecord('chartImports', record)
-    setChartCandles((prev) => {
-      const nextById = new Map(prev.map((item) => [item.id, item]))
-      for (const candle of candles) {
-        const existing = nextById.get(candle.id)
-        nextById.set(candle.id, existing ? { ...existing, importIds: [...new Set([...existing.importIds, ...candle.importIds])] } : candle)
-        void saveLocalRecord('chartCandles', nextById.get(candle.id) as ChartCandle)
-      }
-      return [...nextById.values()].sort((a, b) => a.time - b.time)
-    })
-  }, [])
+    const recordsToSave: ChartCandle[] = []
+    const nextById = new Map(chartCandles.map((item) => [item.id, item]))
+    for (const candle of candles) {
+      const existing = nextById.get(candle.id)
+      const next = existing ? { ...existing, importIds: [...new Set([...existing.importIds, ...candle.importIds])] } : candle
+      nextById.set(candle.id, next)
+      recordsToSave.push(next)
+    }
+    setChartCandles([...nextById.values()].sort((a, b) => a.time - b.time))
+    void saveLocalRecords('chartCandles', recordsToSave)
+  }, [chartCandles])
 
   const rollbackImportBatch = useCallback((batchId: string) => {
     setTrades((prev) => {

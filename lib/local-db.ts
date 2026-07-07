@@ -72,3 +72,11 @@ export async function saveChartSourceFile(input: {
     end_utc: input.endUtc,
   })
 }
+
+export async function saveLocalRecords<T extends { id: string }>(
+  collection: CollectionName,
+  records: T[],
+): Promise<void> {
+  if (!isTauriRuntime() || records.length === 0) return
+  await invoke('save_records', { collection, records })
+}

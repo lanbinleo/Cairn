@@ -46,6 +46,15 @@ fn save_record(
 }
 
 #[tauri::command]
+fn save_records(
+    db: State<'_, db::Db>,
+    collection: String,
+    records: Vec<Value>,
+) -> Result<(), String> {
+    db::save_records(&db, &collection, records)
+}
+
+#[tauri::command]
 fn delete_record(db: State<'_, db::Db>, collection: String, id: String) -> Result<(), String> {
     db::delete_record(&db, &collection, &id)
 }
@@ -144,6 +153,7 @@ pub fn run() {
             app_ready,
             load_state,
             save_record,
+            save_records,
             delete_record,
             replace_collection,
             restore_state,
