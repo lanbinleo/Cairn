@@ -49,7 +49,7 @@ export default function TradeDetailPage() {
   const period = getPeriod(trade.periodId)
   const symbol = getSymbol(trade.symbolId)
   const m = computeTradeMetrics(trade)
-  const bars = generateChartBars(trade)
+  const bars = trade.chartBars?.length ? trade.chartBars : generateChartBars(trade)
   const mentioningNotes = getNotesMentioningTrade(trade.id)
 
   const timeline = [

@@ -18,7 +18,9 @@ Current implementation:
 - Trade export files are parsed with `xlsx`, covering CSV/XLS/XLSX-compatible inputs.
 - Rows are grouped into proposed trades by direction and position state.
 - Confirm creates local Trade and Execution records through `useCairn()` and persists them to SQLite.
-- Chart CSV and reference image file inputs exist; persistent ChartData/Attachment wiring remains to be completed.
+- Chart CSV is parsed into `ChartBar[]` and stored with imported trades.
+- Reference image is stored as a data URL with imported trades.
+- A normalized ChartData/Attachment table can replace the current embedded storage later.
 
 ## Backup
 

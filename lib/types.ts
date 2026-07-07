@@ -106,6 +106,8 @@ export interface Trade {
   events: TradeEvent[]
   /** 参考图（备份截图）地址 */
   referenceImages: string[]
+  /** 导入时附带的 K 线数据；缺失时详情页使用合成数据展示 */
+  chartBars?: ChartBar[]
   tags: string[]
   note?: string
   createdAt: number

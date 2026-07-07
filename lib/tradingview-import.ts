@@ -1,6 +1,6 @@
 import * as XLSX from 'xlsx'
 
-import type { Execution, Trade, TradeDirection, OrderType } from './types'
+import type { ChartBar, Execution, Trade, TradeDirection, OrderType } from './types'
 
 export interface RawImportRow {
   sourceRef: string
@@ -29,6 +29,15 @@ const FIELD_ALIASES = {
   time: ['Date/Time', 'Date Time', 'Time', '时间', '日期时间', '成交时间'],
   price: ['Price', '价格', '成交价'],
   quantity: ['Qty', 'Quantity', '数量', '合约', 'Contracts'],
+}
+
+const CHART_FIELD_ALIASES = {
+  time: ['time', 'Time', 'Date/Time', '时间', '日期时间'],
+  open: ['open', 'Open', '开盘', '开盘价'],
+  high: ['high', 'High', '最高', '最高价'],
+  low: ['low', 'Low', '最低', '最低价'],
+  close: ['close', 'Close', '收盘', '收盘价'],
+  ema20: ['EMA20', 'ema20', 'EMA 20', 'EMA', 'ema'],
 }
 
 function valueByAliases(row: Record<string, unknown>, aliases: string[]) {
@@ -109,6 +118,40 @@ export async function parseTradingViewRows(file: File): Promise<RawImportRow[]> 
       price,
       quantity,
     }]
+  })
+}
+
+export async function parseChartBars(file: File): Promise<ChartBar[]> {
+  const buffer = await file.arrayBuffer()
+  const workbook = XLSX.read(buffer, { type: 'array', cellDates: false })
+  const sheet = workbook.Sheets[workbook.SheetNames[0]]
+  const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, { defval: '' })
+
+  return rows.flatMap((row) => {
+    const time = toTime(valueByAliases(row, CHART_FIELD_ALIASES.time))
+    const open = toNumber(valueByAliases(row, CHART_FIELD_ALIASES.open))
+    const high = toNumber(valueByAliases(row, CHART_FIELD_ALIASES.high))
+    const low = toNumber(valueByAliases(row, CHART_FIELD_ALIASES.low))
+    const close = toNumber(valueByAliases(row, CHART_FIELD_ALIASES.close))
+    if (time == null || open == null || high == null || low == null || close == null) return []
+    const ema20 = toNumber(valueByAliases(row, CHART_FIELD_ALIASES.ema20))
+    return [{
+      time,
+      open,
+      high,
+      low,
+      close,
+      ema20: ema20 ?? undefined,
+    }]
+  }).sort((a, b) => a.time - b.time)
+}
+
+export function readFileAsDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(String(reader.result ?? ''))
+    reader.onerror = () => reject(reader.error)
+    reader.readAsDataURL(file)
   })
 }
 

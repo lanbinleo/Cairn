@@ -34,8 +34,8 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import { useCairn } from '@/lib/store'
-import { groupRows, inferOrderType, parseTradingViewRows, type ProposedTrade } from '@/lib/tradingview-import'
-import type { Trade } from '@/lib/types'
+import { groupRows, inferOrderType, parseChartBars, parseTradingViewRows, readFileAsDataUrl, type ProposedTrade } from '@/lib/tradingview-import'
+import type { ChartBar, Trade } from '@/lib/types'
 import { cn } from '@/lib/utils'
 
 const STEPS = ['选择归属', '上传文件', '归组预览', '完成'] as const
@@ -79,6 +79,8 @@ export default function ImportPage() {
   const [symbolId, setSymbolId] = useState('')
   const [files, setFiles] = useState<Partial<Record<SlotKey, File>>>({})
   const [proposedTrades, setProposedTrades] = useState<ProposedTrade[]>([])
+  const [chartBars, setChartBars] = useState<ChartBar[]>([])
+  const [referenceImage, setReferenceImage] = useState('')
   const [importError, setImportError] = useState('')
 
   const periodOptions = periods.filter((p) => p.accountId === accountId)
@@ -93,6 +95,8 @@ export default function ImportPage() {
         const rows = await parseTradingViewRows(files.trades as File)
         const grouped = groupRows(rows)
         setProposedTrades(grouped)
+        setChartBars(files.chart ? await parseChartBars(files.chart) : [])
+        setReferenceImage(files.reference ? await readFileAsDataUrl(files.reference) : '')
       } catch (err) {
         setImportError(err instanceof Error ? err.message : String(err))
         return
@@ -135,7 +139,8 @@ export default function ImportPage() {
           initialStopLoss: sl,
           executions,
           events: [],
-          referenceImages: [],
+          referenceImages: referenceImage ? [referenceImage] : [],
+          chartBars,
           tags: [],
           createdAt: now,
         }
@@ -417,6 +422,8 @@ export default function ImportPage() {
                   setStep(0)
                   setFiles({})
                   setProposedTrades([])
+                  setChartBars([])
+                  setReferenceImage('')
                   setImportError('')
                 }}
               >
