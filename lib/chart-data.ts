@@ -1,6 +1,6 @@
 /**
  * Mock 图表数据生成：为某个 Trade 生成其时段的 5m OHLC + EMA20 序列。
- * 真实系统中，这些数据来自导入的 TradingView 图表数据导出（见 docs/backend-design.md 的 chart_bars 表）。
+ * 真实系统中，这些数据来自导入的 TradingView 图表数据导出。
  * 使用确定性 PRNG（同一 trade 每次生成结果一致），并锚定各 Execution 的成交价，
  * 使 K 线走势与交易记录相互吻合。
  */

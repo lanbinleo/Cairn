@@ -11,7 +11,7 @@ import { emptyState, type CairnStateSnapshot } from '@/lib/seed'
 function isSnapshot(value: unknown): value is CairnStateSnapshot {
   if (!value || typeof value !== 'object') return false
   const obj = value as Record<string, unknown>
-  return ['accounts', 'periods', 'trades', 'symbols', 'notes', 'tagDefs'].every((key) => Array.isArray(obj[key]))
+  return ['accounts', 'periods', 'trades', 'symbols', 'notes', 'tagDefs', 'importBatches', 'attachments'].every((key) => Array.isArray(obj[key]))
 }
 
 export function BackupCard() {

@@ -1,6 +1,6 @@
 import * as XLSX from 'xlsx'
 
-import type { ChartBar, Execution, Trade, TradeDirection, OrderType } from './types'
+import type { ChartBar, Execution, Trade, TradeDirection, OrderType, TradeEventType } from './types'
 
 const defaultExportKey = ['def', 'ault'].join('')
 const xlsx = (XLSX as unknown as Record<string, typeof XLSX>)[defaultExportKey] ?? XLSX
@@ -27,6 +27,14 @@ export interface ProposedTrade {
   warning?: string
 }
 
+export interface ParsedChartEvent {
+  type: TradeEventType
+  time: number
+  price?: number
+  sourceRef: string
+  note?: string
+}
+
 const FIELD_ALIASES = {
   tradeNo: ['Trade #', 'Trade No', 'Trade', '交易 #', '交易编号', '编号'],
   type: ['Type', '类型', '方向', '交易类型'],
@@ -44,6 +52,11 @@ const CHART_FIELD_ALIASES = {
   low: ['low', 'Low', '最低', '最低价'],
   close: ['close', 'Close', '收盘', '收盘价'],
   ema20: ['EMA20', 'ema20', 'EMA 20', 'EMA', 'ema'],
+}
+
+const CHART_EVENT_FIELD_ALIASES = {
+  stopLoss: ['SL', 'Stop Loss', 'StopLoss', 'stop_loss', '止损', '止损价', '移动止损', 'Trailing Stop'],
+  takeProfit: ['TP', 'Take Profit', 'TakeProfit', 'take_profit', '止盈', '止盈价', '移动止盈'],
 }
 
 function valueByAliases(row: Record<string, unknown>, aliases: string[]) {
@@ -117,6 +130,8 @@ function isExit(type: string) {
 
 export function inferOrderType(signal?: string, rawOrderType?: string): OrderType {
   const lower = `${rawOrderType ?? ''} ${signal ?? ''}`.toLowerCase()
+  if (lower.includes('trailing') || lower.includes('跟踪') || lower.includes('移动止损')) return 'trailing-stop'
+  if (lower.includes('stop limit') || lower.includes('stop-limit') || lower.includes('止损限价')) return 'stop-limit'
   if (lower.includes('tp') || lower.includes('take') || lower.includes('止盈')) return 'take-profit'
   if (lower.includes('sl') || lower.includes('stop loss') || lower.includes('止损')) return 'stop-loss'
   if (lower.includes('stop')) return 'stop'
@@ -184,6 +199,45 @@ export async function parseChartBars(file: File): Promise<ChartBar[]> {
       ema20: ema20 ?? undefined,
     }]
   }).sort((a, b) => a.time - b.time)
+}
+
+export async function parseChartEvents(file: File): Promise<ParsedChartEvent[]> {
+  const buffer = await file.arrayBuffer()
+  const workbook = xlsx.read(buffer, { type: 'array', cellDates: false })
+  const rows = rowsFromFirstMatchingSheet(workbook, [CHART_FIELD_ALIASES.time])
+  const sorted = rows
+    .map((row, index) => ({ row, index, time: toTime(valueByAliases(row, CHART_FIELD_ALIASES.time)) }))
+    .filter((item): item is { row: Record<string, unknown>; index: number; time: number } => item.time != null)
+    .sort((a, b) => a.time - b.time)
+
+  const events: ParsedChartEvent[] = []
+  collectLevelEvents(sorted, CHART_EVENT_FIELD_ALIASES.stopLoss, 'sl-set', 'sl-moved', 'sl', events)
+  collectLevelEvents(sorted, CHART_EVENT_FIELD_ALIASES.takeProfit, 'tp-set', 'tp-moved', 'tp', events)
+  return events.sort((a, b) => a.time - b.time)
+}
+
+function collectLevelEvents(
+  rows: Array<{ row: Record<string, unknown>; index: number; time: number }>,
+  aliases: string[],
+  setType: TradeEventType,
+  movedType: TradeEventType,
+  sourceLabel: string,
+  out: ParsedChartEvent[],
+) {
+  let previous: number | null = null
+  for (const item of rows) {
+    const price = toNumber(valueByAliases(item.row, aliases))
+    if (price == null || price <= 0) continue
+    if (previous == null || Math.abs(previous - price) > 1e-9) {
+      out.push({
+        type: previous == null ? setType : movedType,
+        time: item.time,
+        price,
+        sourceRef: `chart:row:${item.index + 1}:${sourceLabel}`,
+      })
+      previous = price
+    }
+  }
 }
 
 export function readFileAsDataUrl(file: File): Promise<string> {

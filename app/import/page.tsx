@@ -34,8 +34,8 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import { useCairn } from '@/lib/store'
-import { groupRows, parseChartBars, parseTradingViewRows, readFileAsDataUrl, type ProposedTrade } from '@/lib/tradingview-import'
-import type { ChartBar, Execution, OrderType, Trade, TradeDirection } from '@/lib/types'
+import { groupRows, parseChartBars, parseChartEvents, parseTradingViewRows, readFileAsDataUrl, type ParsedChartEvent, type ProposedTrade } from '@/lib/tradingview-import'
+import type { ChartBar, Execution, ImportBatch, OrderType, Trade, TradeDirection, TradeEvent } from '@/lib/types'
 import { cn } from '@/lib/utils'
 
 const STEPS = ['选择归属', '上传文件', '归组预览', '完成'] as const
@@ -80,9 +80,27 @@ function chartBarsForExecutions(chartBars: ChartBar[], executions: Execution[]) 
   return selected.length > 0 ? selected : undefined
 }
 
+function chartEventsForExecutions(chartEvents: ParsedChartEvent[], executions: Execution[], tradeId: string): TradeEvent[] {
+  if (chartEvents.length === 0 || executions.length === 0) return []
+  const times = executions.map((execution) => execution.time)
+  const start = Math.min(...times)
+  const end = Math.max(...times)
+  return chartEvents
+    .filter((event) => event.time >= start && event.time <= end)
+    .map((event, index) => ({
+      id: `ev-${tradeId}-${index + 1}`,
+      tradeId,
+      type: event.type,
+      time: event.time,
+      price: event.price,
+      sourceRef: event.sourceRef,
+      note: event.note,
+    }))
+}
+
 export default function ImportPage() {
   const navigate = useNavigate()
-  const { accounts, periods, symbols, trades, getPeriod, updatePeriod, createTrades } = useCairn()
+  const { accounts, periods, symbols, trades, getPeriod, updatePeriod, createTrades, createImportBatch, rollbackImportBatch } = useCairn()
   const fileInputs = useRef<Record<string, HTMLInputElement | null>>({})
   const [step, setStep] = useState(0)
   const [accountId, setAccountId] = useState(accounts[0]?.id ?? '')
@@ -91,8 +109,10 @@ export default function ImportPage() {
   const [files, setFiles] = useState<Partial<Record<SlotKey, File>>>({})
   const [proposedTrades, setProposedTrades] = useState<ProposedTrade[]>([])
   const [chartBars, setChartBars] = useState<ChartBar[]>([])
+  const [chartEvents, setChartEvents] = useState<ParsedChartEvent[]>([])
   const [referenceImage, setReferenceImage] = useState('')
   const [importError, setImportError] = useState('')
+  const [createdBatchId, setCreatedBatchId] = useState('')
 
   const periodOptions = periods.filter((p) => p.accountId === accountId)
   const canNext =
@@ -115,6 +135,7 @@ export default function ImportPage() {
         const grouped = groupRows(rows)
         setProposedTrades(grouped)
         setChartBars(files.chart ? await parseChartBars(files.chart) : [])
+        setChartEvents(files.chart ? await parseChartEvents(files.chart) : [])
         setReferenceImage(files.reference ? await readFileAsDataUrl(files.reference) : '')
       } catch (err) {
         setImportError(err instanceof Error ? err.message : String(err))
@@ -131,6 +152,7 @@ export default function ImportPage() {
   function confirmImport() {
     const now = Date.now()
     const maxSeq = trades.reduce((max, trade) => Math.max(max, trade.seq), 0)
+    const batchId = `imp-${now}`
     const created: Trade[] = proposedTrades
       .filter((trade) => trade.executions.length > 0 && !trade.warning)
       .map((trade, index) => {
@@ -144,9 +166,13 @@ export default function ImportPage() {
           price: execution.price,
           quantity: execution.quantity,
           signal: execution.signal,
+          sourceRef: execution.sourceTradeNo
+            ? `tv:trade:${execution.sourceTradeNo}:${execution.sourceRef.replace('tv:', '')}`
+            : execution.sourceRef,
         }))
         const sl = executions.find((execution) => execution.orderType === 'stop-loss')?.price
         const lastAction = executions[executions.length - 1]?.action
+        const events = chartEventsForExecutions(chartEvents, executions, tradeId)
         return {
           id: tradeId,
           seq: maxSeq + index + 1,
@@ -155,9 +181,11 @@ export default function ImportPage() {
           symbolId,
           direction: trade.direction,
           status: lastAction === 'exit' ? 'closed' : 'open',
+          importBatchId: batchId,
+          sourceRef: trade.executions[0]?.sourceTradeNo ? `tv:trade:${trade.executions[0].sourceTradeNo}` : undefined,
           initialStopLoss: sl,
           executions,
-          events: [],
+          events,
           referenceImages: referenceImage ? [referenceImage] : [],
           chartBars: chartBarsForExecutions(chartBars, executions),
           tags: [],
@@ -166,6 +194,20 @@ export default function ImportPage() {
       })
 
     createTrades(created)
+    const batch: ImportBatch = {
+      id: batchId,
+      accountId,
+      periodId,
+      symbolId,
+      source: 'tradingview',
+      status: 'active',
+      tradeIds: created.map((trade) => trade.id),
+      attachmentIds: [],
+      createdAt: now,
+      note: `Imported ${created.length} trades from TradingView`,
+    }
+    createImportBatch(batch)
+    setCreatedBatchId(batchId)
     const period = getPeriod(periodId)
     if (period && !period.symbolIds.includes(symbolId)) {
       updatePeriod(period.id, { symbolIds: [...period.symbolIds, symbolId] })
@@ -543,12 +585,26 @@ export default function ImportPage() {
                   setFiles({})
                   setProposedTrades([])
                   setChartBars([])
+                  setChartEvents([])
                   setReferenceImage('')
                   setImportError('')
+                  setCreatedBatchId('')
                 }}
               >
                 再导入一批
               </Button>
+              {createdBatchId && (
+                <Button
+                  variant="outline"
+                  onClick={() => {
+                    rollbackImportBatch(createdBatchId)
+                    setCreatedBatchId('')
+                    navigate('/trades')
+                  }}
+                >
+                  撤销本次导入
+                </Button>
+              )}
             </div>
           </CardContent>
         </Card>

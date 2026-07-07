@@ -2,8 +2,7 @@
 
 /**
  * Cairn 客户端数据层（会话内可变）。
- * 以 mock 数据为初始状态，提供 Account / Period / Trade / Tag 的编辑操作。
- * 后端就绪后，此处的 setState 将替换为 REST API 调用 + SWR mutate（见 docs/backend-design.md）。
+ * Tauri 运行时通过本地 SQLite 持久化，浏览器开发环境使用空 seed。
  */
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react'
@@ -11,7 +10,7 @@ import { loadLocalState, saveLocalRecord, deleteLocalRecord, restoreLocalState, 
 import type { CairnStateSnapshot } from './seed'
 import { seedState } from './seed'
 import { logFrontendError, logFrontendMessage } from './frontend-log'
-import type { Account, Period, Trade, TagDef, TagColor } from './types'
+import type { Account, Attachment, ImportBatch, Period, Trade, TagDef, TagColor } from './types'
 
 /* ---------- Context ---------- */
 
@@ -20,6 +19,8 @@ interface CairnStore {
   periods: Period[]
   trades: Trade[]
   tagDefs: TagDef[]
+  importBatches: ImportBatch[]
+  attachments: Attachment[]
   symbols: typeof seedState.symbols
   notes: typeof seedState.notes
   /* 查询 */
@@ -40,6 +41,8 @@ interface CairnStore {
   createSymbol: (input: Omit<(typeof seedState.symbols)[number], 'id'>) => (typeof seedState.symbols)[number]
   createNote: (input: Omit<(typeof seedState.notes)[number], 'id' | 'createdAt' | 'updatedAt'>) => (typeof seedState.notes)[number]
   createTrades: (records: Trade[]) => void
+  createImportBatch: (batch: ImportBatch) => void
+  rollbackImportBatch: (batchId: string) => void
   deleteAccount: (id: string) => void
   deletePeriod: (id: string) => void
   deleteTrade: (id: string) => void
@@ -64,6 +67,8 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
   const [symbols, setSymbols] = useState(seedState.symbols)
   const [notes, setNotes] = useState(seedState.notes)
   const [tagDefs, setTagDefs] = useState<TagDef[]>(seedState.tagDefs)
+  const [importBatches, setImportBatches] = useState<ImportBatch[]>(seedState.importBatches)
+  const [attachments, setAttachments] = useState<Attachment[]>(seedState.attachments)
 
   const makeId = useCallback((prefix: string) => {
     return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
@@ -104,6 +109,27 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
     records.forEach((record) => {
       void saveLocalRecord('trades', record)
     })
+  }, [])
+
+  const createImportBatch = useCallback((batch: ImportBatch) => {
+    setImportBatches((prev) => [...prev, batch])
+    void saveLocalRecord('importBatches', batch)
+  }, [])
+
+  const rollbackImportBatch = useCallback((batchId: string) => {
+    setTrades((prev) => {
+      const removed = prev.filter((trade) => trade.importBatchId === batchId)
+      removed.forEach((trade) => void deleteLocalRecord('trades', trade.id))
+      return prev.filter((trade) => trade.importBatchId !== batchId)
+    })
+    setImportBatches((prev) =>
+      prev.map((batch) => {
+        if (batch.id !== batchId) return batch
+        const next = { ...batch, status: 'rolled-back' as const, rolledBackAt: Date.now() }
+        void saveLocalRecord('importBatches', next)
+        return next
+      }),
+    )
   }, [])
 
   const deleteTrade = useCallback((id: string) => {
@@ -158,6 +184,8 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
     setSymbols(snapshot.symbols)
     setNotes(snapshot.notes)
     setTagDefs(snapshot.tagDefs)
+    setImportBatches(snapshot.importBatches)
+    setAttachments(snapshot.attachments)
   }, [])
 
   const restoreState = useCallback(async (snapshot: CairnStateSnapshot) => {
@@ -303,6 +331,8 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
       periods,
       trades,
       tagDefs,
+      importBatches,
+      attachments,
       symbols,
       notes,
       getAccount: (id) => accounts.find((a) => a.id === id),
@@ -325,6 +355,8 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
       createSymbol,
       createNote,
       createTrades,
+      createImportBatch,
+      rollbackImportBatch,
       deleteAccount,
       deletePeriod,
       deleteTrade,
@@ -337,7 +369,7 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
       updateTag,
       deleteTag,
     }),
-    [accounts, periods, trades, tagDefs, symbols, notes, updateAccount, updatePeriod, updateTrade, updateNote, createAccount, createPeriod, createSymbol, createNote, createTrades, deleteAccount, deletePeriod, deleteTrade, deleteSymbol, deleteNote, restoreState, exportBackup, setTradeStatus, createTag, updateTag, deleteTag],
+    [accounts, periods, trades, tagDefs, importBatches, attachments, symbols, notes, updateAccount, updatePeriod, updateTrade, updateNote, createAccount, createPeriod, createSymbol, createNote, createTrades, createImportBatch, rollbackImportBatch, deleteAccount, deletePeriod, deleteTrade, deleteSymbol, deleteNote, restoreState, exportBackup, setTradeStatus, createTag, updateTag, deleteTag],
   )
 
   return <StoreContext.Provider value={value}>{children}</StoreContext.Provider>

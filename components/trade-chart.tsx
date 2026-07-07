@@ -139,7 +139,9 @@ export function TradeChart({
       position: 'aboveBar' as const,
       shape: 'circle' as const,
       color: ev.type.startsWith('sl') ? p.sl : p.tp,
-      text: ev.type.startsWith('sl') ? `SL→${ev.price}` : `TP→${ev.price}`,
+      text: ev.price == null
+        ? (ev.note ?? 'Note')
+        : ev.type.startsWith('sl') ? `SL->${ev.price}` : `TP->${ev.price}`,
       size: 0.6,
     }))
 

@@ -1,4 +1,4 @@
-import type { Account, Period, Trade, TagDef, TagColor } from './types'
+import type { Account, Attachment, ImportBatch, Period, Trade, TagDef, TagColor } from './types'
 
 const T0 = Date.parse('2026-01-01T00:00:00Z')
 
@@ -27,6 +27,8 @@ export interface CairnStateSnapshot {
   symbols: import('./types').TradingSymbol[]
   notes: import('./types').Note[]
   tagDefs: TagDef[]
+  importBatches: ImportBatch[]
+  attachments: Attachment[]
 }
 
 export const seedState: CairnStateSnapshot = {
@@ -36,6 +38,8 @@ export const seedState: CairnStateSnapshot = {
   symbols: [],
   notes: [],
   tagDefs: [],
+  importBatches: [],
+  attachments: [],
 }
 
 export const emptyState: CairnStateSnapshot = seedState

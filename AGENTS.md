@@ -12,7 +12,7 @@ Build CAIRN as a local-first Tauri 2 desktop app for Windows and macOS, with Lin
 ## Non-Negotiables
 
 - Do not rewrite page designs.
-- Preserve the existing visual style, layout, text, and current page behavior unless the stage document explicitly names a change.
+- Preserve the existing visual style, layout, text, and current page behavior unless the current task explicitly names a change.
 - Prefer mechanical migration over redesign:
   - keep existing components,
   - keep existing metric helpers,
@@ -20,16 +20,9 @@ Build CAIRN as a local-first Tauri 2 desktop app for Windows and macOS, with Lin
 - Keep docs current before or alongside implementation changes.
 - Use Git commits at stage boundaries.
 
-## Stage Documents
+## Product Document
 
-Before working on a stage, read the matching file under `docs/stages/`:
-
-- `docs/stages/00-current-state.md`
-- `docs/stages/01-tauri-vite-shell.md`
-- `docs/stages/02-local-data-sqlite.md`
-- `docs/stages/03-import-backup-clipboard.md`
-- `docs/stages/04-tray-logo-packaging.md`
-- `docs/stages/05-verification.md`
+Use `docs/software-design.md` as the current source of truth. Historical migration notes live under `reference/legacy/`.
 
 ## Architecture
 

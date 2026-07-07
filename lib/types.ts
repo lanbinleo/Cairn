@@ -63,7 +63,7 @@ export interface TagDef {
 }
 
 export type ExecutionAction = 'entry' | 'scale-in' | 'scale-out' | 'exit'
-export type OrderType = 'market' | 'limit' | 'stop' | 'stop-loss' | 'take-profit'
+export type OrderType = 'market' | 'limit' | 'stop' | 'stop-limit' | 'stop-loss' | 'take-profit' | 'trailing-stop'
 
 export interface Execution {
   id: string
@@ -77,17 +77,20 @@ export interface Execution {
   quantity: number
   /** TradingView 原始信号文本，如 "TP1" / "SL" */
   signal?: string
+  /** 原始导入行引用，如 tv:trade:7:row:14 */
+  sourceRef?: string
   note?: string
 }
 
-export type TradeEventType = 'sl-move' | 'tp-move' | 'sl-set' | 'tp-set'
+export type TradeEventType = 'sl-set' | 'sl-moved' | 'tp-set' | 'tp-moved' | 'note'
 
 export interface TradeEvent {
   id: string
   tradeId: string
   type: TradeEventType
   time: number
-  price: number
+  price?: number
+  sourceRef?: string
   note?: string
 }
 
@@ -100,6 +103,8 @@ export interface Trade {
   symbolId: string
   direction: TradeDirection
   status: TradeStatus
+  importBatchId?: string
+  sourceRef?: string
   /** 初始止损价（R 计算基准；可后补） */
   initialStopLoss?: number
   executions: Execution[]
@@ -139,6 +144,32 @@ export interface Note {
   mentions: NoteMention[]
   createdAt: number
   updatedAt: number
+}
+
+export interface Attachment {
+  id: string
+  ownerType: 'trade' | 'note' | 'import-batch'
+  ownerId: string
+  kind: 'reference-image' | 'raw-export' | 'note-image'
+  fileName: string
+  relativePath: string
+  mimeType?: string
+  sourceRef?: string
+  createdAt: number
+}
+
+export interface ImportBatch {
+  id: string
+  accountId: string
+  periodId: string
+  symbolId: string
+  source: 'tradingview' | 'manual'
+  status: 'active' | 'rolled-back'
+  tradeIds: string[]
+  attachmentIds: string[]
+  createdAt: number
+  rolledBackAt?: number
+  note?: string
 }
 
 /* ---------- 派生计算结果 ---------- */

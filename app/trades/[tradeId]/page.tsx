@@ -28,15 +28,18 @@ const orderTypeLabel: Record<string, string> = {
   market: '市价',
   limit: '限价',
   stop: '停损单（Stop）',
+  'stop-limit': '止损限价',
   'stop-loss': '止损',
   'take-profit': '止盈',
+  'trailing-stop': '移动止损离场',
 }
 
 const eventLabel: Record<string, string> = {
   'sl-set': '设置止损',
-  'sl-move': '移动止损',
+  'sl-moved': '移动止损',
   'tp-set': '设置止盈',
-  'tp-move': '移动止盈',
+  'tp-moved': '移动止盈',
+  note: '标记',
 }
 
 export default function TradeDetailPage() {
@@ -63,7 +66,7 @@ export default function TradeDetailPage() {
     ...trade.events.map((ev) => ({
       kind: 'event' as const,
       time: ev.time,
-      title: `${eventLabel[ev.type]} → ${fmtPrice(ev.price, symbol?.pricePrecision)}`,
+      title: ev.price == null ? eventLabel[ev.type] : `${eventLabel[ev.type]} -> ${fmtPrice(ev.price, symbol?.pricePrecision)}`,
       detail: ev.note ?? '',
       tone: ev.type.startsWith('sl') ? 'sl' : 'tp',
     })),
