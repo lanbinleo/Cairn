@@ -17,6 +17,8 @@ Current implementation:
 
 - Trade export files are parsed with `xlsx`, covering CSV/XLS/XLSX-compatible inputs.
 - Rows are grouped into proposed trades by direction and position state.
+- Execution action and order type can be edited in the import preview before confirmation.
+- Order type detection reads order/signal fields and recognizes market, limit, stop, stop-loss, and take-profit style labels.
 - Confirm creates local Trade and Execution records through `useCairn()` and persists them to SQLite.
 - Chart CSV is parsed into `ChartBar[]` and stored with imported trades.
 - Reference image is stored as a data URL with imported trades.
@@ -45,6 +47,10 @@ Current implementation:
 - Note creation and trade review note textareas accept pasted images.
 - Pasted images are stored inline as `[[image:data:...]]` references so current note rendering and backups preserve them.
 - Separate attachment-file storage remains to be completed.
+
+## Notes
+
+- Notes now have a dedicated Markdown edit route at `/notes/:noteId/edit` with live preview.
 
 ## Verification
 

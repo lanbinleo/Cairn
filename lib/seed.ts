@@ -1,10 +1,3 @@
-import {
-  accounts,
-  periods,
-  trades,
-  symbols,
-  notes,
-} from './mock-data'
 import type { Account, Period, Trade, TagDef, TagColor } from './types'
 
 const T0 = Date.parse('2026-01-01T00:00:00Z')
@@ -31,16 +24,18 @@ export interface CairnStateSnapshot {
   accounts: Account[]
   periods: Period[]
   trades: Trade[]
-  symbols: typeof symbols
-  notes: typeof notes
+  symbols: import('./types').TradingSymbol[]
+  notes: import('./types').Note[]
   tagDefs: TagDef[]
 }
 
 export const seedState: CairnStateSnapshot = {
-  accounts,
-  periods,
-  trades,
-  symbols,
-  notes,
-  tagDefs: seedTagDefs,
+  accounts: [],
+  periods: [],
+  trades: [],
+  symbols: [],
+  notes: [],
+  tagDefs: [],
 }
+
+export const emptyState: CairnStateSnapshot = seedState

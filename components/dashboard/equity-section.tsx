@@ -10,7 +10,21 @@ import { fmtMoney, fmtPct } from '@/lib/format'
 
 export function EquitySection() {
   const { accounts, trades } = useCairn()
-  const [accountId, setAccountId] = useState(accounts[0].id)
+  const [accountId, setAccountId] = useState(accounts[0]?.id ?? '')
+
+  if (accounts.length === 0) {
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle>资金曲线</CardTitle>
+          <CardDescription>创建账户后，这里会显示资金曲线和回撤。</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <EquityChart points={[]} />
+        </CardContent>
+      </Card>
+    )
+  }
 
   const { curve, dd, account } = useMemo(() => {
     const account = accounts.find((a) => a.id === accountId) ?? accounts[0]

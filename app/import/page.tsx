@@ -1,6 +1,6 @@
 'use client'
 
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import {
   Check,
@@ -34,8 +34,8 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import { useCairn } from '@/lib/store'
-import { groupRows, inferOrderType, parseChartBars, parseTradingViewRows, readFileAsDataUrl, type ProposedTrade } from '@/lib/tradingview-import'
-import type { ChartBar, Trade } from '@/lib/types'
+import { groupRows, parseChartBars, parseTradingViewRows, readFileAsDataUrl, type ProposedTrade } from '@/lib/tradingview-import'
+import type { ChartBar, Execution, OrderType, Trade, TradeDirection } from '@/lib/types'
 import { cn } from '@/lib/utils'
 
 const STEPS = ['选择归属', '上传文件', '归组预览', '完成'] as const
@@ -74,7 +74,7 @@ export default function ImportPage() {
   const { accounts, periods, symbols, trades, getPeriod, updatePeriod, createTrades } = useCairn()
   const fileInputs = useRef<Record<string, HTMLInputElement | null>>({})
   const [step, setStep] = useState(0)
-  const [accountId, setAccountId] = useState(accounts[0].id)
+  const [accountId, setAccountId] = useState(accounts[0]?.id ?? '')
   const [periodId, setPeriodId] = useState('')
   const [symbolId, setSymbolId] = useState('')
   const [files, setFiles] = useState<Partial<Record<SlotKey, File>>>({})
@@ -86,6 +86,14 @@ export default function ImportPage() {
   const periodOptions = periods.filter((p) => p.accountId === accountId)
   const canNext =
     step === 0 ? periodId !== '' && symbolId !== '' : step === 1 ? Boolean(files.trades) : true
+
+  useEffect(() => {
+    if (!accountId && accounts[0]) setAccountId(accounts[0].id)
+  }, [accountId, accounts])
+
+  useEffect(() => {
+    if (!symbolId && symbols[0]) setSymbolId(symbols[0].id)
+  }, [symbolId, symbols])
 
   async function handleNext() {
     if (!canNext) return
@@ -120,7 +128,7 @@ export default function ImportPage() {
           id: `ex-import-${now}-${index + 1}-${execIndex + 1}`,
           tradeId,
           action: execution.action,
-          orderType: inferOrderType(execution.signal),
+          orderType: execution.orderType ?? 'market',
           time: execution.time,
           price: execution.price,
           quantity: execution.quantity,
@@ -152,6 +160,27 @@ export default function ImportPage() {
       updatePeriod(period.id, { symbolIds: [...period.symbolIds, symbolId] })
     }
     setStep(3)
+  }
+
+  function updateProposedExecution(tradeIndex: number, executionIndex: number, patch: Partial<Execution>) {
+    setProposedTrades((prev) =>
+      prev.map((trade, ti) =>
+        ti === tradeIndex
+          ? {
+              ...trade,
+              executions: trade.executions.map((execution, ei) =>
+                ei === executionIndex ? { ...execution, ...patch } : execution,
+              ),
+            }
+          : trade,
+      ),
+    )
+  }
+
+  function updateProposedTradeDirection(tradeIndex: number, direction: TradeDirection) {
+    setProposedTrades((prev) =>
+      prev.map((trade, index) => (index === tradeIndex ? { ...trade, direction } : trade)),
+    )
   }
 
   return (
@@ -266,6 +295,11 @@ export default function ImportPage() {
                 </FieldDescription>
               </Field>
             </FieldGroup>
+            {(accounts.length === 0 || periods.length === 0 || symbols.length === 0) && (
+              <p className="mt-4 text-sm text-muted-foreground">
+                导入前需要先创建账户、Period 和品种。
+              </p>
+            )}
           </CardContent>
         </Card>
       )}
@@ -359,6 +393,9 @@ export default function ImportPage() {
                 <TableRow>
                   <TableHead>归组</TableHead>
                   <TableHead>TV 编号</TableHead>
+                  <TableHead>方向</TableHead>
+                  <TableHead>Execution</TableHead>
+                  <TableHead>订单</TableHead>
                   <TableHead>类型</TableHead>
                   <TableHead>信号</TableHead>
                   <TableHead>时间（UTC）</TableHead>
@@ -382,6 +419,76 @@ export default function ImportPage() {
                         </Badge>
                       </TableCell>
                       <TableCell className="font-mono text-muted-foreground">{row.sourceRef.replace('tv:row:', '')}</TableCell>
+                      <TableCell>
+                        <Select
+                          items={[
+                            { value: 'long', label: '多' },
+                            { value: 'short', label: '空' },
+                          ]}
+                          value={trade.direction}
+                          onValueChange={(value) => updateProposedTradeDirection(tradeIndex, value as TradeDirection)}
+                        >
+                          <SelectTrigger className="h-7 w-20">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectGroup>
+                              <SelectItem value="long">多</SelectItem>
+                              <SelectItem value="short">空</SelectItem>
+                            </SelectGroup>
+                          </SelectContent>
+                        </Select>
+                      </TableCell>
+                      <TableCell>
+                        <Select
+                          items={[
+                            { value: 'entry', label: '进场' },
+                            { value: 'scale-in', label: '加仓' },
+                            { value: 'scale-out', label: '减仓' },
+                            { value: 'exit', label: '离场' },
+                          ]}
+                          value={row.action}
+                          onValueChange={(value) => updateProposedExecution(tradeIndex, rowIndex, { action: value as Execution['action'] })}
+                        >
+                          <SelectTrigger className="h-7 w-24">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectGroup>
+                              <SelectItem value="entry">进场</SelectItem>
+                              <SelectItem value="scale-in">加仓</SelectItem>
+                              <SelectItem value="scale-out">减仓</SelectItem>
+                              <SelectItem value="exit">离场</SelectItem>
+                            </SelectGroup>
+                          </SelectContent>
+                        </Select>
+                      </TableCell>
+                      <TableCell>
+                        <Select
+                          items={[
+                            { value: 'market', label: '市价' },
+                            { value: 'limit', label: '限价' },
+                            { value: 'stop', label: 'Stop' },
+                            { value: 'stop-loss', label: '止损' },
+                            { value: 'take-profit', label: '止盈' },
+                          ]}
+                          value={row.orderType ?? 'market'}
+                          onValueChange={(value) => updateProposedExecution(tradeIndex, rowIndex, { orderType: value as OrderType })}
+                        >
+                          <SelectTrigger className="h-7 w-24">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectGroup>
+                              <SelectItem value="market">市价</SelectItem>
+                              <SelectItem value="limit">限价</SelectItem>
+                              <SelectItem value="stop">Stop</SelectItem>
+                              <SelectItem value="stop-loss">止损</SelectItem>
+                              <SelectItem value="take-profit">止盈</SelectItem>
+                            </SelectGroup>
+                          </SelectContent>
+                        </Select>
+                      </TableCell>
                       <TableCell>{row.type}</TableCell>
                       <TableCell className="text-muted-foreground">{row.signal}</TableCell>
                       <TableCell className="font-mono text-muted-foreground">{new Date(row.time).toISOString().slice(0, 16).replace('T', ' ')}</TableCell>

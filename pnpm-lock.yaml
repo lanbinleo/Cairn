@@ -20,6 +20,9 @@ importers:
       clsx:
         specifier: ^2.1.1
         version: 2.1.1
+      harmonyos-sans:
+        specifier: ^1.0.0
+        version: 1.0.0
       lightweight-charts:
         specifier: ^5.2.0
         version: 5.2.0
@@ -1399,6 +1402,9 @@ packages:
   graphql@16.14.0:
     resolution: {integrity: sha512-BBvQ/406p+4CZbTpCbVPSxfzrZrbnuWSP1ELYgyS6B+hNeKzgrdB4JczCa5VZUBQrDa9hUngm0KnexY6pJRN5Q==}
     engines: {node: ^12.22.0 || ^14.16.0 || ^16.0.0 || >=17.0.0}
+
+  harmonyos-sans@1.0.0:
+    resolution: {integrity: sha512-o44hB9d3mv2WJk4GBP5L9KGwk/Fd0K0lDLMkGdIPAV4/HUHGdziYxtoD2ujgtlJ6oyd767CaI9mg/7Y9lqHBjw==}
 
   has-symbols@1.1.0:
     resolution: {integrity: sha512-1cDNdwJ2Jaohmb3sg4OmKaMBwuC48sYni5HUw2DvsC8LjGTLK9h+eb1X6RyuOHe4hT0ULCW68iomhjUoKUqlPQ==}
@@ -3501,6 +3507,8 @@ snapshots:
   graceful-fs@4.2.11: {}
 
   graphql@16.14.0: {}
+
+  harmonyos-sans@1.0.0: {}
 
   has-symbols@1.1.0: {}
 

@@ -61,7 +61,7 @@ export function TradeChart({
       layout: {
         background: { color: 'transparent' },
         textColor: p.text,
-        fontFamily: "'Geist Mono', ui-monospace, monospace",
+        fontFamily: "'HarmonyOS Sans', 'HarmonyOS Sans SC', 'Harmony Sans OS', system-ui, sans-serif",
         fontSize: 11,
         attributionLogo: false,
       },

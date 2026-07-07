@@ -1,12 +1,12 @@
 'use client'
 
 import { useRef, useState } from 'react'
-import { Download, Upload } from 'lucide-react'
+import { Download, Trash2, Upload } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { useCairn } from '@/lib/store'
-import type { CairnStateSnapshot } from '@/lib/seed'
+import { emptyState, type CairnStateSnapshot } from '@/lib/seed'
 
 function isSnapshot(value: unknown): value is CairnStateSnapshot {
   if (!value || typeof value !== 'object') return false
@@ -56,6 +56,17 @@ export function BackupCard() {
           <Button variant="outline" onClick={() => inputRef.current?.click()}>
             <Upload data-icon="inline-start" />
             恢复备份
+          </Button>
+          <Button
+            variant="destructive"
+            onClick={() => {
+              if (window.confirm('清空 CAIRN 的所有本地数据？')) {
+                void restoreState(emptyState).then(() => setMessage('已清空所有本地数据。'))
+              }
+            }}
+          >
+            <Trash2 data-icon="inline-start" />
+            清空数据
           </Button>
           <input
             ref={inputRef}

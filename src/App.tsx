@@ -5,6 +5,7 @@ import AccountDetailPage from '@/app/accounts/[accountId]/page'
 import PeriodDetailPage from '@/app/accounts/[accountId]/periods/[periodId]/page'
 import DashboardPage from '@/app/page'
 import ImportPage from '@/app/import/page'
+import NoteEditPage from '@/app/notes/[noteId]/edit/page'
 import NotesPage from '@/app/notes/page'
 import SettingsPage from '@/app/settings/page'
 import TradesPage from '@/app/trades/page'
@@ -30,6 +31,7 @@ export function App() {
                 <Route path="/trades" element={<TradesPage />} />
                 <Route path="/trades/:tradeId" element={<TradeDetailPage />} />
                 <Route path="/notes" element={<NotesPage />} />
+                <Route path="/notes/:noteId/edit" element={<NoteEditPage />} />
                 <Route path="/import" element={<ImportPage />} />
                 <Route path="/settings" element={<SettingsPage />} />
               </Routes>

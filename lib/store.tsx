@@ -33,6 +33,7 @@ interface CairnStore {
   updateAccount: (id: string, patch: Partial<Account>) => void
   updatePeriod: (id: string, patch: Partial<Period>) => void
   updateTrade: (id: string, patch: Partial<Trade>) => void
+  updateNote: (id: string, patch: Partial<(typeof seedState.notes)[number]>) => void
   createAccount: (input: Omit<Account, 'id' | 'createdAt'>) => Account
   createPeriod: (input: Omit<Period, 'id' | 'createdAt'>) => Period
   createSymbol: (input: Omit<(typeof seedState.symbols)[number], 'id'>) => (typeof seedState.symbols)[number]
@@ -213,6 +214,17 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
     )
   }, [])
 
+  const updateNote = useCallback((id: string, patch: Partial<(typeof seedState.notes)[number]>) => {
+    setNotes((prev) =>
+      prev.map((note) => {
+        if (note.id !== id) return note
+        const next = { ...note, ...patch, updatedAt: Date.now() }
+        void saveLocalRecord('notes', next)
+        return next
+      }),
+    )
+  }, [])
+
   const setTradeStatus = useCallback((id: string, status: Trade['status']) => {
     setTrades((prev) =>
       prev.map((t) => {
@@ -304,6 +316,7 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
       updateAccount,
       updatePeriod,
       updateTrade,
+      updateNote,
       createAccount,
       createPeriod,
       createSymbol,
@@ -321,7 +334,7 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
       updateTag,
       deleteTag,
     }),
-    [accounts, periods, trades, tagDefs, symbols, notes, updateAccount, updatePeriod, updateTrade, createAccount, createPeriod, createSymbol, createNote, createTrades, deleteAccount, deletePeriod, deleteTrade, deleteSymbol, deleteNote, restoreState, exportBackup, setTradeStatus, createTag, updateTag, deleteTag],
+    [accounts, periods, trades, tagDefs, symbols, notes, updateAccount, updatePeriod, updateTrade, updateNote, createAccount, createPeriod, createSymbol, createNote, createTrades, deleteAccount, deletePeriod, deleteTrade, deleteSymbol, deleteNote, restoreState, exportBackup, setTradeStatus, createTag, updateTag, deleteTag],
   )
 
   return <StoreContext.Provider value={value}>{children}</StoreContext.Provider>

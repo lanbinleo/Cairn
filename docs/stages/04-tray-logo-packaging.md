@@ -19,6 +19,9 @@ Current implementation:
 
 - Tauri tray is enabled with the `tray-icon` feature.
 - Tray menu includes opening the main window and quitting the app.
+- Release builds use the Windows GUI subsystem to avoid showing a console window.
+- CAIRN icon assets are generated as opaque bitmaps to avoid black transparency artifacts in Windows shells.
+- HarmonyOS Sans SC Regular/Medium/Bold are bundled and used as the app font family.
 
 ## Packaging
 

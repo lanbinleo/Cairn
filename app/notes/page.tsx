@@ -1,5 +1,5 @@
 import { Link, useSearchParams } from 'react-router-dom'
-import { NotebookPen, Trash2 } from 'lucide-react'
+import { NotebookPen, Pencil, Trash2 } from 'lucide-react'
 
 import { PageHeader } from '@/components/page-header'
 import { NoteContent } from '@/components/note-content'
@@ -74,16 +74,21 @@ export default function NotesPage() {
               <CardHeader>
                 <div className="flex items-start justify-between gap-3">
                   <CardTitle className="text-lg text-balance">{active.title}</CardTitle>
-                  <Button
-                    variant="ghost"
-                    size="icon-sm"
-                    aria-label={`删除笔记 ${active.title}`}
-                    onClick={() => {
-                      if (window.confirm(`删除笔记「${active.title}」？`)) deleteNote(active.id)
-                    }}
-                  >
-                    <Trash2 />
-                  </Button>
+                  <div className="flex items-center gap-1">
+                    <Button variant="ghost" size="icon-sm" aria-label={`编辑笔记 ${active.title}`} render={<Link to={`/notes/${active.id}/edit`} />}>
+                      <Pencil />
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="icon-sm"
+                      aria-label={`删除笔记 ${active.title}`}
+                      onClick={() => {
+                        if (window.confirm(`删除笔记「${active.title}」？`)) deleteNote(active.id)
+                      }}
+                    >
+                      <Trash2 />
+                    </Button>
+                  </div>
                 </div>
                 <p className="text-xs text-muted-foreground">
                   创建于 {fmtUtcDate(active.createdAt)} · 更新于 {fmtUtcDate(active.updatedAt)}

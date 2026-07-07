@@ -5,6 +5,7 @@ import type { ChartBar, Execution, Trade, TradeDirection, OrderType } from './ty
 export interface RawImportRow {
   sourceRef: string
   type: string
+  orderType?: OrderType
   signal?: string
   time: number
   price: number
@@ -24,7 +25,8 @@ export interface ProposedTrade {
 
 const FIELD_ALIASES = {
   tradeNo: ['Trade #', 'Trade No', 'Trade', '交易 #', '交易编号', '编号'],
-  type: ['Type', '类型', '订单类型', '方向'],
+  type: ['Type', '类型', '方向', '交易类型'],
+  orderType: ['Order Type', 'Order', '订单类型', '委托类型'],
   signal: ['Signal', '信号', '信号名称'],
   time: ['Date/Time', 'Date Time', 'Time', '时间', '日期时间', '成交时间'],
   price: ['Price', '价格', '成交价'],
@@ -72,27 +74,29 @@ function toTime(value: unknown) {
   return Number.isFinite(ms) ? ms : null
 }
 
-function inferDirection(type: string): TradeDirection | null {
-  const lower = type.toLowerCase()
-  if (type.includes('多') || lower.includes('long')) return 'long'
-  if (type.includes('空') || lower.includes('short')) return 'short'
+function inferDirection(type: string, signal?: string): TradeDirection | null {
+  const text = `${type} ${signal ?? ''}`.toLowerCase()
+  if (type.includes('多') || type.includes('开多') || type.includes('平多') || text.includes('long')) return 'long'
+  if (type.includes('空') || type.includes('开空') || type.includes('平空') || text.includes('short')) return 'short'
   return null
 }
 
 function isEntry(type: string) {
   const lower = type.toLowerCase()
-  return type.includes('进场') || type.includes('买入') || lower.includes('entry') || lower.includes('buy')
+  return type.includes('进场') || type.includes('开仓') || type.includes('开多') || type.includes('开空') || lower.includes('entry')
 }
 
 function isExit(type: string) {
   const lower = type.toLowerCase()
-  return type.includes('出场') || type.includes('卖出') || lower.includes('exit') || lower.includes('sell')
+  return type.includes('出场') || type.includes('平仓') || type.includes('平多') || type.includes('平空') || lower.includes('exit') || lower.includes('close')
 }
 
-export function inferOrderType(signal?: string): OrderType {
-  const lower = (signal ?? '').toLowerCase()
-  if (lower.includes('tp') || lower.includes('take')) return 'take-profit'
-  if (lower.includes('sl') || lower.includes('stop')) return 'stop-loss'
+export function inferOrderType(signal?: string, rawOrderType?: string): OrderType {
+  const lower = `${rawOrderType ?? ''} ${signal ?? ''}`.toLowerCase()
+  if (lower.includes('tp') || lower.includes('take') || lower.includes('止盈')) return 'take-profit'
+  if (lower.includes('sl') || lower.includes('stop loss') || lower.includes('止损')) return 'stop-loss'
+  if (lower.includes('stop')) return 'stop'
+  if (lower.includes('limit') || lower.includes('限价')) return 'limit'
   return 'market'
 }
 
@@ -104,6 +108,7 @@ export async function parseTradingViewRows(file: File): Promise<RawImportRow[]> 
 
   return rows.flatMap((row, index) => {
     const type = String(valueByAliases(row, FIELD_ALIASES.type) ?? '').trim()
+    const rawOrderType = String(valueByAliases(row, FIELD_ALIASES.orderType) ?? '').trim()
     const signal = String(valueByAliases(row, FIELD_ALIASES.signal) ?? '').trim()
     const time = toTime(valueByAliases(row, FIELD_ALIASES.time))
     const price = toNumber(valueByAliases(row, FIELD_ALIASES.price))
@@ -113,6 +118,7 @@ export async function parseTradingViewRows(file: File): Promise<RawImportRow[]> 
     return [{
       sourceRef: `tv:row:${tradeNo}`,
       type,
+      orderType: inferOrderType(signal, rawOrderType),
       signal: signal || undefined,
       time,
       price,
@@ -162,7 +168,7 @@ export function groupRows(rows: RawImportRow[]): ProposedTrade[] {
   let position = 0
 
   for (const row of sorted) {
-    const direction = inferDirection(row.type)
+    const direction = inferDirection(row.type, row.signal)
     if (!direction) {
       proposed.push({
         id: `warning-${proposed.length + 1}`,
