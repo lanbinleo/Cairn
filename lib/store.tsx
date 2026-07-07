@@ -37,6 +37,7 @@ interface CairnStore {
   createPeriod: (input: Omit<Period, 'id' | 'createdAt'>) => Period
   createSymbol: (input: Omit<(typeof seedState.symbols)[number], 'id'>) => (typeof seedState.symbols)[number]
   createNote: (input: Omit<(typeof seedState.notes)[number], 'id' | 'createdAt' | 'updatedAt'>) => (typeof seedState.notes)[number]
+  createTrades: (records: Trade[]) => void
   restoreState: (snapshot: CairnStateSnapshot) => Promise<void>
   exportBackup: () => Promise<string>
   /** 快速平仓 / 重新打开 */
@@ -89,6 +90,14 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
     void saveLocalRecord('notes', created)
     return created
   }, [makeId])
+
+  const createTrades = useCallback((records: Trade[]) => {
+    if (records.length === 0) return
+    setTrades((prev) => [...prev, ...records])
+    records.forEach((record) => {
+      void saveLocalRecord('trades', record)
+    })
+  }, [])
 
   const applySnapshot = useCallback((snapshot: CairnStateSnapshot) => {
     setAccounts(snapshot.accounts)
@@ -249,6 +258,7 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
       createPeriod,
       createSymbol,
       createNote,
+      createTrades,
       restoreState,
       exportBackup,
       setTradeStatus,
@@ -256,7 +266,7 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
       updateTag,
       deleteTag,
     }),
-    [accounts, periods, trades, tagDefs, symbols, notes, updateAccount, updatePeriod, updateTrade, createAccount, createPeriod, createSymbol, createNote, restoreState, exportBackup, setTradeStatus, createTag, updateTag, deleteTag],
+    [accounts, periods, trades, tagDefs, symbols, notes, updateAccount, updatePeriod, updateTrade, createAccount, createPeriod, createSymbol, createNote, createTrades, restoreState, exportBackup, setTradeStatus, createTag, updateTag, deleteTag],
   )
 
   return <StoreContext.Provider value={value}>{children}</StoreContext.Provider>

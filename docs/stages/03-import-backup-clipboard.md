@@ -13,6 +13,13 @@ Implement the real business workflows that are currently demos or missing.
 - Preview grouping.
 - Confirm to write Trades, Executions, ChartData, ChartBars, and Attachment metadata.
 
+Current implementation:
+
+- Trade export files are parsed with `xlsx`, covering CSV/XLS/XLSX-compatible inputs.
+- Rows are grouped into proposed trades by direction and position state.
+- Confirm creates local Trade and Execution records through `useCairn()` and persists them to SQLite.
+- Chart CSV and reference image file inputs exist; persistent ChartData/Attachment wiring remains to be completed.
+
 ## Backup
 
 - Export all local data and attachment files into a portable CAIRN backup file.

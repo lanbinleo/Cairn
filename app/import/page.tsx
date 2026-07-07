@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import {
   Check,
@@ -34,19 +34,11 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import { useCairn } from '@/lib/store'
+import { groupRows, inferOrderType, parseTradingViewRows, type ProposedTrade } from '@/lib/tradingview-import'
+import type { Trade } from '@/lib/types'
 import { cn } from '@/lib/utils'
 
 const STEPS = ['选择归属', '上传文件', '归组预览', '完成'] as const
-
-/** 模拟解析出的 TradingView 原始行 */
-const mockRows = [
-  { tvId: 1, type: '多头进场', signal: 'Breakout Entry', time: '2026-02-03 08:35', price: '97,420.0', qty: '0.5', group: 'A' },
-  { tvId: 1, type: '多头出场', signal: 'TP1', time: '2026-02-03 11:10', price: '98,180.0', qty: '0.25', group: 'A' },
-  { tvId: 2, type: '多头进场', signal: 'Add', time: '2026-02-03 09:40', price: '97,650.0', qty: '0.3', group: 'A' },
-  { tvId: 2, type: '多头出场', signal: 'TP2', time: '2026-02-03 13:25', price: '98,760.0', qty: '0.55', group: 'A' },
-  { tvId: 3, type: '空头进场', signal: 'Breakdown Entry', time: '2026-02-05 14:20', price: '99,120.0', qty: '0.5', group: 'B' },
-  { tvId: 3, type: '空头出场', signal: 'SL', time: '2026-02-05 15:05', price: '99,610.0', qty: '0.5', group: 'B' },
-]
 
 const fileSlots = [
   {
@@ -79,20 +71,83 @@ type SlotKey = (typeof fileSlots)[number]['key']
 
 export default function ImportPage() {
   const navigate = useNavigate()
-  const { accounts, periods, symbols } = useCairn()
+  const { accounts, periods, symbols, trades, getPeriod, updatePeriod, createTrades } = useCairn()
+  const fileInputs = useRef<Record<string, HTMLInputElement | null>>({})
   const [step, setStep] = useState(0)
   const [accountId, setAccountId] = useState(accounts[0].id)
   const [periodId, setPeriodId] = useState('')
   const [symbolId, setSymbolId] = useState('')
-  const [uploaded, setUploaded] = useState<Record<SlotKey, boolean>>({
-    trades: false,
-    chart: false,
-    reference: false,
-  })
+  const [files, setFiles] = useState<Partial<Record<SlotKey, File>>>({})
+  const [proposedTrades, setProposedTrades] = useState<ProposedTrade[]>([])
+  const [importError, setImportError] = useState('')
 
   const periodOptions = periods.filter((p) => p.accountId === accountId)
   const canNext =
-    step === 0 ? periodId !== '' && symbolId !== '' : step === 1 ? uploaded.trades : true
+    step === 0 ? periodId !== '' && symbolId !== '' : step === 1 ? Boolean(files.trades) : true
+
+  async function handleNext() {
+    if (!canNext) return
+    if (step === 1) {
+      setImportError('')
+      try {
+        const rows = await parseTradingViewRows(files.trades as File)
+        const grouped = groupRows(rows)
+        setProposedTrades(grouped)
+      } catch (err) {
+        setImportError(err instanceof Error ? err.message : String(err))
+        return
+      }
+    }
+    if (step === 2) {
+      confirmImport()
+      return
+    }
+    setStep((s) => s + 1)
+  }
+
+  function confirmImport() {
+    const now = Date.now()
+    const maxSeq = trades.reduce((max, trade) => Math.max(max, trade.seq), 0)
+    const created: Trade[] = proposedTrades
+      .filter((trade) => trade.executions.length > 0 && !trade.warning)
+      .map((trade, index) => {
+        const tradeId = `tr-import-${now}-${index + 1}`
+        const executions = trade.executions.map((execution, execIndex) => ({
+          id: `ex-import-${now}-${index + 1}-${execIndex + 1}`,
+          tradeId,
+          action: execution.action,
+          orderType: inferOrderType(execution.signal),
+          time: execution.time,
+          price: execution.price,
+          quantity: execution.quantity,
+          signal: execution.signal,
+        }))
+        const sl = executions.find((execution) => execution.orderType === 'stop-loss')?.price
+        const lastAction = executions[executions.length - 1]?.action
+        return {
+          id: tradeId,
+          seq: maxSeq + index + 1,
+          accountId,
+          periodId,
+          symbolId,
+          direction: trade.direction,
+          status: lastAction === 'exit' ? 'closed' : 'open',
+          initialStopLoss: sl,
+          executions,
+          events: [],
+          referenceImages: [],
+          tags: [],
+          createdAt: now,
+        }
+      })
+
+    createTrades(created)
+    const period = getPeriod(periodId)
+    if (period && !period.symbolIds.includes(symbolId)) {
+      updatePeriod(period.id, { symbolIds: [...period.symbolIds, symbolId] })
+    }
+    setStep(3)
+  }
 
   return (
     <div className="flex flex-col gap-6 p-6 lg:p-8">
@@ -212,57 +267,74 @@ export default function ImportPage() {
 
       {/* Step 1：上传三份文件 */}
       {step === 1 && (
-        <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
-          {fileSlots.map((slot) => {
-            const isUploaded = uploaded[slot.key]
-            const Icon = slot.icon
-            return (
-              <Card key={slot.key} className={cn(isUploaded && 'border-profit/40')}>
-                <CardContent className="flex flex-col items-center gap-3 py-8 text-center">
-                  {isUploaded ? (
-                    <CircleCheck className="size-8 text-profit" aria-hidden="true" />
-                  ) : (
-                    <Icon className="size-8 text-muted-foreground" aria-hidden="true" />
-                  )}
-                  <div className="flex flex-col gap-1">
-                    <div className="flex items-center justify-center gap-2">
-                      <span className="font-medium">{slot.title}</span>
-                      {slot.required ? (
-                        <Badge variant="destructive" className="text-[10px]">
-                          必需
-                        </Badge>
-                      ) : (
-                        <Badge variant="secondary" className="text-[10px]">
-                          可选
-                        </Badge>
-                      )}
+        <div className="flex flex-col gap-3">
+          <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+            {fileSlots.map((slot) => {
+              const file = files[slot.key]
+              const isUploaded = Boolean(file)
+              const Icon = slot.icon
+              return (
+                <Card key={slot.key} className={cn(isUploaded && 'border-profit/40')}>
+                  <CardContent className="flex flex-col items-center gap-3 py-8 text-center">
+                    {isUploaded ? (
+                      <CircleCheck className="size-8 text-profit" aria-hidden="true" />
+                    ) : (
+                      <Icon className="size-8 text-muted-foreground" aria-hidden="true" />
+                    )}
+                    <div className="flex flex-col gap-1">
+                      <div className="flex items-center justify-center gap-2">
+                        <span className="font-medium">{slot.title}</span>
+                        {slot.required ? (
+                          <Badge variant="destructive" className="text-[10px]">
+                            必需
+                          </Badge>
+                        ) : (
+                          <Badge variant="secondary" className="text-[10px]">
+                            可选
+                          </Badge>
+                        )}
+                      </div>
+                      <p className="text-xs leading-relaxed text-muted-foreground text-pretty">{slot.desc}</p>
                     </div>
-                    <p className="text-xs leading-relaxed text-muted-foreground text-pretty">{slot.desc}</p>
-                  </div>
-                  {isUploaded ? (
-                    <div className="flex flex-col items-center gap-2">
-                      <span className="font-mono text-xs text-muted-foreground">{slot.mockName}</span>
+                    {isUploaded ? (
+                      <div className="flex flex-col items-center gap-2">
+                        <span className="font-mono text-xs text-muted-foreground">{file?.name}</span>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => setFiles((prev) => ({ ...prev, [slot.key]: undefined }))}
+                        >
+                          移除
+                        </Button>
+                      </div>
+                    ) : (
                       <Button
-                        variant="ghost"
+                        variant="outline"
                         size="sm"
-                        onClick={() => setUploaded((u) => ({ ...u, [slot.key]: false }))}
+                        onClick={() => fileInputs.current[slot.key]?.click()}
                       >
-                        移除
+                        选择文件
                       </Button>
-                    </div>
-                  ) : (
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => setUploaded((u) => ({ ...u, [slot.key]: true }))}
-                    >
-                      选择文件（演示）
-                    </Button>
-                  )}
-                </CardContent>
-              </Card>
-            )
-          })}
+                    )}
+                    <input
+                      ref={(node) => {
+                        fileInputs.current[slot.key] = node
+                      }}
+                      type="file"
+                      className="hidden"
+                      accept={slot.key === 'reference' ? 'image/*' : '.csv,.xlsx,.xls'}
+                      onChange={(event) => {
+                        const selected = event.target.files?.[0]
+                        if (selected) setFiles((prev) => ({ ...prev, [slot.key]: selected }))
+                        event.target.value = ''
+                      }}
+                    />
+                  </CardContent>
+                </Card>
+              )
+            })}
+          </div>
+          {importError && <p className="text-sm text-loss">{importError}</p>}
         </div>
       )}
 
@@ -272,7 +344,7 @@ export default function ImportPage() {
           <CardHeader>
             <CardTitle className="text-base">Execution 归组预览</CardTitle>
             <CardDescription>
-              解析出 {mockRows.length} 条成交记录，按「同向连续建仓 → 全部离场」自动归组为 2 个
+              解析出 {proposedTrades.reduce((sum, trade) => sum + trade.executions.length, 0)} 条成交记录，按「同向连续建仓 → 全部离场」自动归组为 {proposedTrades.length} 个
               Trade。TradingView 的编号已替换为全局编号，可在此调整归组后确认。
             </CardDescription>
           </CardHeader>
@@ -290,27 +362,29 @@ export default function ImportPage() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {mockRows.map((row, i) => (
-                  <TableRow key={i}>
-                    <TableCell>
-                      <Badge
-                        variant="outline"
-                        className={cn(
-                          'font-mono',
-                          row.group === 'A' ? 'border-profit/40 text-profit' : 'border-loss/40 text-loss',
-                        )}
-                      >
-                        Trade {row.group}
-                      </Badge>
-                    </TableCell>
-                    <TableCell className="font-mono text-muted-foreground">{row.tvId}</TableCell>
-                    <TableCell>{row.type}</TableCell>
-                    <TableCell className="text-muted-foreground">{row.signal}</TableCell>
-                    <TableCell className="font-mono text-muted-foreground">{row.time}</TableCell>
-                    <TableCell className="text-right font-mono">{row.price}</TableCell>
-                    <TableCell className="text-right font-mono">{row.qty}</TableCell>
-                  </TableRow>
-                ))}
+                {proposedTrades.flatMap((trade, tradeIndex) =>
+                  trade.executions.map((row, rowIndex) => (
+                    <TableRow key={`${trade.id}-${rowIndex}`}>
+                      <TableCell>
+                        <Badge
+                          variant="outline"
+                          className={cn(
+                            'font-mono',
+                            trade.warning ? 'border-loss/40 text-loss' : 'border-profit/40 text-profit',
+                          )}
+                        >
+                          Trade {tradeIndex + 1}
+                        </Badge>
+                      </TableCell>
+                      <TableCell className="font-mono text-muted-foreground">{row.sourceRef.replace('tv:row:', '')}</TableCell>
+                      <TableCell>{row.type}</TableCell>
+                      <TableCell className="text-muted-foreground">{row.signal}</TableCell>
+                      <TableCell className="font-mono text-muted-foreground">{new Date(row.time).toISOString().slice(0, 16).replace('T', ' ')}</TableCell>
+                      <TableCell className="text-right font-mono">{row.price}</TableCell>
+                      <TableCell className="text-right font-mono">{row.quantity}</TableCell>
+                    </TableRow>
+                  )),
+                )}
               </TableBody>
             </Table>
             <p className="mt-4 text-xs leading-relaxed text-muted-foreground text-pretty">
@@ -328,9 +402,9 @@ export default function ImportPage() {
           <CardContent className="flex flex-col items-center gap-4 py-16 text-center">
             <CircleCheck className="size-12 text-profit" aria-hidden="true" />
             <div className="flex flex-col gap-1">
-              <h2 className="text-lg font-semibold">导入完成（演示）</h2>
+              <h2 className="text-lg font-semibold">导入完成</h2>
               <p className="text-sm text-muted-foreground text-pretty">
-                2 个 Trade（6 条 Execution）与图表数据已归入所选 Period。
+                {proposedTrades.filter((trade) => !trade.warning).length} 个 Trade 已归入所选 Period。
               </p>
             </div>
             <div className="flex items-center gap-2">
@@ -341,7 +415,9 @@ export default function ImportPage() {
                 variant="outline"
                 onClick={() => {
                   setStep(0)
-                  setUploaded({ trades: false, chart: false, reference: false })
+                  setFiles({})
+                  setProposedTrades([])
+                  setImportError('')
                 }}
               >
                 再导入一批
@@ -358,7 +434,7 @@ export default function ImportPage() {
             <ChevronLeft data-icon="inline-start" />
             上一步
           </Button>
-          <Button disabled={!canNext} onClick={() => setStep((s) => s + 1)}>
+          <Button disabled={!canNext} onClick={() => void handleNext()}>
             {step === 2 ? '确认导入' : '下一步'}
             <ChevronRight data-icon="inline-end" />
           </Button>
