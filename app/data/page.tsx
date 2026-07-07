@@ -22,6 +22,10 @@ function monthValue(date = new Date()) {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`
 }
 
+function monthValueFromTime(time: number) {
+  return monthValue(new Date(time))
+}
+
 function monthRange(value: string) {
   const [year, month] = value.split('-').map(Number)
   const start = Date.UTC(year, month - 1, 1)
@@ -142,6 +146,48 @@ export default function DataPage() {
       return { trade, start, end, covered }
     })
     .filter((item) => item.start <= range.end && item.end >= range.start)
+
+  const coverageBacklog = useMemo(() => {
+    const monthsBySymbol = new Map<string, Set<string>>()
+    for (const symbol of symbols) monthsBySymbol.set(symbol.id, new Set())
+    for (const trade of trades) {
+      const set = monthsBySymbol.get(trade.symbolId)
+      if (!set) continue
+      trade.executions.forEach((execution) => set.add(monthValueFromTime(execution.time)))
+    }
+    for (const candle of chartCandles) {
+      if (candle.timeframe !== timeframe) continue
+      const set = monthsBySymbol.get(candle.symbolId)
+      if (!set) continue
+      set.add(monthValueFromTime(candle.time))
+    }
+
+    return [...monthsBySymbol.entries()]
+      .flatMap(([candidateSymbolId, months]) =>
+        [...months].map((candidateMonth) => {
+          const candidateRange = monthRange(candidateMonth)
+          const expected = Math.floor((candidateRange.end - candidateRange.start + 1) / intervalMs)
+          const count = chartCandles.filter((item) =>
+            item.symbolId === candidateSymbolId &&
+            item.timeframe === timeframe &&
+            item.time >= candidateRange.start &&
+            item.time <= candidateRange.end
+          ).length
+          const missing = Math.max(0, expected - count)
+          return {
+            symbolId: candidateSymbolId,
+            month: candidateMonth,
+            count,
+            expected,
+            missing,
+            pct: expected > 0 ? count / expected : 0,
+          }
+        }),
+      )
+      .filter((item) => item.expected > 0 && item.missing > 0)
+      .sort((a, b) => a.pct - b.pct || b.missing - a.missing || a.month.localeCompare(b.month))
+      .slice(0, 12)
+  }, [chartCandles, intervalMs, symbols, timeframe, trades])
 
   async function handleImport(file?: File) {
     if (!file || !symbolId) return
@@ -301,6 +347,43 @@ export default function DataPage() {
       </Card>
 
       {message && <p className="text-sm text-muted-foreground">{message}</p>}
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">待补数据</CardTitle>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-2">
+          {coverageBacklog.length === 0 ? (
+            <p className="text-sm text-muted-foreground">当前周期下，没有发现需要优先补齐的月份。</p>
+          ) : (
+            coverageBacklog.map((item) => (
+              <button
+                key={`${item.symbolId}-${item.month}`}
+                type="button"
+                onClick={() => {
+                  setSymbolId(item.symbolId)
+                  setMonth(item.month)
+                }}
+                className={cn(
+                  'grid grid-cols-1 gap-2 rounded-md border px-3 py-2 text-left transition-colors hover:bg-muted/50 md:grid-cols-[1fr_auto]',
+                  item.symbolId === symbolId && item.month === month && 'border-ring bg-muted/40',
+                )}
+              >
+                <span className="flex min-w-0 flex-col gap-1">
+                  <span className="font-medium">{symbolLabel(item.symbolId)} · {item.month}</span>
+                  <span className="text-xs text-muted-foreground">
+                    {chartTimeframeLabel(timeframe)} · 已有 {item.count} / {item.expected} 根
+                  </span>
+                </span>
+                <span className="flex items-center gap-2 text-sm">
+                  <Badge variant="destructive">缺 {item.missing} 根</Badge>
+                  <span className="font-mono text-xs text-muted-foreground">{Math.round(item.pct * 100)}%</span>
+                </span>
+              </button>
+            ))
+          )}
+        </CardContent>
+      </Card>
 
       <div className="grid grid-cols-1 gap-6 xl:grid-cols-3">
         <Card className="xl:col-span-2">
