@@ -12,6 +12,23 @@ export function EquitySection() {
   const { accounts, trades } = useCairn()
   const [accountId, setAccountId] = useState(accounts[0]?.id ?? '')
 
+  const { curve, dd, account } = useMemo(() => {
+    const account = accounts.find((a) => a.id === accountId) ?? accounts[0]
+    if (!account) {
+      return {
+        curve: [],
+        dd: { maxDrawdown: 0, maxDrawdownPct: 0 },
+        account: null,
+      }
+    }
+    const curve = computeEquityCurve(
+      trades.filter((t) => t.accountId === account.id),
+      account.initialBalance,
+    )
+    const dd = computeMaxDrawdown(curve)
+    return { curve, dd, account }
+  }, [accountId, accounts, trades])
+
   if (accounts.length === 0) {
     return (
       <Card>
@@ -26,15 +43,7 @@ export function EquitySection() {
     )
   }
 
-  const { curve, dd, account } = useMemo(() => {
-    const account = accounts.find((a) => a.id === accountId) ?? accounts[0]
-    const curve = computeEquityCurve(
-      trades.filter((t) => t.accountId === account.id),
-      account.initialBalance,
-    )
-    const dd = computeMaxDrawdown(curve)
-    return { curve, dd, account }
-  }, [accountId, accounts, trades])
+  if (!account) return null
 
   const latest = curve.length > 0 ? curve[curve.length - 1].equity : account.initialBalance
 

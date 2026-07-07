@@ -1,4 +1,5 @@
 mod db;
+mod diagnostics;
 
 use serde_json::Value;
 use tauri::{
@@ -51,18 +52,38 @@ fn export_backup(app: AppHandle, db: State<'_, db::Db>) -> Result<String, String
     db::export_backup(&app, &db).map(|path| path.to_string_lossy().to_string())
 }
 
+#[tauri::command]
+fn frontend_log(app: AppHandle, message: String) {
+    diagnostics::app_log(&app, format!("frontend: {message}"));
+}
+
 pub fn run() {
+    diagnostics::install_panic_hook();
+    diagnostics::write_temp("Cairn process starting");
+
     tauri::Builder::default()
         .setup(|app| {
-            let db = db::init(app.handle())?;
+            diagnostics::app_log(app.handle(), "setup started");
+            let db = db::init(app.handle()).map_err(|err| {
+                diagnostics::app_log(app.handle(), format!("db init failed: {err}"));
+                err
+            })?;
+            diagnostics::app_log(app.handle(), "db init ok");
             app.manage(db);
-            setup_tray(app)?;
+            setup_tray(app).map_err(|err| {
+                diagnostics::app_log(app.handle(), format!("tray setup failed: {err}"));
+                err
+            })?;
+            diagnostics::app_log(app.handle(), "tray setup ok");
             Ok(())
         })
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
-                let _ = window.hide();
-                api.prevent_close();
+                if window.label() == "main" {
+                    api.prevent_close();
+                    diagnostics::app_log(window.app_handle(), "main window close requested; hiding to tray");
+                    let _ = window.hide();
+                }
             }
         })
         .invoke_handler(tauri::generate_handler![
@@ -72,7 +93,8 @@ pub fn run() {
             delete_record,
             replace_collection,
             restore_state,
-            export_backup
+            export_backup,
+            frontend_log
         ])
         .run(tauri::generate_context!())
         .expect("failed to run Cairn");
@@ -100,6 +122,8 @@ fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
 
     if let Some(icon) = app.default_window_icon() {
         tray = tray.icon(icon.clone());
+    } else {
+        diagnostics::app_log(app.handle(), "default window icon missing for tray");
     }
 
     tray.build(app)?;

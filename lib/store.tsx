@@ -10,6 +10,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useState } 
 import { loadLocalState, saveLocalRecord, deleteLocalRecord, restoreLocalState, exportLocalBackup } from './local-db'
 import type { CairnStateSnapshot } from './seed'
 import { seedState } from './seed'
+import { logFrontendError, logFrontendMessage } from './frontend-log'
 import type { Account, Period, Trade, TagDef, TagColor } from './types'
 
 /* ---------- Context ---------- */
@@ -171,10 +172,12 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
     loadLocalState()
       .then((snapshot) => {
         if (cancelled) return
+        void logFrontendMessage(`local state loaded: accounts=${snapshot.accounts.length}, periods=${snapshot.periods.length}, trades=${snapshot.trades.length}`)
         applySnapshot(snapshot)
       })
       .catch((err) => {
         console.error('Failed to load local CAIRN state', err)
+        void logFrontendError(`local state load failed: ${err instanceof Error ? err.stack : String(err)}`)
       })
     return () => {
       cancelled = true
