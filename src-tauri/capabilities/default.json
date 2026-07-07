@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Default desktop permissions for CAIRN",
+  "description": "Default desktop permissions for Cairn",
   "windows": ["main"],
   "permissions": ["core:default"]
 }

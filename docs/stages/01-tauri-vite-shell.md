@@ -35,4 +35,5 @@ Move the app from Next.js to a Tauri 2 desktop shell using Vite + React, without
 - Existing pages remain in `app/` and are rendered through `src/App.tsx`.
 - Existing layout structure is preserved in the Vite root shell.
 - Tauri 2 Rust shell exists under `src-tauri/`.
-- Initial CAIRN SVG logo and Tauri Windows icon assets exist so the native shell can compile.
+- Initial Cairn SVG logo and Tauri Windows icon assets exist so the native shell can compile.
+- Vite uses relative asset paths (`base: './'`) so release builds load bundled JS/CSS correctly inside Tauri.

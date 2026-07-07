@@ -1,6 +1,6 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
-  "productName": "CAIRN",
+  "productName": "Cairn",
   "version": "0.1.0",
   "identifier": "app.cairn.desktop",
   "build": {
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "CAIRN",
+        "title": "Cairn",
         "width": 1280,
         "height": 820,
         "minWidth": 1024,

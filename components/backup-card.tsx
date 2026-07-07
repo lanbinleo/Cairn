@@ -45,7 +45,7 @@ export function BackupCard() {
     <Card>
       <CardHeader>
         <CardTitle className="text-base">备份</CardTitle>
-        <CardDescription>导出或恢复本地 CAIRN 数据</CardDescription>
+        <CardDescription>导出或恢复本地 Cairn 数据</CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-3">
         <div className="flex flex-wrap items-center gap-2">
@@ -60,7 +60,7 @@ export function BackupCard() {
           <Button
             variant="destructive"
             onClick={() => {
-              if (window.confirm('清空 CAIRN 的所有本地数据？')) {
+              if (window.confirm('清空 Cairn 的所有本地数据？')) {
                 void restoreState(emptyState).then(() => setMessage('已清空所有本地数据。'))
               }
             }}

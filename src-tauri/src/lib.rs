@@ -4,7 +4,7 @@ use serde_json::Value;
 use tauri::{
     menu::{Menu, MenuItem},
     tray::TrayIconBuilder,
-    AppHandle, Manager, State,
+    AppHandle, Manager, State, WindowEvent,
 };
 
 #[tauri::command]
@@ -59,6 +59,12 @@ pub fn run() {
             setup_tray(app)?;
             Ok(())
         })
+        .on_window_event(|window, event| {
+            if let WindowEvent::CloseRequested { api, .. } = event {
+                let _ = window.hide();
+                api.prevent_close();
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             app_ready,
             load_state,
@@ -69,16 +75,16 @@ pub fn run() {
             export_backup
         ])
         .run(tauri::generate_context!())
-        .expect("failed to run CAIRN");
+        .expect("failed to run Cairn");
 }
 
 fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
-    let open = MenuItem::with_id(app, "open", "打开 CAIRN", true, None::<&str>)?;
+    let open = MenuItem::with_id(app, "open", "打开 Cairn", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&open, &quit])?;
 
-    TrayIconBuilder::new()
-        .tooltip("CAIRN")
+    let mut tray = TrayIconBuilder::new()
+        .tooltip("Cairn")
         .menu(&menu)
         .show_menu_on_left_click(true)
         .on_menu_event(|app, event| match event.id.as_ref() {
@@ -90,8 +96,13 @@ fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
             }
             "quit" => app.exit(0),
             _ => {}
-        })
-        .build(app)?;
+        });
+
+    if let Some(icon) = app.default_window_icon() {
+        tray = tray.icon(icon.clone());
+    }
+
+    tray.build(app)?;
 
     Ok(())
 }
