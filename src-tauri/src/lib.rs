@@ -1,7 +1,11 @@
 mod db;
 
 use serde_json::Value;
-use tauri::{AppHandle, Manager, State};
+use tauri::{
+    menu::{Menu, MenuItem},
+    tray::TrayIconBuilder,
+    AppHandle, Manager, State,
+};
 
 #[tauri::command]
 fn app_ready() -> &'static str {
@@ -52,6 +56,7 @@ pub fn run() {
         .setup(|app| {
             let db = db::init(app.handle())?;
             app.manage(db);
+            setup_tray(app)?;
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -65,4 +70,28 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("failed to run CAIRN");
+}
+
+fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
+    let open = MenuItem::with_id(app, "open", "打开 CAIRN", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
+    let menu = Menu::with_items(app, &[&open, &quit])?;
+
+    TrayIconBuilder::new()
+        .tooltip("CAIRN")
+        .menu(&menu)
+        .show_menu_on_left_click(true)
+        .on_menu_event(|app, event| match event.id.as_ref() {
+            "open" => {
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.show();
+                    let _ = window.set_focus();
+                }
+            }
+            "quit" => app.exit(0),
+            _ => {}
+        })
+        .build(app)?;
+
+    Ok(())
 }

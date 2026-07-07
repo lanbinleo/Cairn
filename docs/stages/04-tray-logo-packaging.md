@@ -15,6 +15,11 @@ Add desktop polish and cross-platform packaging configuration.
 - Add system tray integration.
 - Tray should support opening/showing the app and quitting.
 
+Current implementation:
+
+- Tauri tray is enabled with the `tray-icon` feature.
+- Tray menu includes opening the main window and quitting the app.
+
 ## Packaging
 
 - Primary: Windows and macOS.
