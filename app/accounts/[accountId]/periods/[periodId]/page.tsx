@@ -1,8 +1,6 @@
 'use client'
 
-import { use } from 'react'
-import Link from 'next/link'
-import { notFound } from 'next/navigation'
+import { Link, Navigate, useParams } from 'react-router-dom'
 import { ChevronRight } from 'lucide-react'
 
 import { PnlText } from '@/components/pnl-text'
@@ -17,16 +15,12 @@ import { useCairn } from '@/lib/store'
 import { computeStats, computeEquityCurve } from '@/lib/metrics'
 import { fmtMoney, fmtPct, fmtDateRange } from '@/lib/format'
 
-export default function PeriodDetailPage({
-  params,
-}: {
-  params: Promise<{ accountId: string; periodId: string }>
-}) {
-  const { accountId, periodId } = use(params)
+export default function PeriodDetailPage() {
+  const { accountId = '', periodId = '' } = useParams()
   const { getAccount, getPeriod, trades } = useCairn()
   const account = getAccount(accountId)
   const period = getPeriod(periodId)
-  if (!account || !period || period.accountId !== account.id) notFound()
+  if (!account || !period || period.accountId !== account.id) return <Navigate to="/accounts" replace />
 
   const periodTrades = trades.filter((t) => t.periodId === period.id)
   const stats = computeStats(periodTrades, account.initialBalance)
@@ -37,11 +31,11 @@ export default function PeriodDetailPage({
       <header className="flex flex-wrap items-start justify-between gap-4">
         <div className="flex flex-col gap-1">
         <nav className="flex items-center gap-1.5 text-sm text-muted-foreground" aria-label="面包屑">
-          <Link href="/accounts" className="transition-colors hover:text-foreground">
+          <Link to="/accounts" className="transition-colors hover:text-foreground">
             账户
           </Link>
           <ChevronRight className="size-3.5" aria-hidden="true" />
-          <Link href={`/accounts/${account.id}`} className="transition-colors hover:text-foreground">
+          <Link to={`/accounts/${account.id}`} className="transition-colors hover:text-foreground">
             {account.name}
           </Link>
           <ChevronRight className="size-3.5" aria-hidden="true" />

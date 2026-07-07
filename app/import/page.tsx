@@ -1,7 +1,7 @@
 'use client'
 
 import { useState } from 'react'
-import Link from 'next/link'
+import { Link, useNavigate } from 'react-router-dom'
 import {
   Check,
   ChevronLeft,
@@ -78,6 +78,7 @@ const fileSlots = [
 type SlotKey = (typeof fileSlots)[number]['key']
 
 export default function ImportPage() {
+  const navigate = useNavigate()
   const [step, setStep] = useState(0)
   const [accountId, setAccountId] = useState(accounts[0].id)
   const [periodId, setPeriodId] = useState('')
@@ -332,10 +333,8 @@ export default function ImportPage() {
               </p>
             </div>
             <div className="flex items-center gap-2">
-              <Button asChild>
-                <Link href={periodId ? `/accounts/${accountId}/periods/${periodId}` : '/accounts'}>
-                  查看 Period
-                </Link>
+              <Button onClick={() => navigate(periodId ? `/accounts/${accountId}/periods/${periodId}` : '/accounts')}>
+                查看 Period
               </Button>
               <Button
                 variant="outline"

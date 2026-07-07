@@ -1,6 +1,6 @@
 'use client'
 
-import Link from 'next/link'
+import { Link } from 'react-router-dom'
 import { Badge } from '@/components/ui/badge'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { PnlText, RText } from '@/components/pnl-text'
@@ -76,7 +76,7 @@ export function TradesTable({
                 <TradeTitle trade={trade} className="text-sm" />
               </TableCell>
               <TableCell>
-                <Link href={`/trades/${trade.id}`} className="block font-mono text-muted-foreground group-hover:text-foreground">
+                <Link to={`/trades/${trade.id}`} className="block font-mono text-muted-foreground group-hover:text-foreground">
                   {symbolLabel(trade.symbolId)}
                 </Link>
               </TableCell>

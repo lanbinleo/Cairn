@@ -1,6 +1,6 @@
 'use client'
 
-import Link from 'next/link'
+import { Link } from 'react-router-dom'
 import { ArrowUpRight } from 'lucide-react'
 
 import { PageHeader } from '@/components/page-header'
@@ -68,7 +68,7 @@ export default function DashboardPage() {
             <CardTitle className="text-base">账户</CardTitle>
             <CardAction>
               <Link
-                href="/accounts"
+                to="/accounts"
                 className="inline-flex items-center gap-1 text-sm text-muted-foreground transition-colors hover:text-foreground"
               >
                 全部
@@ -84,7 +84,7 @@ export default function DashboardPage() {
               return (
                 <Link
                   key={account.id}
-                  href={`/accounts/${account.id}`}
+                  to={`/accounts/${account.id}`}
                   className="flex items-center gap-3 rounded-lg px-2 py-2.5 transition-colors hover:bg-muted/60"
                 >
                   <div className="flex min-w-0 flex-1 flex-col gap-0.5">
@@ -115,7 +115,7 @@ export default function DashboardPage() {
             <CardTitle className="text-base">近期 Period</CardTitle>
             <CardAction>
               <Link
-                href="/accounts"
+                to="/accounts"
                 className="inline-flex items-center gap-1 text-sm text-muted-foreground transition-colors hover:text-foreground"
               >
                 管理
@@ -131,7 +131,7 @@ export default function DashboardPage() {
               return (
                 <Link
                   key={period.id}
-                  href={`/accounts/${period.accountId}/periods/${period.id}`}
+                  to={`/accounts/${period.accountId}/periods/${period.id}`}
                   className="flex items-center gap-3 rounded-lg px-2 py-2.5 transition-colors hover:bg-muted/60"
                 >
                   <div className="flex min-w-0 flex-1 flex-col gap-0.5">
@@ -164,7 +164,7 @@ export default function DashboardPage() {
           <CardTitle className="text-base">近期交易</CardTitle>
           <CardAction>
             <Link
-              href="/trades"
+              to="/trades"
               className="inline-flex items-center gap-1 text-sm text-muted-foreground transition-colors hover:text-foreground"
             >
               全部交易

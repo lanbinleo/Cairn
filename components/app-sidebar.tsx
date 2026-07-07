@@ -1,7 +1,6 @@
 'use client'
 
-import Link from 'next/link'
-import { usePathname } from 'next/navigation'
+import { Link, useLocation } from 'react-router-dom'
 import { useTheme } from 'next-themes'
 import { useEffect, useState } from 'react'
 import {
@@ -11,7 +10,6 @@ import {
   NotebookPen,
   Upload,
   Settings,
-  Mountain,
   Sun,
   Moon,
 } from 'lucide-react'
@@ -28,7 +26,7 @@ const navItems = [
 ]
 
 export function AppSidebar() {
-  const pathname = usePathname()
+  const { pathname } = useLocation()
   const { resolvedTheme, setTheme } = useTheme()
   const [mounted, setMounted] = useState(false)
 
@@ -42,9 +40,7 @@ export function AppSidebar() {
   return (
     <aside className="fixed inset-y-0 left-0 z-30 flex w-56 flex-col border-r border-sidebar-border bg-sidebar">
       <div className="flex h-16 items-center gap-2.5 px-5">
-        <div className="flex size-8 items-center justify-center rounded-lg bg-primary text-primary-foreground">
-          <Mountain className="size-4.5" />
-        </div>
+        <img src="/cairn-logo.svg" alt="" className="size-8 rounded-lg" />
         <span className="text-lg font-semibold tracking-tight text-sidebar-foreground">Cairn</span>
       </div>
 
@@ -55,7 +51,7 @@ export function AppSidebar() {
           return (
             <Link
               key={item.href}
-              href={item.href}
+              to={item.href}
               aria-current={active ? 'page' : undefined}
               className={cn(
                 'flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors',

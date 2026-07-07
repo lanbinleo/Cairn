@@ -1,4 +1,4 @@
-import Link from 'next/link'
+import { Link, useSearchParams } from 'react-router-dom'
 import { Plus, NotebookPen } from 'lucide-react'
 
 import { PageHeader } from '@/components/page-header'
@@ -11,12 +11,9 @@ import { notes } from '@/lib/mock-data'
 import { fmtUtcDate } from '@/lib/format'
 import { cn } from '@/lib/utils'
 
-export default async function NotesPage({
-  searchParams,
-}: {
-  searchParams: Promise<{ note?: string }>
-}) {
-  const { note: noteParam } = await searchParams
+export default function NotesPage() {
+  const [searchParams] = useSearchParams()
+  const noteParam = searchParams.get('note') ?? undefined
   const sorted = [...notes].sort((a, b) => b.updatedAt - a.updatedAt)
   const active = sorted.find((n) => n.id === noteParam) ?? sorted[0]
 
@@ -50,7 +47,7 @@ export default async function NotesPage({
             {sorted.map((note) => (
               <Link
                 key={note.id}
-                href={`/notes?note=${note.id}`}
+                to={`/notes?note=${note.id}`}
                 className={cn(
                   'flex flex-col gap-1.5 rounded-lg border p-4 transition-colors',
                   note.id === active?.id

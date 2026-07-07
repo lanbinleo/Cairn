@@ -1,7 +1,6 @@
 'use client'
 
 import type { ReactNode } from 'react'
-import Image from 'next/image'
 
 import { TradeTitle } from '@/components/trade-title'
 import { useCairn } from '@/lib/store'
@@ -30,12 +29,10 @@ function renderInline(text: string, keyPrefix: string): ReactNode[] {
         out.push(<TradeMention key={`${keyPrefix}-m${i}`} tradeId={mention[2]} />)
       } else {
         out.push(
-          <Image
+          <img
             key={`${keyPrefix}-m${i}`}
             src={mention[2] || "/placeholder.svg"}
             alt="笔记引用图片"
-            width={800}
-            height={500}
             className="my-2 w-full max-w-xl rounded-lg border"
           />,
         )

@@ -1,6 +1,6 @@
 'use client'
 
-import Link from 'next/link'
+import { Link } from 'react-router-dom'
 
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { computeTradeMetrics } from '@/lib/metrics'
@@ -47,7 +47,7 @@ export function TradeTitle({
       <TooltipTrigger
         render={
           link ? (
-            <Link href={`/trades/${trade.id}`} className="transition-opacity hover:opacity-70">
+            <Link to={`/trades/${trade.id}`} className="transition-opacity hover:opacity-70">
               {label}
             </Link>
           ) : (

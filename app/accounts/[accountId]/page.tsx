@@ -1,8 +1,6 @@
 'use client'
 
-import { use } from 'react'
-import Link from 'next/link'
-import { notFound } from 'next/navigation'
+import { Link, Navigate, useParams } from 'react-router-dom'
 import { ChevronRight, Plus } from 'lucide-react'
 
 import { PnlText } from '@/components/pnl-text'
@@ -18,15 +16,11 @@ import { useCairn } from '@/lib/store'
 import { computeStats, computeEquityCurve } from '@/lib/metrics'
 import { fmtMoney, fmtPct, fmtDateRange, fmtUtcDate } from '@/lib/format'
 
-export default function AccountDetailPage({
-  params,
-}: {
-  params: Promise<{ accountId: string }>
-}) {
-  const { accountId } = use(params)
+export default function AccountDetailPage() {
+  const { accountId = '' } = useParams()
   const { getAccount, periods, trades } = useCairn()
   const account = getAccount(accountId)
-  if (!account) notFound()
+  if (!account) return <Navigate to="/accounts" replace />
 
   const accountTrades = trades.filter((t) => t.accountId === account.id)
   const stats = computeStats(accountTrades, account.initialBalance)
@@ -41,7 +35,7 @@ export default function AccountDetailPage({
       <header className="flex flex-wrap items-start justify-between gap-4">
         <div className="flex flex-col gap-1">
           <nav className="flex items-center gap-1.5 text-sm text-muted-foreground" aria-label="面包屑">
-            <Link href="/accounts" className="transition-colors hover:text-foreground">
+            <Link to="/accounts" className="transition-colors hover:text-foreground">
               账户
             </Link>
             <ChevronRight className="size-3.5" aria-hidden="true" />
@@ -115,7 +109,7 @@ export default function AccountDetailPage({
                 <div className="flex min-w-0 flex-1 flex-col gap-1">
                   <div className="flex items-center gap-2">
                     <Link
-                      href={`/accounts/${account.id}/periods/${period.id}`}
+                      to={`/accounts/${account.id}/periods/${period.id}`}
                       className="font-medium after:absolute after:inset-0"
                     >
                       {period.name}

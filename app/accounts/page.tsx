@@ -1,6 +1,6 @@
 'use client'
 
-import Link from 'next/link'
+import { Link } from 'react-router-dom'
 import { ChevronRight, Plus } from 'lucide-react'
 
 import { PageHeader } from '@/components/page-header'
@@ -45,7 +45,7 @@ export default function AccountsPage() {
                     <div className="flex flex-col gap-1">
                       <div className="flex items-center gap-2">
                         <h2 className="text-base font-semibold">
-                          <Link href={`/accounts/${account.id}`} className="after:absolute after:inset-0">
+                          <Link to={`/accounts/${account.id}`} className="after:absolute after:inset-0">
                             {account.name}
                           </Link>
                         </h2>

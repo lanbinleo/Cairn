@@ -1,9 +1,6 @@
 'use client'
 
-import { use } from 'react'
-import Link from 'next/link'
-import Image from 'next/image'
-import { notFound } from 'next/navigation'
+import { Link, Navigate, useParams } from 'react-router-dom'
 import { CheckCircle2, ChevronRight, RotateCcw } from 'lucide-react'
 
 import { TradeChart } from '@/components/trade-chart'
@@ -43,15 +40,11 @@ const eventLabel: Record<string, string> = {
   'tp-move': '移动止盈',
 }
 
-export default function TradeDetailPage({
-  params,
-}: {
-  params: Promise<{ tradeId: string }>
-}) {
-  const { tradeId } = use(params)
+export default function TradeDetailPage() {
+  const { tradeId = '' } = useParams()
   const { getTrade, getAccount, getPeriod, setTradeStatus } = useCairn()
   const trade = getTrade(tradeId)
-  if (!trade) notFound()
+  if (!trade) return <Navigate to="/trades" replace />
 
   const account = getAccount(trade.accountId)
   const period = getPeriod(trade.periodId)
@@ -82,7 +75,7 @@ export default function TradeDetailPage({
       <header className="flex flex-wrap items-start justify-between gap-4">
         <div className="flex flex-col gap-1.5">
           <nav className="flex items-center gap-1.5 text-sm text-muted-foreground" aria-label="面包屑">
-            <Link href="/trades" className="transition-colors hover:text-foreground">
+            <Link to="/trades" className="transition-colors hover:text-foreground">
               交易
             </Link>
             <ChevronRight className="size-3.5" aria-hidden="true" />
@@ -190,12 +183,10 @@ export default function TradeDetailPage({
               </CardHeader>
               <CardContent className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                 {trade.referenceImages.map((src, i) => (
-                  <Image
+                  <img
                     key={src + i}
                     src={src || "/placeholder.svg"}
                     alt={`交易 #${trade.seq} 参考图 ${i + 1}`}
-                    width={800}
-                    height={500}
                     className="w-full rounded-lg border"
                   />
                 ))}
@@ -289,7 +280,7 @@ export default function TradeDetailPage({
                 mentioningNotes.map((note) => (
                   <Link
                     key={note.id}
-                    href={`/notes?note=${note.id}`}
+                    to={`/notes?note=${note.id}`}
                     className="flex flex-col gap-0.5 rounded-lg px-2 py-2 transition-colors hover:bg-muted/60"
                   >
                     <span className="text-sm font-medium">{note.title}</span>
@@ -306,14 +297,14 @@ export default function TradeDetailPage({
             </CardHeader>
             <CardContent className="flex flex-col gap-2 text-sm">
               <Link
-                href={`/accounts/${trade.accountId}`}
+                to={`/accounts/${trade.accountId}`}
                 className="flex items-center justify-between rounded-lg px-2 py-1.5 transition-colors hover:bg-muted/60"
               >
                 <span className="text-muted-foreground">账户</span>
                 <span className="font-medium">{account?.name}</span>
               </Link>
               <Link
-                href={`/accounts/${trade.accountId}/periods/${trade.periodId}`}
+                to={`/accounts/${trade.accountId}/periods/${trade.periodId}`}
                 className="flex items-center justify-between rounded-lg px-2 py-1.5 transition-colors hover:bg-muted/60"
               >
                 <span className="text-muted-foreground">Period</span>

@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-label="CAIRN logo">
+  <rect width="256" height="256" rx="56" fill="#2f65d5"/>
+  <path d="M48 179L93 82L123 140L148 104L208 179H48Z" fill="#f8fafc"/>
+  <path d="M73 169L102 109L124 151L148 119L184 169H73Z" fill="#2f65d5" opacity="0.18"/>
+  <path d="M64 190H192" stroke="#f8fafc" stroke-width="14" stroke-linecap="round"/>
+</svg>

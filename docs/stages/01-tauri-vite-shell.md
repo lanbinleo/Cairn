@@ -28,3 +28,11 @@ Move the app from Next.js to a Tauri 2 desktop shell using Vite + React, without
 - `pnpm typecheck`
 - `pnpm build`
 - `cargo check` in `src-tauri`
+
+## Result
+
+- Next.js runtime has been replaced by Vite + React Router.
+- Existing pages remain in `app/` and are rendered through `src/App.tsx`.
+- Existing layout structure is preserved in the Vite root shell.
+- Tauri 2 Rust shell exists under `src-tauri/`.
+- Initial CAIRN SVG logo and Tauri Windows icon assets exist so the native shell can compile.
