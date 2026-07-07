@@ -32,6 +32,8 @@ pub struct AppState {
     pub tag_defs: Vec<Value>,
     pub import_batches: Vec<Value>,
     pub attachments: Vec<Value>,
+    pub chart_imports: Vec<Value>,
+    pub chart_candles: Vec<Value>,
 }
 
 pub fn init(app: &AppHandle) -> Result<Db, String> {
@@ -125,6 +127,26 @@ fn migrate(conn: &Connection) -> Result<(), String> {
           deleted_at INTEGER
         );
 
+        CREATE TABLE IF NOT EXISTS chart_imports (
+          id TEXT PRIMARY KEY,
+          symbol_id TEXT,
+          timeframe TEXT,
+          status TEXT,
+          data TEXT NOT NULL,
+          updated_at INTEGER NOT NULL,
+          deleted_at INTEGER
+        );
+
+        CREATE TABLE IF NOT EXISTS chart_candles (
+          id TEXT PRIMARY KEY,
+          symbol_id TEXT,
+          timeframe TEXT,
+          time INTEGER,
+          data TEXT NOT NULL,
+          updated_at INTEGER NOT NULL,
+          deleted_at INTEGER
+        );
+
         CREATE TABLE IF NOT EXISTS notes (
           id TEXT PRIMARY KEY,
           data TEXT NOT NULL,
@@ -165,6 +187,8 @@ fn migrate(conn: &Connection) -> Result<(), String> {
         CREATE INDEX IF NOT EXISTS idx_executions_trade ON executions(trade_id) WHERE deleted_at IS NULL;
         CREATE INDEX IF NOT EXISTS idx_trade_events_trade ON trade_events(trade_id) WHERE deleted_at IS NULL;
         CREATE INDEX IF NOT EXISTS idx_chart_data_trade ON chart_data(trade_id) WHERE deleted_at IS NULL;
+        CREATE INDEX IF NOT EXISTS idx_chart_imports_symbol_timeframe ON chart_imports(symbol_id, timeframe) WHERE deleted_at IS NULL;
+        CREATE INDEX IF NOT EXISTS idx_chart_candles_symbol_timeframe_time ON chart_candles(symbol_id, timeframe, time) WHERE deleted_at IS NULL;
         CREATE INDEX IF NOT EXISTS idx_attachments_owner ON attachments(owner_type, owner_id) WHERE deleted_at IS NULL;
 
         INSERT OR IGNORE INTO schema_migrations(version, name, applied_at)
@@ -187,6 +211,8 @@ pub fn load_or_seed(db: &Db, seed: AppState) -> Result<AppState, String> {
         seed_collection(&tx, "tagDefs", &seed.tag_defs)?;
         seed_collection(&tx, "importBatches", &seed.import_batches)?;
         seed_collection(&tx, "attachments", &seed.attachments)?;
+        seed_collection(&tx, "chartImports", &seed.chart_imports)?;
+        seed_collection(&tx, "chartCandles", &seed.chart_candles)?;
         tx.commit().map_err(|err| err.to_string())?;
     }
 
@@ -243,6 +269,8 @@ pub fn restore_state(db: &Db, state: AppState) -> Result<AppState, String> {
     seed_collection(&tx, "tagDefs", &state.tag_defs)?;
     seed_collection(&tx, "importBatches", &state.import_batches)?;
     seed_collection(&tx, "attachments", &state.attachments)?;
+    seed_collection(&tx, "chartImports", &state.chart_imports)?;
+    seed_collection(&tx, "chartCandles", &state.chart_candles)?;
     tx.commit().map_err(|err| err.to_string())?;
     read_state(&conn)
 }
@@ -347,7 +375,7 @@ fn seed_collection(conn: &Connection, collection: &str, records: &[Value]) -> Re
 fn save_record_in_tx(conn: &Connection, collection: &str, id: &str, data: Value) -> Result<(), String> {
     match collection {
         "trades" => save_trade(conn, id, data),
-        "accounts" | "periods" | "symbols" | "notes" | "tagDefs" | "importBatches" | "attachments" => {
+        "accounts" | "periods" | "symbols" | "notes" | "tagDefs" | "importBatches" | "attachments" | "chartImports" | "chartCandles" => {
             save_simple_record(conn, collection, id, data)
         }
         other => Err(format!("unknown collection: {other}")),
@@ -361,15 +389,18 @@ fn save_simple_record(conn: &Connection, collection: &str, id: &str, data: Value
         "periods" => ("account_id", data.get("accountId").and_then(Value::as_str)),
         "tagDefs" => ("name", data.get("name").and_then(Value::as_str)),
         "attachments" => ("owner_type", data.get("ownerType").and_then(Value::as_str)),
+        "chartImports" | "chartCandles" => ("symbol_id", data.get("symbolId").and_then(Value::as_str)),
         "importBatches" => ("status", data.get("status").and_then(Value::as_str)),
         _ => ("id", None),
     };
     let (col_b, val_b) = match collection {
         "attachments" => ("owner_id", data.get("ownerId").and_then(Value::as_str)),
+        "chartImports" | "chartCandles" => ("timeframe", data.get("timeframe").and_then(Value::as_str)),
         _ => ("id", None),
     };
     let (col_c, val_c) = match collection {
         "attachments" => ("kind", data.get("kind").and_then(Value::as_str)),
+        "chartImports" => ("status", data.get("status").and_then(Value::as_str)),
         _ => ("id", None),
     };
     let (col_d, val_d) = match collection {
@@ -393,6 +424,22 @@ fn save_simple_record(conn: &Connection, collection: &str, id: &str, data: Value
                  ON CONFLICT(id) DO UPDATE SET {col_a}=excluded.{col_a}, {col_b}=excluded.{col_b}, {col_c}=excluded.{col_c}, {col_d}=excluded.{col_d}, data=excluded.data, updated_at=excluded.updated_at, deleted_at=NULL"
             ),
             params![id, val_a, val_b, val_c, val_d, json],
+        ),
+        "chartImports" => conn.execute(
+            &format!(
+                "INSERT INTO {table}(id, {col_a}, {col_b}, {col_c}, data, updated_at, deleted_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, unixepoch() * 1000, NULL)
+                 ON CONFLICT(id) DO UPDATE SET {col_a}=excluded.{col_a}, {col_b}=excluded.{col_b}, {col_c}=excluded.{col_c}, data=excluded.data, updated_at=excluded.updated_at, deleted_at=NULL"
+            ),
+            params![id, val_a, val_b, val_c, json],
+        ),
+        "chartCandles" => conn.execute(
+            &format!(
+                "INSERT INTO {table}(id, {col_a}, {col_b}, time, data, updated_at, deleted_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, unixepoch() * 1000, NULL)
+                 ON CONFLICT(id) DO UPDATE SET {col_a}=excluded.{col_a}, {col_b}=excluded.{col_b}, time=excluded.time, data=excluded.data, updated_at=excluded.updated_at, deleted_at=NULL"
+            ),
+            params![id, val_a, val_b, data.get("time").and_then(Value::as_i64), json],
         ),
         _ => conn.execute(
             &format!(
@@ -539,6 +586,8 @@ fn read_state(conn: &Connection) -> Result<AppState, String> {
         tag_defs: read_simple_collection(conn, "tagDefs")?,
         import_batches: read_simple_collection(conn, "importBatches")?,
         attachments: read_simple_collection(conn, "attachments")?,
+        chart_imports: read_simple_collection(conn, "chartImports")?,
+        chart_candles: read_simple_collection(conn, "chartCandles")?,
     })
 }
 
@@ -655,6 +704,8 @@ fn active_entity_count(conn: &Connection) -> Result<i64, String> {
         "tag_defs",
         "import_batches",
         "attachments",
+        "chart_imports",
+        "chart_candles",
     ];
     let mut total = 0;
     for table in tables {
@@ -718,6 +769,8 @@ fn clear_all_tables(conn: &Connection) -> Result<(), String> {
         "tag_defs",
         "attachments",
         "import_batches",
+        "chart_imports",
+        "chart_candles",
     ] {
         conn.execute(&format!("DELETE FROM {table}"), [])
             .map_err(|err| err.to_string())?;
@@ -735,6 +788,8 @@ fn table_for_collection(collection: &str) -> Result<&'static str, String> {
         "tagDefs" => Ok("tag_defs"),
         "importBatches" => Ok("import_batches"),
         "attachments" => Ok("attachments"),
+        "chartImports" => Ok("chart_imports"),
+        "chartCandles" => Ok("chart_candles"),
         other => Err(format!("unknown collection: {other}")),
     }
 }

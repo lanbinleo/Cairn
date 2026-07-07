@@ -11,7 +11,7 @@ import type { CairnStateSnapshot } from './seed'
 import { seedState } from './seed'
 import { logFrontendError, logFrontendMessage } from './frontend-log'
 import { parseNoteMentions } from './note-mentions'
-import type { Account, Attachment, ImportBatch, Period, Trade, TagDef, TagColor } from './types'
+import type { Account, Attachment, ChartCandle, ChartImport, ChartTimeframe, ImportBatch, Period, Trade, TagDef, TagColor } from './types'
 
 /* ---------- Context ---------- */
 
@@ -22,6 +22,8 @@ interface CairnStore {
   tagDefs: TagDef[]
   importBatches: ImportBatch[]
   attachments: Attachment[]
+  chartImports: ChartImport[]
+  chartCandles: ChartCandle[]
   symbols: typeof seedState.symbols
   notes: typeof seedState.notes
   /* 查询 */
@@ -43,6 +45,8 @@ interface CairnStore {
   createNote: (input: Omit<(typeof seedState.notes)[number], 'id' | 'createdAt' | 'updatedAt'>) => (typeof seedState.notes)[number]
   createTrades: (records: Trade[]) => void
   createImportBatch: (batch: ImportBatch) => void
+  createChartImport: (record: ChartImport, candles: ChartCandle[]) => void
+  getChartCandles: (symbolId: string, timeframe: ChartTimeframe, start?: number, end?: number) => ChartCandle[]
   rollbackImportBatch: (batchId: string) => void
   deleteAccount: (id: string) => void
   deletePeriod: (id: string) => void
@@ -87,6 +91,8 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
   const [tagDefs, setTagDefs] = useState<TagDef[]>(seedState.tagDefs)
   const [importBatches, setImportBatches] = useState<ImportBatch[]>(seedState.importBatches)
   const [attachments, setAttachments] = useState<Attachment[]>(seedState.attachments)
+  const [chartImports, setChartImports] = useState<ChartImport[]>(seedState.chartImports)
+  const [chartCandles, setChartCandles] = useState<ChartCandle[]>(seedState.chartCandles)
 
   const makeId = useCallback((prefix: string) => {
     return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
@@ -132,6 +138,20 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
   const createImportBatch = useCallback((batch: ImportBatch) => {
     setImportBatches((prev) => [...prev, batch])
     void saveLocalRecord('importBatches', batch)
+  }, [])
+
+  const createChartImport = useCallback((record: ChartImport, candles: ChartCandle[]) => {
+    setChartImports((prev) => [record, ...prev.filter((item) => item.id !== record.id)])
+    void saveLocalRecord('chartImports', record)
+    setChartCandles((prev) => {
+      const nextById = new Map(prev.map((item) => [item.id, item]))
+      for (const candle of candles) {
+        const existing = nextById.get(candle.id)
+        nextById.set(candle.id, existing ? { ...existing, importIds: [...new Set([...existing.importIds, ...candle.importIds])] } : candle)
+        void saveLocalRecord('chartCandles', nextById.get(candle.id) as ChartCandle)
+      }
+      return [...nextById.values()].sort((a, b) => a.time - b.time)
+    })
   }, [])
 
   const rollbackImportBatch = useCallback((batchId: string) => {
@@ -205,6 +225,8 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
     setTagDefs(normalized.tagDefs)
     setImportBatches(normalized.importBatches)
     setAttachments(normalized.attachments)
+    setChartImports(normalized.chartImports)
+    setChartCandles(normalized.chartCandles)
   }, [])
 
   const restoreState = useCallback(async (snapshot: CairnStateSnapshot) => {
@@ -354,6 +376,8 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
       tagDefs,
       importBatches,
       attachments,
+      chartImports,
+      chartCandles,
       symbols,
       notes,
       getAccount: (id) => accounts.find((a) => a.id === id),
@@ -377,6 +401,14 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
       createNote,
       createTrades,
       createImportBatch,
+      createChartImport,
+      getChartCandles: (symbolId, timeframe, start, end) =>
+        chartCandles.filter((item) =>
+          item.symbolId === symbolId &&
+          item.timeframe === timeframe &&
+          (start == null || item.time >= start) &&
+          (end == null || item.time <= end)
+        ),
       rollbackImportBatch,
       deleteAccount,
       deletePeriod,
@@ -390,7 +422,7 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
       updateTag,
       deleteTag,
     }),
-    [accounts, periods, trades, tagDefs, importBatches, attachments, symbols, notes, updateAccount, updatePeriod, updateTrade, updateNote, createAccount, createPeriod, createSymbol, createNote, createTrades, createImportBatch, rollbackImportBatch, deleteAccount, deletePeriod, deleteTrade, deleteSymbol, deleteNote, restoreState, exportBackup, setTradeStatus, createTag, updateTag, deleteTag],
+    [accounts, periods, trades, tagDefs, importBatches, attachments, chartImports, chartCandles, symbols, notes, updateAccount, updatePeriod, updateTrade, updateNote, createAccount, createPeriod, createSymbol, createNote, createTrades, createImportBatch, createChartImport, rollbackImportBatch, deleteAccount, deletePeriod, deleteTrade, deleteSymbol, deleteNote, restoreState, exportBackup, setTradeStatus, createTag, updateTag, deleteTag],
   )
 
   return <StoreContext.Provider value={value}>{children}</StoreContext.Provider>

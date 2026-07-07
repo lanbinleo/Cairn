@@ -2,6 +2,9 @@ mod db;
 mod diagnostics;
 mod paths;
 
+use std::fs;
+
+use base64::{engine::general_purpose, Engine as _};
 use serde_json::Value;
 use tauri::{
     menu::{Menu, MenuItem},
@@ -71,6 +74,43 @@ fn frontend_log(app: AppHandle, message: String) {
     diagnostics::app_log(&app, format!("frontend: {message}"));
 }
 
+#[tauri::command]
+fn save_chart_source_file(
+    app: AppHandle,
+    file_name: String,
+    content_base64: String,
+    symbol_label: String,
+    timeframe: String,
+    start_utc: String,
+    end_utc: String,
+) -> Result<String, String> {
+    let bytes = general_purpose::STANDARD
+        .decode(content_base64)
+        .map_err(|err| err.to_string())?;
+    let dir = paths::app_data_dir(&app)?.join("attachments").join("chart-data");
+    fs::create_dir_all(&dir).map_err(|err| err.to_string())?;
+
+    let ext = file_name
+        .rsplit_once('.')
+        .map(|(_, ext)| sanitize_file_part(ext))
+        .filter(|ext| !ext.is_empty())
+        .unwrap_or_else(|| "csv".to_string());
+    let stem = format!(
+        "{}-{}-{}-{}-{}.{}",
+        sanitize_file_part(&symbol_label),
+        sanitize_file_part(&timeframe),
+        sanitize_file_part(&start_utc),
+        sanitize_file_part(&end_utc),
+        chrono::Local::now().timestamp_millis(),
+        ext
+    );
+    let path = dir.join(stem);
+    fs::write(&path, bytes).map_err(|err| err.to_string())?;
+    path.strip_prefix(paths::app_data_dir(&app)?)
+        .map(|relative| relative.to_string_lossy().replace('\\', "/"))
+        .map_err(|err| err.to_string())
+}
+
 pub fn run() {
     diagnostics::install_panic_hook();
     diagnostics::write_temp("Cairn process starting");
@@ -108,10 +148,26 @@ pub fn run() {
             replace_collection,
             restore_state,
             export_backup,
-            frontend_log
+            frontend_log,
+            save_chart_source_file
         ])
         .run(tauri::generate_context!())
         .expect("failed to run Cairn");
+}
+
+fn sanitize_file_part(value: &str) -> String {
+    value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.') {
+                ch
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>()
+        .trim_matches('-')
+        .to_string()
 }
 
 fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {

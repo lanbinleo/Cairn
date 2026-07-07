@@ -9,6 +9,8 @@
 - Added note editor `@` mentions for trades and trade images.
 - Added explicit K-line timeframe selection during import and per-trade chart timeframe switching.
 - Removed synthetic fallback chart rendering from trade details; missing timeframe data now shows an empty chart state.
+- Added a Data page for independent chart-data import, import history, normalized candle storage, monthly coverage, missing interval review, trade coverage checks, and CSV export.
+- Archived imported chart source files under the app data directory in `attachments/chart-data/`.
 - Added Cairn release workflow documentation and a local release check script.
 
 ## Local Data

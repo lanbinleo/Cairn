@@ -10,8 +10,9 @@ The workflow is:
 2. Import TradingView trade exports, optional chart CSV, and reference images.
 3. Review grouped Trades, Executions, TradeEvents, charts, tags, and notes.
 4. Analyze account/period/trade performance.
-5. Create notes that mention trades and trade images.
-6. Back up or restore local data.
+5. Manage imported chart data and coverage.
+6. Create notes that mention trades and trade images.
+7. Back up or restore local data.
 
 ## Platform
 
@@ -159,9 +160,16 @@ The editor supports creating and editing notes. Typing `@` in the note editor op
 
 ## Chart Data
 
-Trade chart data is imported from TradingView OHLC CSV/Excel files. The import flow asks the user to choose the K-line timeframe instead of inferring it from the file name.
+Trade chart data is imported from TradingView OHLC CSV/Excel files. Chart data can be imported together with trades or independently from the Data page. The import flow asks the user to choose the K-line timeframe instead of inferring it from the file name.
 
 Supported display timeframes are 5 minutes, 15 minutes, 1 hour, 4 hours, and 1 day. Existing legacy `chartBars` data is treated as 5-minute chart data. If a trade does not have data for the selected timeframe, the detail page shows an empty chart state instead of generated synthetic bars.
+
+The Data page keeps two layers:
+
+- `chart_imports`: one record per source file import, including parse status, timeframe, row counts, inserted rows, duplicate rows, conflicts, source file path, and UTC start/end.
+- `chart_candles`: the normalized K-line library keyed by symbol, timeframe, and bar time. Duplicate imports do not create duplicate candles.
+
+Imported source files are copied into the app data directory under `attachments/chart-data/` with normalized file names that include symbol, timeframe, and UTC range. The Data page can show monthly coverage, missing intervals, trade coverage checks, and export the normalized candle library.
 
 ## Backup
 

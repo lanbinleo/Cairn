@@ -132,6 +132,31 @@ export interface ChartBar {
   ema20?: number
 }
 
+export interface ChartCandle extends ChartBar {
+  id: string
+  symbolId: string
+  timeframe: ChartTimeframe
+  importIds: string[]
+}
+
+export interface ChartImport {
+  id: string
+  symbolId: string
+  timeframe: ChartTimeframe
+  fileName: string
+  sourcePath?: string
+  status: 'parsed' | 'failed'
+  rowCount: number
+  insertedCount: number
+  duplicateCount: number
+  conflictCount: number
+  startTime?: number
+  endTime?: number
+  detectedIntervalMs?: number
+  error?: string
+  createdAt: number
+}
+
 export interface NoteMention {
   type: 'trade' | 'image'
   /** trade id 或图片 url */

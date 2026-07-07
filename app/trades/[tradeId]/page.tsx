@@ -17,7 +17,7 @@ import { computeTradeMetrics } from '@/lib/metrics'
 import { fmtPrice, fmtDuration, fmtUtcDateTime, fmtUtcDate } from '@/lib/format'
 import { timeToBarIndex } from '@/lib/bar-time'
 import { readFileAsDataUrl } from '@/lib/tradingview-import'
-import { CHART_TIMEFRAMES, chartTimeframeLabel } from '@/lib/chart-timeframes'
+import { CHART_TIMEFRAMES, chartTimeframeLabel, chartTimeframeMinutes } from '@/lib/chart-timeframes'
 import type { ChartTimeframe } from '@/lib/types'
 
 const actionLabel: Record<string, string> = {
@@ -51,7 +51,7 @@ export default function TradeDetailPage() {
   const imageInputRef = useRef<HTMLInputElement | null>(null)
   const [imageEditIndex, setImageEditIndex] = useState<number | null>(null)
   const [chartTimeframe, setChartTimeframe] = useState<ChartTimeframe>('5m')
-  const { getTrade, getAccount, getPeriod, getSymbol, getNotesMentioningTrade, symbolLabel, setTradeStatus, updateTrade, createNote } = useCairn()
+  const { getTrade, getAccount, getPeriod, getSymbol, getNotesMentioningTrade, symbolLabel, setTradeStatus, updateTrade, createNote, getChartCandles } = useCairn()
   const trade = getTrade(tradeId)
   if (!trade) return <Navigate to="/trades" replace />
   const activeTrade = trade
@@ -60,7 +60,12 @@ export default function TradeDetailPage() {
   const period = getPeriod(trade.periodId)
   const symbol = getSymbol(trade.symbolId)
   const m = computeTradeMetrics(trade)
-  const bars = trade.chartData?.[chartTimeframe] ?? (chartTimeframe === '5m' ? trade.chartBars : undefined) ?? []
+  const executionTimes = trade.executions.map((execution) => execution.time)
+  const chartPadding = chartTimeframeMinutes(chartTimeframe) * 60_000 * 80
+  const chartStart = executionTimes.length ? Math.min(...executionTimes) - chartPadding : undefined
+  const chartEnd = executionTimes.length ? Math.max(...executionTimes) + chartPadding : undefined
+  const libraryBars = getChartCandles(trade.symbolId, chartTimeframe, chartStart, chartEnd)
+  const bars = libraryBars.length ? libraryBars : trade.chartData?.[chartTimeframe] ?? (chartTimeframe === '5m' ? trade.chartBars : undefined) ?? []
   const mentioningNotes = getNotesMentioningTrade(trade.id)
 
   function createLinkedNote() {
