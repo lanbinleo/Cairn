@@ -42,3 +42,4 @@ Replace mock state with durable local SQLite data while keeping the existing UI 
 - The first migration creates `schema_migrations` and `records`.
 - Current records are document-shaped by collection so existing TypeScript page models can be preserved during migration.
 - `useCairn()` loads from SQLite through Tauri commands and writes edited records back to SQLite.
+- Account, Period, Trade, Symbol, Note, and Tag create/update/delete paths now persist through the same local SQLite command layer.

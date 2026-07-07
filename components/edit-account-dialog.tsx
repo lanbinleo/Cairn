@@ -1,7 +1,7 @@
 'use client'
 
 import { useState } from 'react'
-import { Pencil } from 'lucide-react'
+import { Pencil, Trash2 } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
 import {
@@ -27,7 +27,7 @@ export function EditAccountDialog({
   account: Account
   size?: 'default' | 'icon-sm'
 }) {
-  const { updateAccount } = useCairn()
+  const { updateAccount, deleteAccount } = useCairn()
   const [open, setOpen] = useState(false)
 
   const [name, setName] = useState(account.name)
@@ -127,6 +127,18 @@ export function EditAccountDialog({
         </FieldGroup>
 
         <DialogFooter>
+          <Button
+            variant="destructive"
+            onClick={() => {
+              if (window.confirm(`删除账户「${account.name}」？相关 Period 和 Trade 也会删除。`)) {
+                deleteAccount(account.id)
+                setOpen(false)
+              }
+            }}
+          >
+            <Trash2 data-icon="inline-start" />
+            删除
+          </Button>
           <Button variant="ghost" onClick={() => setOpen(false)}>
             取消
           </Button>

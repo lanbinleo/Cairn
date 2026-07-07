@@ -1,7 +1,7 @@
 'use client'
 
 import { useState } from 'react'
-import { Check, Pencil, Plus } from 'lucide-react'
+import { Check, Pencil, Plus, Trash2 } from 'lucide-react'
 
 import { TAG_COLORS, tagColorClasses, tagColorNames, tagDotClasses } from '@/components/tag-badge'
 import { Badge } from '@/components/ui/badge'
@@ -24,7 +24,7 @@ import type { TagColor, Trade } from '@/lib/types'
 import { cn } from '@/lib/utils'
 
 export function EditTradeDialog({ trade }: { trade: Trade }) {
-  const { updateTrade, tagDefs, createTag } = useCairn()
+  const { updateTrade, deleteTrade, tagDefs, createTag } = useCairn()
   const [open, setOpen] = useState(false)
 
   /* 表单状态：打开时从 trade 初始化 */
@@ -175,6 +175,18 @@ export function EditTradeDialog({ trade }: { trade: Trade }) {
         </FieldGroup>
 
         <DialogFooter>
+          <Button
+            variant="destructive"
+            onClick={() => {
+              if (window.confirm(`删除 Trade #${trade.seq}？`)) {
+                deleteTrade(trade.id)
+                setOpen(false)
+              }
+            }}
+          >
+            <Trash2 data-icon="inline-start" />
+            删除
+          </Button>
           <Button variant="ghost" onClick={() => setOpen(false)}>
             取消
           </Button>

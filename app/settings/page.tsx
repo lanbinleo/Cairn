@@ -2,11 +2,13 @@
 
 import { useTheme } from 'next-themes'
 import { useEffect, useState } from 'react'
+import { Trash2 } from 'lucide-react'
 
 import { PageHeader } from '@/components/page-header'
 import { CreateSymbolDialog } from '@/components/create-symbol-dialog'
 import { BackupCard } from '@/components/backup-card'
 import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Label } from '@/components/ui/label'
 import {
@@ -36,7 +38,7 @@ const categoryLabel: Record<string, string> = {
 
 export default function SettingsPage() {
   const { theme, setTheme } = useTheme()
-  const { symbols, trades } = useCairn()
+  const { symbols, trades, deleteSymbol } = useCairn()
   const [mounted, setMounted] = useState(false)
   useEffect(() => setMounted(true), [])
 
@@ -61,6 +63,7 @@ export default function SettingsPage() {
                 <TableHead>类别</TableHead>
                 <TableHead className="text-right">价格精度</TableHead>
                 <TableHead className="text-right">关联交易</TableHead>
+                <TableHead className="w-10" />
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -78,6 +81,18 @@ export default function SettingsPage() {
                   </TableCell>
                   <TableCell className="text-right font-mono text-muted-foreground">
                     {trades.filter((t) => t.symbolId === s.id).length}
+                  </TableCell>
+                  <TableCell className="text-right">
+                    <Button
+                      variant="ghost"
+                      size="icon-sm"
+                      aria-label={`删除品种 ${s.exchange}:${s.code}`}
+                      onClick={() => {
+                        if (window.confirm(`删除品种「${s.exchange}:${s.code}」？`)) deleteSymbol(s.id)
+                      }}
+                    >
+                      <Trash2 />
+                    </Button>
                   </TableCell>
                 </TableRow>
               ))}

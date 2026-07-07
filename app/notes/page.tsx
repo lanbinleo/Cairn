@@ -1,10 +1,11 @@
 import { Link, useSearchParams } from 'react-router-dom'
-import { NotebookPen } from 'lucide-react'
+import { NotebookPen, Trash2 } from 'lucide-react'
 
 import { PageHeader } from '@/components/page-header'
 import { NoteContent } from '@/components/note-content'
 import { CreateNoteDialog } from '@/components/create-note-dialog'
 import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from '@/components/ui/empty'
 import { useCairn } from '@/lib/store'
@@ -14,7 +15,7 @@ import { cn } from '@/lib/utils'
 export default function NotesPage() {
   const [searchParams] = useSearchParams()
   const noteParam = searchParams.get('note') ?? undefined
-  const { notes } = useCairn()
+  const { notes, deleteNote } = useCairn()
   const sorted = [...notes].sort((a, b) => b.updatedAt - a.updatedAt)
   const active = sorted.find((n) => n.id === noteParam) ?? sorted[0]
 
@@ -71,7 +72,19 @@ export default function NotesPage() {
           {active && (
             <Card className="lg:col-span-2">
               <CardHeader>
-                <CardTitle className="text-lg text-balance">{active.title}</CardTitle>
+                <div className="flex items-start justify-between gap-3">
+                  <CardTitle className="text-lg text-balance">{active.title}</CardTitle>
+                  <Button
+                    variant="ghost"
+                    size="icon-sm"
+                    aria-label={`删除笔记 ${active.title}`}
+                    onClick={() => {
+                      if (window.confirm(`删除笔记「${active.title}」？`)) deleteNote(active.id)
+                    }}
+                  >
+                    <Trash2 />
+                  </Button>
+                </div>
                 <p className="text-xs text-muted-foreground">
                   创建于 {fmtUtcDate(active.createdAt)} · 更新于 {fmtUtcDate(active.updatedAt)}
                 </p>

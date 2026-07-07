@@ -38,6 +38,11 @@ interface CairnStore {
   createSymbol: (input: Omit<(typeof seedState.symbols)[number], 'id'>) => (typeof seedState.symbols)[number]
   createNote: (input: Omit<(typeof seedState.notes)[number], 'id' | 'createdAt' | 'updatedAt'>) => (typeof seedState.notes)[number]
   createTrades: (records: Trade[]) => void
+  deleteAccount: (id: string) => void
+  deletePeriod: (id: string) => void
+  deleteTrade: (id: string) => void
+  deleteSymbol: (id: string) => void
+  deleteNote: (id: string) => void
   restoreState: (snapshot: CairnStateSnapshot) => Promise<void>
   exportBackup: () => Promise<string>
   /** 快速平仓 / 重新打开 */
@@ -97,6 +102,51 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
     records.forEach((record) => {
       void saveLocalRecord('trades', record)
     })
+  }, [])
+
+  const deleteTrade = useCallback((id: string) => {
+    setTrades((prev) => prev.filter((trade) => trade.id !== id))
+    void deleteLocalRecord('trades', id)
+  }, [])
+
+  const deletePeriod = useCallback((id: string) => {
+    setPeriods((prev) => prev.filter((period) => period.id !== id))
+    setTrades((prev) => {
+      const removed = prev.filter((trade) => trade.periodId === id)
+      removed.forEach((trade) => void deleteLocalRecord('trades', trade.id))
+      return prev.filter((trade) => trade.periodId !== id)
+    })
+    void deleteLocalRecord('periods', id)
+  }, [])
+
+  const deleteAccount = useCallback((id: string) => {
+    setAccounts((prev) => prev.filter((account) => account.id !== id))
+    setPeriods((prev) => {
+      const removedPeriods = prev.filter((period) => period.accountId === id)
+      removedPeriods.forEach((period) => void deleteLocalRecord('periods', period.id))
+      setTrades((tp) => {
+        const removedTrades = tp.filter((trade) => trade.accountId === id)
+        removedTrades.forEach((trade) => void deleteLocalRecord('trades', trade.id))
+        return tp.filter((trade) => trade.accountId !== id)
+      })
+      return prev.filter((period) => period.accountId !== id)
+    })
+    void deleteLocalRecord('accounts', id)
+  }, [])
+
+  const deleteSymbol = useCallback((id: string) => {
+    setSymbols((prev) => prev.filter((symbol) => symbol.id !== id))
+    setPeriods((prev) => {
+      const next = prev.map((period) => ({ ...period, symbolIds: period.symbolIds.filter((symbolId) => symbolId !== id) }))
+      next.forEach((period) => void saveLocalRecord('periods', period))
+      return next
+    })
+    void deleteLocalRecord('symbols', id)
+  }, [])
+
+  const deleteNote = useCallback((id: string) => {
+    setNotes((prev) => prev.filter((note) => note.id !== id))
+    void deleteLocalRecord('notes', id)
   }, [])
 
   const applySnapshot = useCallback((snapshot: CairnStateSnapshot) => {
@@ -259,6 +309,11 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
       createSymbol,
       createNote,
       createTrades,
+      deleteAccount,
+      deletePeriod,
+      deleteTrade,
+      deleteSymbol,
+      deleteNote,
       restoreState,
       exportBackup,
       setTradeStatus,
@@ -266,7 +321,7 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
       updateTag,
       deleteTag,
     }),
-    [accounts, periods, trades, tagDefs, symbols, notes, updateAccount, updatePeriod, updateTrade, createAccount, createPeriod, createSymbol, createNote, createTrades, restoreState, exportBackup, setTradeStatus, createTag, updateTag, deleteTag],
+    [accounts, periods, trades, tagDefs, symbols, notes, updateAccount, updatePeriod, updateTrade, createAccount, createPeriod, createSymbol, createNote, createTrades, deleteAccount, deletePeriod, deleteTrade, deleteSymbol, deleteNote, restoreState, exportBackup, setTradeStatus, createTag, updateTag, deleteTag],
   )
 
   return <StoreContext.Provider value={value}>{children}</StoreContext.Provider>

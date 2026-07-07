@@ -1,7 +1,7 @@
 'use client'
 
 import { useState } from 'react'
-import { Pencil } from 'lucide-react'
+import { Pencil, Trash2 } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
 import {
@@ -39,7 +39,7 @@ export function EditPeriodDialog({
   period: Period
   size?: 'default' | 'icon-sm'
 }) {
-  const { updatePeriod } = useCairn()
+  const { updatePeriod, deletePeriod } = useCairn()
   const [open, setOpen] = useState(false)
 
   const [name, setName] = useState(period.name)
@@ -132,6 +132,18 @@ export function EditPeriodDialog({
         </FieldGroup>
 
         <DialogFooter>
+          <Button
+            variant="destructive"
+            onClick={() => {
+              if (window.confirm(`删除 Period「${period.name}」？相关 Trade 也会删除。`)) {
+                deletePeriod(period.id)
+                setOpen(false)
+              }
+            }}
+          >
+            <Trash2 data-icon="inline-start" />
+            删除
+          </Button>
           <Button variant="ghost" onClick={() => setOpen(false)}>
             取消
           </Button>
