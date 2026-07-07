@@ -25,3 +25,11 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# local workspace scratch
+/work/
+/outputs/
+
+# tauri / vite
+/dist/
+/src-tauri/target/
