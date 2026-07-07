@@ -14,8 +14,21 @@ fn app_ready() -> &'static str {
 }
 
 #[tauri::command]
-fn load_state(db: State<'_, db::Db>, seed: db::AppState) -> Result<db::AppState, String> {
-    db::load_or_seed(&db, seed)
+fn load_state(
+    app: AppHandle,
+    db: State<'_, db::Db>,
+    seed: db::AppState,
+) -> Result<db::AppState, String> {
+    let state = db::load_or_seed(&db, seed)?;
+    match db::export_daily_backup_if_due(&app, &db) {
+        Ok(Some(path)) => diagnostics::app_log(
+            &app,
+            format!("daily auto backup created: {}", path.display()),
+        ),
+        Ok(None) => diagnostics::app_log(&app, "daily auto backup already exists"),
+        Err(err) => diagnostics::app_log(&app, format!("daily auto backup failed: {err}")),
+    }
+    Ok(state)
 }
 
 #[tauri::command]

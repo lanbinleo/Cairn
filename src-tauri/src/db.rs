@@ -5,10 +5,15 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+use chrono::{Duration, Local, NaiveDate};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tauri::{AppHandle, Manager};
+
+const AUTO_BACKUP_RETENTION_DAYS: i64 = 7;
+const AUTO_BACKUP_PREFIX: &str = "cairn-auto-backup-";
+const AUTO_BACKUP_SUFFIX: &str = ".json";
 
 pub struct Db {
     conn: Mutex<Connection>,
@@ -242,13 +247,7 @@ pub fn restore_state(db: &Db, state: AppState) -> Result<AppState, String> {
 
 pub fn export_backup(app: &AppHandle, db: &Db) -> Result<PathBuf, String> {
     let conn = db.conn.lock().map_err(|err| err.to_string())?;
-    let state = read_state(&conn)?;
     let now = now_ms();
-    let backup = serde_json::json!({
-        "version": 2,
-        "exportedAt": now,
-        "state": state,
-    });
     let dir = app
         .path()
         .app_data_dir()
@@ -256,9 +255,92 @@ pub fn export_backup(app: &AppHandle, db: &Db) -> Result<PathBuf, String> {
         .join("backups");
     fs::create_dir_all(&dir).map_err(|err| err.to_string())?;
     let path = dir.join(format!("cairn-backup-{now}.json"));
-    let content = serde_json::to_string_pretty(&backup).map_err(|err| err.to_string())?;
-    fs::write(&path, content).map_err(|err| err.to_string())?;
+    write_backup_file(&conn, path.clone(), "manual")?;
     Ok(path)
+}
+
+pub fn export_daily_backup_if_due(app: &AppHandle, db: &Db) -> Result<Option<PathBuf>, String> {
+    let today = Local::now().date_naive();
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|err| err.to_string())?
+        .join("backups")
+        .join("auto");
+    fs::create_dir_all(&dir).map_err(|err| err.to_string())?;
+    prune_auto_backups(&dir, today)?;
+
+    let path = dir.join(auto_backup_file_name(today));
+    if path.exists() {
+        return Ok(None);
+    }
+
+    let conn = db.conn.lock().map_err(|err| err.to_string())?;
+    write_backup_file(&conn, path.clone(), "daily-auto")?;
+    prune_auto_backups(&dir, today)?;
+    Ok(Some(path))
+}
+
+fn write_backup_file(conn: &Connection, path: PathBuf, backup_kind: &str) -> Result<(), String> {
+    let state = read_state(conn)?;
+    let now = now_ms();
+    let backup = serde_json::json!({
+        "version": 2,
+        "backupKind": backup_kind,
+        "exportedAt": now,
+        "state": state,
+    });
+    let content = serde_json::to_string_pretty(&backup).map_err(|err| err.to_string())?;
+    let tmp_path = path.with_extension("json.tmp");
+    fs::write(&tmp_path, content).map_err(|err| err.to_string())?;
+    fs::rename(&tmp_path, &path).map_err(|err| err.to_string())?;
+    Ok(())
+}
+
+fn prune_auto_backups(dir: &PathBuf, today: NaiveDate) -> Result<(), String> {
+    let oldest_kept = today - Duration::days(AUTO_BACKUP_RETENTION_DAYS - 1);
+    let mut backups = Vec::new();
+
+    for entry in fs::read_dir(dir).map_err(|err| err.to_string())? {
+        let entry = entry.map_err(|err| err.to_string())?;
+        let path = entry.path();
+        let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        let Some(date) = auto_backup_date(file_name) else {
+            continue;
+        };
+
+        if date < oldest_kept {
+            let _ = fs::remove_file(path);
+        } else {
+            backups.push((date, path));
+        }
+    }
+
+    backups.sort_by(|a, b| b.0.cmp(&a.0));
+    for (_, path) in backups
+        .into_iter()
+        .skip(AUTO_BACKUP_RETENTION_DAYS as usize)
+    {
+        let _ = fs::remove_file(path);
+    }
+
+    Ok(())
+}
+
+fn auto_backup_file_name(date: NaiveDate) -> String {
+    format!(
+        "{AUTO_BACKUP_PREFIX}{}{AUTO_BACKUP_SUFFIX}",
+        date.format("%Y-%m-%d")
+    )
+}
+
+fn auto_backup_date(file_name: &str) -> Option<NaiveDate> {
+    let date = file_name
+        .strip_prefix(AUTO_BACKUP_PREFIX)?
+        .strip_suffix(AUTO_BACKUP_SUFFIX)?;
+    NaiveDate::parse_from_str(date, "%Y-%m-%d").ok()
 }
 
 fn seed_collection(conn: &Connection, collection: &str, records: &[Value]) -> Result<(), String> {
@@ -676,4 +758,28 @@ fn record_id(record: &Value) -> Result<&str, String> {
         .get("id")
         .and_then(Value::as_str)
         .ok_or_else(|| "record is missing string id".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_auto_backup_dates_from_expected_file_names() {
+        assert_eq!(
+            auto_backup_date("cairn-auto-backup-2026-07-07.json"),
+            Some(NaiveDate::from_ymd_opt(2026, 7, 7).unwrap())
+        );
+        assert_eq!(auto_backup_date("cairn-backup-123.json"), None);
+        assert_eq!(auto_backup_date("cairn-auto-backup-bad.json"), None);
+    }
+
+    #[test]
+    fn formats_auto_backup_file_names_by_local_date() {
+        let date = NaiveDate::from_ymd_opt(2026, 7, 7).unwrap();
+        assert_eq!(
+            auto_backup_file_name(date),
+            "cairn-auto-backup-2026-07-07.json"
+        );
+    }
 }

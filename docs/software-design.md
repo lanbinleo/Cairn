@@ -17,7 +17,7 @@ The workflow is:
 - Frontend: React, Vite, TypeScript.
 - Desktop runtime: Tauri 2.
 - Native layer: Rust commands for SQLite, backup, tray, diagnostics, and packaging.
-- Storage: local SQLite under the app data directory.
+- Storage: local SQLite under the Tauri app data directory.
 - Cloud: no runtime dependency. Future cloud sync is backup/restore only, not realtime multi-device sync.
 
 ## Design Principles
@@ -158,7 +158,11 @@ The editor supports creating and editing notes. Inline trade mentions render wit
 
 ## Backup
 
-Cairn exports a JSON backup containing a version, timestamp, and full hydrated state. Restore replaces the local app state. Future backup sync should upload encrypted backup files only; it should not become realtime sync.
+Cairn exports JSON backups containing a version, timestamp, backup kind, and full hydrated state. Restore replaces the local app state.
+
+Manual backups are written under the app data directory in `backups/`. Automatic backups are written to `backups/auto/`. The app creates one automatic backup the first time local state is loaded each local calendar day, and keeps the latest seven daily automatic backups. Automatic retention does not remove manual exports.
+
+Future backup sync should upload encrypted backup files only; it should not become realtime sync.
 
 ## Packaging
 

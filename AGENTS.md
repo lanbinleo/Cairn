@@ -24,6 +24,19 @@ Build CAIRN as a local-first Tauri 2 desktop app for Windows and macOS, with Lin
 
 Use `docs/software-design.md` as the current source of truth. Historical migration notes live under `reference/legacy/`.
 
+## Branching and Releases
+
+- Release work should happen on `dev/x.y.z`, for example `dev/0.1.1`.
+- Use Conventional Commits and keep commits grouped by intent.
+- Update version surfaces together:
+  - `package.json`
+  - `src-tauri/Cargo.toml`
+  - `src-tauri/Cargo.lock`
+  - `src-tauri/tauri.conf.json`
+  - `docs/release-x.y.z.md`
+- Use `docs/development-workflow.md` as the release process checklist.
+- Prefer `pnpm release:check x.y.z` for release verification.
+
 ## Architecture
 
 - Frontend: React + Vite + TypeScript.
@@ -35,4 +48,5 @@ Use `docs/software-design.md` as the current source of truth. Historical migrati
 ## Verification
 
 - Required final checks include frontend typecheck/build and Rust/Tauri checks.
+- Release executable verification uses `cargo build --manifest-path src-tauri/Cargo.toml --release --features tauri/custom-protocol` after `pnpm build`.
 - Browser or Playwright verification is not required for this goal.
