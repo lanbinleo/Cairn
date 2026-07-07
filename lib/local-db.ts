@@ -44,3 +44,13 @@ export async function replaceLocalCollection<T extends { id: string }>(
   if (!isTauriRuntime()) return
   await invoke('replace_collection', { collection, records })
 }
+
+export async function restoreLocalState(snapshot: CairnStateSnapshot): Promise<CairnStateSnapshot> {
+  if (!isTauriRuntime()) return snapshot
+  return invoke<CairnStateSnapshot>('restore_state', { state: snapshot })
+}
+
+export async function exportLocalBackup(): Promise<string> {
+  if (!isTauriRuntime()) return ''
+  return invoke<string>('export_backup')
+}

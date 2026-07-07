@@ -5,6 +5,7 @@ import { useEffect, useState } from 'react'
 
 import { PageHeader } from '@/components/page-header'
 import { CreateSymbolDialog } from '@/components/create-symbol-dialog'
+import { BackupCard } from '@/components/backup-card'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Label } from '@/components/ui/label'
@@ -84,6 +85,8 @@ export default function SettingsPage() {
           </Table>
         </CardContent>
       </Card>
+
+      <BackupCard />
 
       <Card>
         <CardHeader>

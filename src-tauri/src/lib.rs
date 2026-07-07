@@ -1,7 +1,7 @@
 mod db;
 
 use serde_json::Value;
-use tauri::{Manager, State};
+use tauri::{AppHandle, Manager, State};
 
 #[tauri::command]
 fn app_ready() -> &'static str {
@@ -37,6 +37,16 @@ fn replace_collection(
     db::replace_collection(&db, &collection, records)
 }
 
+#[tauri::command]
+fn restore_state(db: State<'_, db::Db>, state: db::AppState) -> Result<db::AppState, String> {
+    db::restore_state(&db, state)
+}
+
+#[tauri::command]
+fn export_backup(app: AppHandle, db: State<'_, db::Db>) -> Result<String, String> {
+    db::export_backup(&app, &db).map(|path| path.to_string_lossy().to_string())
+}
+
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
@@ -49,7 +59,9 @@ pub fn run() {
             load_state,
             save_record,
             delete_record,
-            replace_collection
+            replace_collection,
+            restore_state,
+            export_backup
         ])
         .run(tauri::generate_context!())
         .expect("failed to run CAIRN");

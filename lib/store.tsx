@@ -7,7 +7,8 @@
  */
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react'
-import { loadLocalState, saveLocalRecord, deleteLocalRecord } from './local-db'
+import { loadLocalState, saveLocalRecord, deleteLocalRecord, restoreLocalState, exportLocalBackup } from './local-db'
+import type { CairnStateSnapshot } from './seed'
 import { seedState } from './seed'
 import type { Account, Period, Trade, TagDef, TagColor } from './types'
 
@@ -36,6 +37,8 @@ interface CairnStore {
   createPeriod: (input: Omit<Period, 'id' | 'createdAt'>) => Period
   createSymbol: (input: Omit<(typeof seedState.symbols)[number], 'id'>) => (typeof seedState.symbols)[number]
   createNote: (input: Omit<(typeof seedState.notes)[number], 'id' | 'createdAt' | 'updatedAt'>) => (typeof seedState.notes)[number]
+  restoreState: (snapshot: CairnStateSnapshot) => Promise<void>
+  exportBackup: () => Promise<string>
   /** 快速平仓 / 重新打开 */
   setTradeStatus: (id: string, status: Trade['status']) => void
   /* 标签 */
@@ -87,17 +90,28 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
     return created
   }, [makeId])
 
+  const applySnapshot = useCallback((snapshot: CairnStateSnapshot) => {
+    setAccounts(snapshot.accounts)
+    setPeriods(snapshot.periods)
+    setTrades(snapshot.trades)
+    setSymbols(snapshot.symbols)
+    setNotes(snapshot.notes)
+    setTagDefs(snapshot.tagDefs)
+  }, [])
+
+  const restoreState = useCallback(async (snapshot: CairnStateSnapshot) => {
+    const restored = await restoreLocalState(snapshot)
+    applySnapshot(restored)
+  }, [applySnapshot])
+
+  const exportBackup = useCallback(() => exportLocalBackup(), [])
+
   useEffect(() => {
     let cancelled = false
     loadLocalState()
       .then((snapshot) => {
         if (cancelled) return
-        setAccounts(snapshot.accounts)
-        setPeriods(snapshot.periods)
-        setTrades(snapshot.trades)
-        setSymbols(snapshot.symbols)
-        setNotes(snapshot.notes)
-        setTagDefs(snapshot.tagDefs)
+        applySnapshot(snapshot)
       })
       .catch((err) => {
         console.error('Failed to load local CAIRN state', err)
@@ -105,7 +119,7 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
     return () => {
       cancelled = true
     }
-  }, [])
+  }, [applySnapshot])
 
   const updateAccount = useCallback((id: string, patch: Partial<Account>) => {
     setAccounts((prev) =>
@@ -235,12 +249,14 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
       createPeriod,
       createSymbol,
       createNote,
+      restoreState,
+      exportBackup,
       setTradeStatus,
       createTag,
       updateTag,
       deleteTag,
     }),
-    [accounts, periods, trades, tagDefs, symbols, notes, updateAccount, updatePeriod, updateTrade, createAccount, createPeriod, createSymbol, createNote, setTradeStatus, createTag, updateTag, deleteTag],
+    [accounts, periods, trades, tagDefs, symbols, notes, updateAccount, updatePeriod, updateTrade, createAccount, createPeriod, createSymbol, createNote, restoreState, exportBackup, setTradeStatus, createTag, updateTag, deleteTag],
   )
 
   return <StoreContext.Provider value={value}>{children}</StoreContext.Provider>

@@ -1,4 +1,9 @@
-use std::{fs, path::PathBuf, sync::Mutex};
+use std::{
+    fs,
+    path::PathBuf,
+    sync::Mutex,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
@@ -132,6 +137,42 @@ pub fn replace_collection(db: &Db, collection: &str, records: Vec<Value>) -> Res
     Ok(())
 }
 
+pub fn restore_state(db: &Db, state: AppState) -> Result<AppState, String> {
+    let mut conn = db.conn.lock().map_err(|err| err.to_string())?;
+    let tx = conn.transaction().map_err(|err| err.to_string())?;
+    tx.execute("DELETE FROM records", [])
+        .map_err(|err| err.to_string())?;
+    seed_collection(&tx, "accounts", &state.accounts)?;
+    seed_collection(&tx, "periods", &state.periods)?;
+    seed_collection(&tx, "trades", &state.trades)?;
+    seed_collection(&tx, "symbols", &state.symbols)?;
+    seed_collection(&tx, "notes", &state.notes)?;
+    seed_collection(&tx, "tagDefs", &state.tag_defs)?;
+    tx.commit().map_err(|err| err.to_string())?;
+    read_state(&conn)
+}
+
+pub fn export_backup(app: &AppHandle, db: &Db) -> Result<PathBuf, String> {
+    let conn = db.conn.lock().map_err(|err| err.to_string())?;
+    let state = read_state(&conn)?;
+    let now = now_ms();
+    let backup = serde_json::json!({
+        "version": 1,
+        "exportedAt": now,
+        "state": state,
+    });
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|err| err.to_string())?
+        .join("backups");
+    fs::create_dir_all(&dir).map_err(|err| err.to_string())?;
+    let path = dir.join(format!("cairn-backup-{now}.json"));
+    let content = serde_json::to_string_pretty(&backup).map_err(|err| err.to_string())?;
+    fs::write(&path, content).map_err(|err| err.to_string())?;
+    Ok(path)
+}
+
 fn seed_collection(conn: &Connection, collection: &str, records: &[Value]) -> Result<(), String> {
     for record in records {
         let id = record_id(record)?;
@@ -161,6 +202,13 @@ fn read_state(conn: &Connection) -> Result<AppState, String> {
         notes: read_collection(conn, "notes")?,
         tag_defs: read_collection(conn, "tagDefs")?,
     })
+}
+
+fn now_ms() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or(0)
 }
 
 fn read_collection(conn: &Connection, collection: &str) -> Result<Vec<Value>, String> {

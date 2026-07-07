@@ -19,6 +19,12 @@ Implement the real business workflows that are currently demos or missing.
 - Restore from a backup file.
 - Keep format documented and versioned.
 
+Current implementation:
+
+- Backup format is JSON with `version`, `exportedAt`, and `state`.
+- Export writes to the Tauri app data `backups/` directory.
+- Restore accepts either the full backup object or the raw state object.
+
 ## Clipboard Images
 
 - Allow Ctrl+V image paste in relevant note/review image entry surfaces.
