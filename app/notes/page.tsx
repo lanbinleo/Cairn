@@ -7,13 +7,14 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from '@/components/ui/empty'
-import { notes } from '@/lib/mock-data'
+import { useCairn } from '@/lib/store'
 import { fmtUtcDate } from '@/lib/format'
 import { cn } from '@/lib/utils'
 
 export default function NotesPage() {
   const [searchParams] = useSearchParams()
   const noteParam = searchParams.get('note') ?? undefined
+  const { notes } = useCairn()
   const sorted = [...notes].sort((a, b) => b.updatedAt - a.updatedAt)
   const active = sorted.find((n) => n.id === noteParam) ?? sorted[0]
 

@@ -11,14 +11,13 @@ import { EditPeriodDialog } from '@/components/edit-period-dialog'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { symbolLabel } from '@/lib/mock-data'
 import { useCairn } from '@/lib/store'
 import { computeStats, computeEquityCurve } from '@/lib/metrics'
 import { fmtMoney, fmtPct, fmtDateRange, fmtUtcDate } from '@/lib/format'
 
 export default function AccountDetailPage() {
   const { accountId = '' } = useParams()
-  const { getAccount, periods, trades } = useCairn()
+  const { getAccount, periods, trades, symbolLabel } = useCairn()
   const account = getAccount(accountId)
   if (!account) return <Navigate to="/accounts" replace />
 

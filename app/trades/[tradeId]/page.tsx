@@ -12,7 +12,6 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Separator } from '@/components/ui/separator'
 import { useCairn } from '@/lib/store'
-import { getSymbol, getNotesMentioningTrade, symbolLabel } from '@/lib/mock-data'
 import { computeTradeMetrics } from '@/lib/metrics'
 import { generateChartBars } from '@/lib/chart-data'
 import { fmtPrice, fmtDuration, fmtUtcDateTime, fmtUtcDate } from '@/lib/format'
@@ -42,7 +41,7 @@ const eventLabel: Record<string, string> = {
 
 export default function TradeDetailPage() {
   const { tradeId = '' } = useParams()
-  const { getTrade, getAccount, getPeriod, setTradeStatus } = useCairn()
+  const { getTrade, getAccount, getPeriod, getSymbol, getNotesMentioningTrade, symbolLabel, setTradeStatus } = useCairn()
   const trade = getTrade(tradeId)
   if (!trade) return <Navigate to="/trades" replace />
 

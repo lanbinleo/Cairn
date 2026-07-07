@@ -1,11 +1,56 @@
+mod db;
+
+use serde_json::Value;
+use tauri::{Manager, State};
+
 #[tauri::command]
 fn app_ready() -> &'static str {
     "ok"
 }
 
+#[tauri::command]
+fn load_state(db: State<'_, db::Db>, seed: db::AppState) -> Result<db::AppState, String> {
+    db::load_or_seed(&db, seed)
+}
+
+#[tauri::command]
+fn save_record(
+    db: State<'_, db::Db>,
+    collection: String,
+    id: String,
+    data: Value,
+) -> Result<(), String> {
+    db::save_record(&db, &collection, &id, data)
+}
+
+#[tauri::command]
+fn delete_record(db: State<'_, db::Db>, collection: String, id: String) -> Result<(), String> {
+    db::delete_record(&db, &collection, &id)
+}
+
+#[tauri::command]
+fn replace_collection(
+    db: State<'_, db::Db>,
+    collection: String,
+    records: Vec<Value>,
+) -> Result<(), String> {
+    db::replace_collection(&db, &collection, records)
+}
+
 pub fn run() {
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![app_ready])
+        .setup(|app| {
+            let db = db::init(app.handle())?;
+            app.manage(db);
+            Ok(())
+        })
+        .invoke_handler(tauri::generate_handler![
+            app_ready,
+            load_state,
+            save_record,
+            delete_record,
+            replace_collection
+        ])
         .run(tauri::generate_context!())
         .expect("failed to run CAIRN");
 }

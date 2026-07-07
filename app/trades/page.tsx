@@ -17,14 +17,13 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import { symbols } from '@/lib/mock-data'
 import { useCairn } from '@/lib/store'
 import { cn } from '@/lib/utils'
 
 const ALL = 'all'
 
 export default function TradesPage() {
-  const { accounts, periods, trades, tagDefs } = useCairn()
+  const { accounts, periods, trades, tagDefs, symbols } = useCairn()
   const [accountId, setAccountId] = useState(ALL)
   const [periodId, setPeriodId] = useState(ALL)
   const [symbolId, setSymbolId] = useState(ALL)

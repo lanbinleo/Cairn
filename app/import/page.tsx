@@ -33,7 +33,7 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
-import { accounts, periods, symbols } from '@/lib/mock-data'
+import { useCairn } from '@/lib/store'
 import { cn } from '@/lib/utils'
 
 const STEPS = ['选择归属', '上传文件', '归组预览', '完成'] as const
@@ -79,6 +79,7 @@ type SlotKey = (typeof fileSlots)[number]['key']
 
 export default function ImportPage() {
   const navigate = useNavigate()
+  const { accounts, periods, symbols } = useCairn()
   const [step, setStep] = useState(0)
   const [accountId, setAccountId] = useState(accounts[0].id)
   const [periodId, setPeriodId] = useState('')

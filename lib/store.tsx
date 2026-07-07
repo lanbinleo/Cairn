@@ -6,37 +6,10 @@
  * 后端就绪后，此处的 setState 将替换为 REST API 调用 + SWR mutate（见 docs/backend-design.md）。
  */
 
-import { createContext, useCallback, useContext, useMemo, useState } from 'react'
-import {
-  accounts as mockAccounts,
-  periods as mockPeriods,
-  trades as mockTrades,
-  symbols as mockSymbols,
-  notes as mockNotes,
-} from './mock-data'
+import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react'
+import { loadLocalState, saveLocalRecord, deleteLocalRecord } from './local-db'
+import { seedState } from './seed'
 import type { Account, Period, Trade, TagDef, TagColor } from './types'
-
-/* ---------- 初始标签定义：从 mock 交易标签推导，各配一色 ---------- */
-
-const T0 = Date.parse('2026-01-01T00:00:00Z')
-
-const initialTagDefs: TagDef[] = (
-  [
-    ['突破回踩', 'blue'],
-    ['A+ 形态', 'green'],
-    ['分批止盈', 'cyan'],
-    ['加仓', 'purple'],
-    ['移动止损', 'orange'],
-    ['趋势跟随', 'blue'],
-    ['区间交易', 'cyan'],
-    ['开盘区间突破', 'purple'],
-    ['止损', 'red'],
-    ['假突破', 'red'],
-    ['情绪单', 'orange'],
-    ['追高', 'yellow'],
-    ['震荡市', 'yellow'],
-  ] as [string, TagColor][]
-).map(([name, color], i) => ({ id: `tag-${i + 1}`, name, color, createdAt: T0 }))
 
 /* ---------- Context ---------- */
 
@@ -45,13 +18,16 @@ interface CairnStore {
   periods: Period[]
   trades: Trade[]
   tagDefs: TagDef[]
-  symbols: typeof mockSymbols
-  notes: typeof mockNotes
+  symbols: typeof seedState.symbols
+  notes: typeof seedState.notes
   /* 查询 */
   getAccount: (id: string) => Account | undefined
   getPeriod: (id: string) => Period | undefined
   getTrade: (id: string) => Trade | undefined
+  getSymbol: (id: string) => (typeof seedState.symbols)[number] | undefined
   getTagDef: (name: string) => TagDef | undefined
+  symbolLabel: (id: string) => string
+  getNotesMentioningTrade: (tradeId: string) => typeof seedState.notes
   /* 编辑 */
   updateAccount: (id: string, patch: Partial<Account>) => void
   updatePeriod: (id: string, patch: Partial<Period>) => void
@@ -67,25 +43,75 @@ interface CairnStore {
 const StoreContext = createContext<CairnStore | null>(null)
 
 export function CairnProvider({ children }: { children: React.ReactNode }) {
-  const [accounts, setAccounts] = useState<Account[]>(mockAccounts)
-  const [periods, setPeriods] = useState<Period[]>(mockPeriods)
-  const [trades, setTrades] = useState<Trade[]>(mockTrades)
-  const [tagDefs, setTagDefs] = useState<TagDef[]>(initialTagDefs)
+  const [accounts, setAccounts] = useState<Account[]>(seedState.accounts)
+  const [periods, setPeriods] = useState<Period[]>(seedState.periods)
+  const [trades, setTrades] = useState<Trade[]>(seedState.trades)
+  const [symbols, setSymbols] = useState(seedState.symbols)
+  const [notes, setNotes] = useState(seedState.notes)
+  const [tagDefs, setTagDefs] = useState<TagDef[]>(seedState.tagDefs)
+
+  useEffect(() => {
+    let cancelled = false
+    loadLocalState()
+      .then((snapshot) => {
+        if (cancelled) return
+        setAccounts(snapshot.accounts)
+        setPeriods(snapshot.periods)
+        setTrades(snapshot.trades)
+        setSymbols(snapshot.symbols)
+        setNotes(snapshot.notes)
+        setTagDefs(snapshot.tagDefs)
+      })
+      .catch((err) => {
+        console.error('Failed to load local CAIRN state', err)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   const updateAccount = useCallback((id: string, patch: Partial<Account>) => {
-    setAccounts((prev) => prev.map((a) => (a.id === id ? { ...a, ...patch } : a)))
+    setAccounts((prev) =>
+      prev.map((a) => {
+        if (a.id !== id) return a
+        const next = { ...a, ...patch }
+        void saveLocalRecord('accounts', next)
+        return next
+      }),
+    )
   }, [])
 
   const updatePeriod = useCallback((id: string, patch: Partial<Period>) => {
-    setPeriods((prev) => prev.map((p) => (p.id === id ? { ...p, ...patch } : p)))
+    setPeriods((prev) =>
+      prev.map((p) => {
+        if (p.id !== id) return p
+        const next = { ...p, ...patch }
+        void saveLocalRecord('periods', next)
+        return next
+      }),
+    )
   }, [])
 
   const updateTrade = useCallback((id: string, patch: Partial<Trade>) => {
-    setTrades((prev) => prev.map((t) => (t.id === id ? { ...t, ...patch } : t)))
+    setTrades((prev) =>
+      prev.map((t) => {
+        if (t.id !== id) return t
+        const next = { ...t, ...patch }
+        void saveLocalRecord('trades', next)
+        return next
+      }),
+    )
   }, [])
 
   const setTradeStatus = useCallback((id: string, status: Trade['status']) => {
-    setTrades((prev) => prev.map((t) => (t.id === id ? { ...t, status } : t)))
+    setTrades((prev) =>
+      prev.map((t) => {
+        if (t.id !== id) return t
+        const next = { ...t, status }
+        void saveLocalRecord('trades', next)
+        return next
+      }),
+    )
   }, [])
 
   const createTag = useCallback(
@@ -96,6 +122,7 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
       setTagDefs((prev) => {
         if (prev.some((t) => t.name === trimmed)) return prev
         created = { id: `tag-${Date.now()}`, name: trimmed, color, createdAt: Date.now() }
+        void saveLocalRecord('tagDefs', created)
         return [...prev, created]
       })
       return created
@@ -111,14 +138,20 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
       if (patch.name && patch.name !== target.name) {
         const newName = patch.name.trim()
         setTrades((tp) =>
-          tp.map((t) =>
-            t.tags.includes(target.name)
-              ? { ...t, tags: t.tags.map((n) => (n === target.name ? newName : n)) }
-              : t,
-          ),
+          tp.map((t) => {
+            if (!t.tags.includes(target.name)) return t
+            const next = { ...t, tags: t.tags.map((n) => (n === target.name ? newName : n)) }
+            void saveLocalRecord('trades', next)
+            return next
+          }),
         )
       }
-      return prev.map((t) => (t.id === id ? { ...t, ...patch, name: patch.name?.trim() || t.name } : t))
+      return prev.map((t) => {
+        if (t.id !== id) return t
+        const next = { ...t, ...patch, name: patch.name?.trim() || t.name }
+        void saveLocalRecord('tagDefs', next)
+        return next
+      })
     })
   }, [])
 
@@ -127,10 +160,14 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
       const target = prev.find((t) => t.id === id)
       if (!target) return prev
       setTrades((tp) =>
-        tp.map((t) =>
-          t.tags.includes(target.name) ? { ...t, tags: t.tags.filter((n) => n !== target.name) } : t,
-        ),
+        tp.map((t) => {
+          if (!t.tags.includes(target.name)) return t
+          const next = { ...t, tags: t.tags.filter((n) => n !== target.name) }
+          void saveLocalRecord('trades', next)
+          return next
+        }),
       )
+      void deleteLocalRecord('tagDefs', id)
       return prev.filter((t) => t.id !== id)
     })
   }, [])
@@ -141,12 +178,19 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
       periods,
       trades,
       tagDefs,
-      symbols: mockSymbols,
-      notes: mockNotes,
+      symbols,
+      notes,
       getAccount: (id) => accounts.find((a) => a.id === id),
       getPeriod: (id) => periods.find((p) => p.id === id),
       getTrade: (id) => trades.find((t) => t.id === id),
+      getSymbol: (id) => symbols.find((s) => s.id === id),
       getTagDef: (name) => tagDefs.find((t) => t.name === name),
+      symbolLabel: (id) => {
+        const s = symbols.find((x) => x.id === id)
+        return s ? `${s.exchange}:${s.code}` : id
+      },
+      getNotesMentioningTrade: (tradeId) =>
+        notes.filter((n) => n.mentions.some((m) => m.type === 'trade' && m.ref === tradeId)),
       updateAccount,
       updatePeriod,
       updateTrade,
@@ -155,7 +199,7 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
       updateTag,
       deleteTag,
     }),
-    [accounts, periods, trades, tagDefs, updateAccount, updatePeriod, updateTrade, setTradeStatus, createTag, updateTag, deleteTag],
+    [accounts, periods, trades, tagDefs, symbols, notes, updateAccount, updatePeriod, updateTrade, setTradeStatus, createTag, updateTag, deleteTag],
   )
 
   return <StoreContext.Provider value={value}>{children}</StoreContext.Provider>

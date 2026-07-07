@@ -25,7 +25,7 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
-import { symbols, trades } from '@/lib/mock-data'
+import { useCairn } from '@/lib/store'
 
 const categoryLabel: Record<string, string> = {
   crypto: '加密货币',
@@ -36,6 +36,7 @@ const categoryLabel: Record<string, string> = {
 
 export default function SettingsPage() {
   const { theme, setTheme } = useTheme()
+  const { symbols, trades } = useCairn()
   const [mounted, setMounted] = useState(false)
   useEffect(() => setMounted(true), [])
 
