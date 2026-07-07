@@ -55,6 +55,9 @@ Important files and folders:
 - `cairn-startup.log`
 - `backups/*.json`
 - `backups/auto/cairn-auto-backup-YYYY-MM-DD.json`
+- `attachments/chart-data/*`
+
+Imported chart source files are copied into `attachments/chart-data/`. The database stores import metadata and normalized candles, while the copied source file remains available for audit and re-parse checks.
 
 Codex-launched development builds can resolve the same Tauri app data directory through the Codex app container. Do not copy or delete production user data while the app is running.
 

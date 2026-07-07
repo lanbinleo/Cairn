@@ -11,6 +11,9 @@
 - Removed synthetic fallback chart rendering from trade details; missing timeframe data now shows an empty chart state.
 - Added a Data page for independent chart-data import, import history, normalized candle storage, monthly coverage, missing interval review, trade coverage checks, and CSV export.
 - Archived imported chart source files under the app data directory in `attachments/chart-data/`.
+- Prioritized missing symbol/month combinations on the Data page so incomplete chart data appears first.
+- Improved chart-data import performance by batching candle writes through Rust/SQLite instead of saving each candle separately.
+- Fixed equity chart rendering when multiple equity points fall in the same second.
 - Added Cairn release workflow documentation and a local release check script.
 
 ## Local Data
@@ -28,6 +31,12 @@ backups/auto/cairn-auto-backup-YYYY-MM-DD.json
 ```
 
 Manual backups remain in `backups/` and are not removed by the automatic backup retention task.
+
+Imported chart source files are copied to:
+
+```text
+attachments/chart-data/
+```
 
 ## Verification
 

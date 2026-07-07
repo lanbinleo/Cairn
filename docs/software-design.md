@@ -171,6 +171,10 @@ The Data page keeps two layers:
 
 Imported source files are copied into the app data directory under `attachments/chart-data/` with normalized file names that include symbol, timeframe, and UTC range. The Data page can show monthly coverage, missing intervals, trade coverage checks, and export the normalized candle library.
 
+Data coverage is organized around the selected timeframe. The Data page prioritizes missing symbol/month combinations so the user can work through incomplete data first. Coverage summaries are derived from expected bar timestamps for the timeframe and the candles already present in `chart_candles`.
+
+Chart candle imports are persisted in batches through a native command so a multi-thousand-row CSV does not issue one frontend-to-Rust write per candle.
+
 ## Backup
 
 Cairn exports JSON backups containing a version, timestamp, backup kind, and full hydrated state. Restore replaces the local app state.
