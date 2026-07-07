@@ -16,6 +16,7 @@ import {
 import { Field, FieldGroup, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
+import { insertAtCursor, readPastedImage } from '@/lib/clipboard-images'
 import { useCairn } from '@/lib/store'
 
 export function CreateNoteDialog() {
@@ -73,7 +74,19 @@ export function CreateNoteDialog() {
           </Field>
           <Field>
             <FieldLabel htmlFor="new-note-content">正文</FieldLabel>
-            <Textarea id="new-note-content" rows={8} value={content} onChange={(e) => setContent(e.target.value)} />
+            <Textarea
+              id="new-note-content"
+              rows={8}
+              value={content}
+              onChange={(e) => setContent(e.target.value)}
+              onPaste={(event) => {
+                const start = event.currentTarget.selectionStart
+                const end = event.currentTarget.selectionEnd
+                void readPastedImage(event).then((dataUrl) => {
+                  if (dataUrl) setContent((prev) => insertAtCursor(prev, `[[image:${dataUrl}]]`, start, end))
+                })
+              }}
+            />
           </Field>
         </FieldGroup>
 

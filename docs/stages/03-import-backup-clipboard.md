@@ -38,6 +38,12 @@ Current implementation:
 - Save pasted image as an attachment.
 - Insert or associate it with the current entity without changing existing visual design.
 
+Current implementation:
+
+- Note creation and trade review note textareas accept pasted images.
+- Pasted images are stored inline as `[[image:data:...]]` references so current note rendering and backups preserve them.
+- Separate attachment-file storage remains to be completed.
+
 ## Verification
 
 - Parser tests for CSV examples.

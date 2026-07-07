@@ -18,6 +18,7 @@ import {
 import { Field, FieldDescription, FieldGroup, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
+import { insertAtCursor, readPastedImage } from '@/lib/clipboard-images'
 import { useCairn } from '@/lib/store'
 import type { TagColor, Trade } from '@/lib/types'
 import { cn } from '@/lib/utils'
@@ -162,6 +163,13 @@ export function EditTradeDialog({ trade }: { trade: Trade }) {
               placeholder="这笔交易的执行、情绪与教训…"
               value={note}
               onChange={(e) => setNote(e.target.value)}
+              onPaste={(event) => {
+                const start = event.currentTarget.selectionStart
+                const end = event.currentTarget.selectionEnd
+                void readPastedImage(event).then((dataUrl) => {
+                  if (dataUrl) setNote((prev) => insertAtCursor(prev, `[[image:${dataUrl}]]`, start, end))
+                })
+              }}
             />
           </Field>
         </FieldGroup>
