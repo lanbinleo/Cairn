@@ -69,6 +69,17 @@ const fileSlots = [
 
 type SlotKey = (typeof fileSlots)[number]['key']
 
+function chartBarsForExecutions(chartBars: ChartBar[], executions: Execution[]) {
+  if (chartBars.length === 0 || executions.length === 0) return undefined
+  const times = executions.map((execution) => execution.time)
+  const start = Math.min(...times)
+  const end = Math.max(...times)
+  const interval = chartBars.length > 1 ? Math.max(60_000, chartBars[1].time - chartBars[0].time) : 5 * 60_000
+  const padding = interval * 80
+  const selected = chartBars.filter((bar) => bar.time >= start - padding && bar.time <= end + padding)
+  return selected.length > 0 ? selected : undefined
+}
+
 export default function ImportPage() {
   const navigate = useNavigate()
   const { accounts, periods, symbols, trades, getPeriod, updatePeriod, createTrades } = useCairn()
@@ -148,7 +159,7 @@ export default function ImportPage() {
           executions,
           events: [],
           referenceImages: referenceImage ? [referenceImage] : [],
-          chartBars,
+          chartBars: chartBarsForExecutions(chartBars, executions),
           tags: [],
           createdAt: now,
         }
@@ -418,7 +429,9 @@ export default function ImportPage() {
                           Trade {tradeIndex + 1}
                         </Badge>
                       </TableCell>
-                      <TableCell className="font-mono text-muted-foreground">{row.sourceRef.replace('tv:row:', '')}</TableCell>
+                      <TableCell className="font-mono text-muted-foreground">
+                        {row.sourceTradeNo ?? row.sourceRef.replace('tv:row:', '')}
+                      </TableCell>
                       <TableCell>
                         <Select
                           items={[

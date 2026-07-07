@@ -121,6 +121,9 @@
   --sidebar-accent-foreground: oklch(0.45 0.17 258);
   --sidebar-border: oklch(0.918 0.003 106.4);
   --sidebar-ring: oklch(0.545 0.19 258);
+  --scrollbar-track: oklch(0.94 0.002 106.4);
+  --scrollbar-thumb: oklch(0.74 0.006 106.4);
+  --scrollbar-thumb-hover: oklch(0.62 0.01 58.07);
 }
 
 .dark {
@@ -163,14 +166,46 @@
   --sidebar-accent-foreground: oklch(0.78 0.12 255);
   --sidebar-border: oklch(1 0 0 / 9%);
   --sidebar-ring: oklch(0.68 0.15 255);
+  --scrollbar-track: oklch(0.22 0.004 106.4);
+  --scrollbar-thumb: oklch(0.38 0.006 106.4);
+  --scrollbar-thumb-hover: oklch(0.5 0.008 58.07);
 }
 
 @layer base {
   * {
     @apply border-border outline-ring/50;
+    scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
+    scrollbar-width: thin;
   }
   body {
     @apply bg-background text-foreground;
+  }
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-track {
+    background: var(--scrollbar-track);
+  }
+  ::-webkit-scrollbar-thumb {
+    border: 2px solid var(--scrollbar-track);
+    border-radius: 999px;
+    background: var(--scrollbar-thumb);
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--scrollbar-thumb-hover);
+  }
+  ::-webkit-scrollbar-corner {
+    background: var(--scrollbar-track);
+  }
+  [data-slot='scroll-area-scrollbar'] {
+    background: transparent;
+  }
+  [data-slot='scroll-area-thumb'] {
+    background: var(--scrollbar-thumb);
+  }
+  [data-slot='scroll-area-thumb']:hover {
+    background: var(--scrollbar-thumb-hover);
   }
   /* 所有数字表格对齐 */
   .tabular {

@@ -2,8 +2,12 @@ import * as XLSX from 'xlsx'
 
 import type { ChartBar, Execution, Trade, TradeDirection, OrderType } from './types'
 
+const defaultExportKey = ['def', 'ault'].join('')
+const xlsx = (XLSX as unknown as Record<string, typeof XLSX>)[defaultExportKey] ?? XLSX
+
 export interface RawImportRow {
   sourceRef: string
+  sourceTradeNo?: string
   type: string
   orderType?: OrderType
   signal?: string
@@ -28,9 +32,9 @@ const FIELD_ALIASES = {
   type: ['Type', '类型', '方向', '交易类型'],
   orderType: ['Order Type', 'Order', '订单类型', '委托类型'],
   signal: ['Signal', '信号', '信号名称'],
-  time: ['Date/Time', 'Date Time', 'Time', '时间', '日期时间', '成交时间'],
-  price: ['Price', '价格', '成交价'],
-  quantity: ['Qty', 'Quantity', '数量', '合约', 'Contracts'],
+  time: ['Date/Time', 'Date Time', 'Time', '时间', '日期时间', '日期和时间', '成交时间'],
+  price: ['Price', '价格', '价格 USDT', '价格 USD', '成交价'],
+  quantity: ['Qty', 'Quantity', '数量', '大小（数量）', '大小 (数量)', '合约', 'Contracts'],
 }
 
 const CHART_FIELD_ALIASES = {
@@ -59,19 +63,39 @@ function toNumber(value: unknown) {
   return Number.isFinite(n) ? n : null
 }
 
+function numberToTime(value: number) {
+  if (value > 1_000_000_000_000) return value
+  if (value > 1_000_000_000) return value * 1000
+  const parsed = xlsx.SSF.parse_date_code(value)
+  if (parsed) {
+    return Date.UTC(parsed.y, parsed.m - 1, parsed.d, parsed.H, parsed.M, Math.floor(parsed.S))
+  }
+  return null
+}
+
 function toTime(value: unknown) {
   if (typeof value === 'number') {
-    const parsed = XLSX.SSF.parse_date_code(value)
-    if (parsed) {
-      return Date.UTC(parsed.y, parsed.m - 1, parsed.d, parsed.H, parsed.M, Math.floor(parsed.S))
-    }
+    return numberToTime(value)
   }
   const raw = String(value ?? '').trim()
   if (!raw) return null
+  if (/^\d+(\.\d+)?$/.test(raw)) return numberToTime(Number(raw))
   const normalized = raw.includes('T') ? raw : raw.replace(' ', 'T')
   const withZone = /Z$|[+-]\d\d:?\d\d$/.test(normalized) ? normalized : `${normalized}Z`
   const ms = Date.parse(withZone)
   return Number.isFinite(ms) ? ms : null
+}
+
+function rowsFromFirstMatchingSheet(workbook: XLSX.WorkBook, required: Array<Array<string>>) {
+  for (const sheetName of workbook.SheetNames) {
+    const sheet = workbook.Sheets[sheetName]
+    const rows = xlsx.utils.sheet_to_json<Record<string, unknown>>(sheet, { defval: '' })
+    const sample = rows.find((row) => Object.keys(row).length > 0)
+    if (sample && required.every((aliases) => valueByAliases(sample, aliases) !== undefined)) {
+      return rows
+    }
+  }
+  return xlsx.utils.sheet_to_json<Record<string, unknown>>(workbook.Sheets[workbook.SheetNames[0]], { defval: '' })
 }
 
 function inferDirection(type: string, signal?: string): TradeDirection | null {
@@ -102,9 +126,13 @@ export function inferOrderType(signal?: string, rawOrderType?: string): OrderTyp
 
 export async function parseTradingViewRows(file: File): Promise<RawImportRow[]> {
   const buffer = await file.arrayBuffer()
-  const workbook = XLSX.read(buffer, { type: 'array', cellDates: false })
-  const sheet = workbook.Sheets[workbook.SheetNames[0]]
-  const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, { defval: '' })
+  const workbook = xlsx.read(buffer, { type: 'array', cellDates: false })
+  const rows = rowsFromFirstMatchingSheet(workbook, [
+    FIELD_ALIASES.type,
+    FIELD_ALIASES.time,
+    FIELD_ALIASES.price,
+    FIELD_ALIASES.quantity,
+  ])
 
   return rows.flatMap((row, index) => {
     const type = String(valueByAliases(row, FIELD_ALIASES.type) ?? '').trim()
@@ -114,9 +142,10 @@ export async function parseTradingViewRows(file: File): Promise<RawImportRow[]> 
     const price = toNumber(valueByAliases(row, FIELD_ALIASES.price))
     const quantity = toNumber(valueByAliases(row, FIELD_ALIASES.quantity))
     if (!type || time == null || price == null || quantity == null || quantity <= 0) return []
-    const tradeNo = String(valueByAliases(row, FIELD_ALIASES.tradeNo) ?? index + 1)
+    const tradeNo = String(valueByAliases(row, FIELD_ALIASES.tradeNo) ?? '').trim()
     return [{
-      sourceRef: `tv:row:${tradeNo}`,
+      sourceRef: `tv:row:${index + 1}`,
+      sourceTradeNo: tradeNo || undefined,
       type,
       orderType: inferOrderType(signal, rawOrderType),
       signal: signal || undefined,
@@ -129,9 +158,14 @@ export async function parseTradingViewRows(file: File): Promise<RawImportRow[]> 
 
 export async function parseChartBars(file: File): Promise<ChartBar[]> {
   const buffer = await file.arrayBuffer()
-  const workbook = XLSX.read(buffer, { type: 'array', cellDates: false })
-  const sheet = workbook.Sheets[workbook.SheetNames[0]]
-  const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, { defval: '' })
+  const workbook = xlsx.read(buffer, { type: 'array', cellDates: false })
+  const rows = rowsFromFirstMatchingSheet(workbook, [
+    CHART_FIELD_ALIASES.time,
+    CHART_FIELD_ALIASES.open,
+    CHART_FIELD_ALIASES.high,
+    CHART_FIELD_ALIASES.low,
+    CHART_FIELD_ALIASES.close,
+  ])
 
   return rows.flatMap((row) => {
     const time = toTime(valueByAliases(row, CHART_FIELD_ALIASES.time))
@@ -161,7 +195,54 @@ export function readFileAsDataUrl(file: File): Promise<string> {
   })
 }
 
+function buildTradeFromRows(rows: RawImportRow[], id: string): ProposedTrade {
+  const sorted = [...rows].sort((a, b) => a.time - b.time)
+  const firstDirection = sorted.map((row) => inferDirection(row.type, row.signal)).find((direction) => direction != null)
+  const trade: ProposedTrade = {
+    id,
+    direction: firstDirection ?? 'long',
+    executions: [],
+    warning: firstDirection ? undefined : `无法识别方向：${sorted[0]?.type ?? ''}`,
+  }
+  let position = 0
+
+  for (const row of sorted) {
+    const direction = inferDirection(row.type, row.signal)
+    if (direction && direction !== trade.direction) {
+      trade.warning = '同一 TradingView 交易编号内检测到方向不一致，请确认。'
+    }
+    const entry = isEntry(row.type)
+    const exit = isExit(row.type)
+    const action: Execution['action'] = entry
+      ? position === 0 ? 'entry' : 'scale-in'
+      : exit
+        ? row.quantity >= position ? 'exit' : 'scale-out'
+        : position === 0 ? 'entry' : 'scale-in'
+
+    trade.executions.push({ ...row, action })
+    if (action === 'entry' || action === 'scale-in') {
+      position += row.quantity
+    } else {
+      position = Math.max(0, position - row.quantity)
+    }
+  }
+
+  return trade
+}
+
 export function groupRows(rows: RawImportRow[]): ProposedTrade[] {
+  const rowsWithTradeNo = rows.filter((row) => row.sourceTradeNo)
+  if (rows.length > 0 && rowsWithTradeNo.length === rows.length) {
+    const groups = new Map<string, RawImportRow[]>()
+    for (const row of rows) {
+      const key = row.sourceTradeNo as string
+      groups.set(key, [...(groups.get(key) ?? []), row])
+    }
+    return [...groups.entries()]
+      .map(([tradeNo, group]) => buildTradeFromRows(group, `tv-${tradeNo}`))
+      .sort((a, b) => a.executions[0].time - b.executions[0].time)
+  }
+
   const sorted = [...rows].sort((a, b) => a.time - b.time)
   const proposed: ProposedTrade[] = []
   let current: ProposedTrade | null = null
