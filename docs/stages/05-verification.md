@@ -22,6 +22,16 @@
 - `cargo check --manifest-path src-tauri/Cargo.toml`
 - Relevant Rust tests once they exist.
 
+## Latest Verification Result
+
+- `pnpm install` passed.
+- `pnpm typecheck` passed.
+- `pnpm build` passed.
+- `cargo check --manifest-path src-tauri/Cargo.toml` passed.
+- `pnpm tauri build` passed on Windows and produced:
+  - `src-tauri/target/release/bundle/msi/CAIRN_0.1.0_x64_en-US.msi`
+  - `src-tauri/target/release/bundle/nsis/CAIRN_0.1.0_x64-setup.exe`
+
 ## Not Required
 
 - macOS runtime verification.
