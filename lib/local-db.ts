@@ -3,7 +3,7 @@ import { invoke } from '@tauri-apps/api/core'
 import type { CairnStateSnapshot } from './seed'
 import { seedState } from './seed'
 
-type CollectionName = 'accounts' | 'periods' | 'trades' | 'symbols' | 'notes' | 'tagDefs' | 'importBatches' | 'attachments'
+type CollectionName = 'accounts' | 'periods' | 'trades' | 'symbols' | 'notes' | 'tagDefs' | 'importBatches' | 'attachments' | 'chartImports' | 'chartCandles'
 
 declare global {
   interface Window {
@@ -53,4 +53,67 @@ export async function restoreLocalState(snapshot: CairnStateSnapshot): Promise<C
 export async function exportLocalBackup(): Promise<string> {
   if (!isTauriRuntime()) return ''
   return invoke<string>('export_backup')
+}
+
+export async function saveAttachmentFile(input: {
+  ownerType: string
+  ownerId: string
+  kind: string
+  attachmentId: string
+  fileName: string
+  contentDataUrl: string
+}): Promise<{ fileName: string; relativePath: string; mimeType: string }> {
+  if (!isTauriRuntime()) {
+    return {
+      fileName: input.fileName,
+      relativePath: input.contentDataUrl,
+      mimeType: input.contentDataUrl.match(/^data:([^;]+)/)?.[1] ?? 'image/png',
+    }
+  }
+  return invoke<{ file_name: string; relative_path: string; mime_type: string }>('save_attachment_file', {
+    owner_type: input.ownerType,
+    owner_id: input.ownerId,
+    kind: input.kind,
+    attachment_id: input.attachmentId,
+    file_name: input.fileName,
+    content_data_url: input.contentDataUrl,
+  }).then((saved) => ({
+    fileName: saved.file_name,
+    relativePath: saved.relative_path,
+    mimeType: saved.mime_type,
+  }))
+}
+
+export async function readAttachmentFile(relativePath: string): Promise<string> {
+  if (relativePath.startsWith('data:') || relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
+    return relativePath
+  }
+  if (!isTauriRuntime()) return relativePath
+  return invoke<string>('read_attachment_file', { relative_path: relativePath })
+}
+
+export async function saveChartSourceFile(input: {
+  fileName: string
+  contentBase64: string
+  symbolLabel: string
+  timeframe: string
+  startUtc: string
+  endUtc: string
+}): Promise<string> {
+  if (!isTauriRuntime()) return ''
+  return invoke<string>('save_chart_source_file', {
+    ...input,
+    content_base64: input.contentBase64,
+    symbol_label: input.symbolLabel,
+    start_utc: input.startUtc,
+    end_utc: input.endUtc,
+  })
+}
+
+export async function saveLocalRecords<T extends { id: string }>(
+  collection: CollectionName,
+  records: T[],
+): Promise<void> {
+  if (!isTauriRuntime() || records.length === 0) return
+  await invoke('save_records', { collection, records })
 }

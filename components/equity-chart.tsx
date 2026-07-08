@@ -2,7 +2,7 @@
 
 import { useEffect, useRef } from 'react'
 import { useTheme } from 'next-themes'
-import { createChart, AreaSeries, type IChartApi, type UTCTimestamp } from 'lightweight-charts'
+import { createChart, AreaSeries, BaselineSeries, LineType, type IChartApi, type UTCTimestamp } from 'lightweight-charts'
 import type { EquityPoint } from '@/lib/types'
 
 const palettes = {
@@ -12,6 +12,10 @@ const palettes = {
     line: '#3b6ef5',
     top: 'rgba(59, 110, 245, 0.16)',
     bottom: 'rgba(59, 110, 245, 0.01)',
+    above: 'rgb(37, 99, 235)',
+    aboveFill: 'rgba(37, 99, 235, 0.2)',
+    below: 'rgb(250, 204, 21)',
+    belowFill: 'rgba(250, 204, 21, 0.22)',
   },
   dark: {
     text: '#a8a29e',
@@ -19,10 +23,14 @@ const palettes = {
     line: '#6b96ff',
     top: 'rgba(107, 150, 255, 0.2)',
     bottom: 'rgba(107, 150, 255, 0.02)',
+    above: 'rgb(122, 162, 255)',
+    aboveFill: 'rgba(122, 162, 255, 0.24)',
+    below: 'rgb(250, 204, 21)',
+    belowFill: 'rgba(250, 204, 21, 0.22)',
   },
 }
 
-export function EquityChart({ points, height = 260 }: { points: EquityPoint[]; height?: number }) {
+export function EquityChart({ points, height = 260, baseline }: { points: EquityPoint[]; height?: number; baseline?: number }) {
   const containerRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<IChartApi | null>(null)
   const { resolvedTheme } = useTheme()
@@ -57,17 +65,37 @@ export function EquityChart({ points, height = 260 }: { points: EquityPoint[]; h
     })
     chartRef.current = chart
 
-    const series = chart.addSeries(AreaSeries, {
-      lineColor: p.line,
-      lineWidth: 2,
-      lineType: 2, // Curved：平滑曲线而非折线
-      topColor: p.top,
-      bottomColor: p.bottom,
-      priceLineVisible: false,
-      lastValueVisible: true,
-    })
+    const series = baseline == null
+      ? chart.addSeries(AreaSeries, {
+          lineColor: p.line,
+          lineWidth: 2,
+          lineType: LineType.Curved,
+          topColor: p.top,
+          bottomColor: p.bottom,
+          priceLineVisible: false,
+          lastValueVisible: true,
+        })
+      : chart.addSeries(BaselineSeries, {
+          baseValue: { type: 'price', price: baseline },
+          topLineColor: p.above,
+          topFillColor1: p.aboveFill,
+          topFillColor2: 'rgba(0, 0, 0, 0)',
+          bottomLineColor: p.below,
+          bottomFillColor1: p.belowFill,
+          bottomFillColor2: 'rgba(0, 0, 0, 0)',
+          lineWidth: 2,
+          lineType: LineType.Curved,
+          priceLineVisible: false,
+          lastValueVisible: true,
+        })
+    const dataBySecond = new Map<number, number>()
+    for (const pt of points) {
+      dataBySecond.set(Math.floor(pt.time / 1000), pt.equity)
+    }
     series.setData(
-      points.map((pt) => ({ time: Math.floor(pt.time / 1000) as UTCTimestamp, value: pt.equity })),
+      [...dataBySecond.entries()]
+        .sort((a, b) => a[0] - b[0])
+        .map(([time, value]) => ({ time: time as UTCTimestamp, value })),
     )
     chart.timeScale().fitContent()
 
@@ -82,7 +110,7 @@ export function EquityChart({ points, height = 260 }: { points: EquityPoint[]; h
       chart.remove()
       chartRef.current = null
     }
-  }, [points, height, resolvedTheme])
+  }, [points, height, baseline, resolvedTheme])
 
   if (points.length === 0) {
     return (

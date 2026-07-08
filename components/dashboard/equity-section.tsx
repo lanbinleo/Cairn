@@ -73,7 +73,7 @@ export function EquitySection() {
         </Tabs>
       </CardHeader>
       <CardContent>
-        <EquityChart points={curve} />
+        <EquityChart points={curve} baseline={account.initialBalance} />
       </CardContent>
     </Card>
   )

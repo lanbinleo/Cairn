@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Check, Plus, Tags, Trash2 } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
@@ -16,6 +16,7 @@ import { Input } from '@/components/ui/input'
 import { Separator } from '@/components/ui/separator'
 import { TAG_COLORS, tagColorNames, tagDotClasses } from '@/components/tag-badge'
 import { useCairn } from '@/lib/store'
+import { findTagByName, normalizeTagName, tagNamesEqual } from '@/lib/tags'
 import type { TagColor, TagDef } from '@/lib/types'
 import { cn } from '@/lib/utils'
 
@@ -55,18 +56,45 @@ function ColorPicker({
 
 /** 单个标签行：改色、重命名、删除、显示使用次数 */
 function TagRow({ tag }: { tag: TagDef }) {
-  const { trades, updateTag, deleteTag } = useCairn()
-  const usage = trades.filter((t) => t.tags.includes(tag.name)).length
+  const { trades, tagDefs, updateTag, deleteTag } = useCairn()
+  const [name, setName] = useState(tag.name)
+  const normalizedName = normalizeTagName(name)
+  const duplicate = Boolean(normalizedName && findTagByName(tagDefs, normalizedName, tag.id))
+  const usage = trades.filter((t) => t.tags.some((name) => tagNamesEqual(name, tag.name))).length
+
+  useEffect(() => {
+    setName(tag.name)
+  }, [tag.name])
+
+  function commitName() {
+    if (!normalizedName || duplicate) {
+      setName(tag.name)
+      return
+    }
+    if (!tagNamesEqual(normalizedName, tag.name)) updateTag(tag.id, { name: normalizedName })
+  }
+
+  function handleDelete() {
+    const message = usage > 0
+      ? `删除标签「${tag.name}」？它会从 ${usage} 笔交易中移除。`
+      : `删除标签「${tag.name}」？`
+    if (window.confirm(message)) deleteTag(tag.id)
+  }
 
   return (
     <div className="flex items-center gap-3 py-2">
       <Input
-        defaultValue={tag.name}
+        value={name}
         aria-label={`标签名：${tag.name}`}
-        className="h-8 max-w-40 font-medium"
-        onBlur={(e) => {
-          const v = e.target.value.trim()
-          if (v && v !== tag.name) updateTag(tag.id, { name: v })
+        aria-invalid={duplicate}
+        className={cn('h-8 max-w-40 font-medium', duplicate && 'border-destructive')}
+        onChange={(e) => setName(e.target.value)}
+        onBlur={commitName}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' && !e.nativeEvent.isComposing && e.keyCode !== 229) {
+            e.preventDefault()
+            commitName()
+          }
         }}
       />
       <ColorPicker value={tag.color} onChange={(c) => updateTag(tag.id, { color: c })} idPrefix={tag.id} />
@@ -78,7 +106,7 @@ function TagRow({ tag }: { tag: TagDef }) {
         size="icon-sm"
         aria-label={`删除标签 ${tag.name}`}
         className="text-muted-foreground hover:text-destructive"
-        onClick={() => deleteTag(tag.id)}
+        onClick={handleDelete}
       >
         <Trash2 />
       </Button>
@@ -90,8 +118,11 @@ export function ManageTagsDialog() {
   const { tagDefs, createTag } = useCairn()
   const [newName, setNewName] = useState('')
   const [newColor, setNewColor] = useState<TagColor>('blue')
+  const normalizedNewName = normalizeTagName(newName)
+  const duplicateNewName = Boolean(normalizedNewName && findTagByName(tagDefs, normalizedNewName))
 
   function handleCreate() {
+    if (!normalizedNewName || duplicateNewName) return
     if (createTag(newName, newColor)) {
       setNewName('')
       setNewColor('blue')
@@ -118,14 +149,18 @@ export function ManageTagsDialog() {
               placeholder="新标签名"
               value={newName}
               aria-label="新标签名"
-              className="h-8 max-w-40"
+              aria-invalid={duplicateNewName}
+              className={cn('h-8 max-w-40', duplicateNewName && 'border-destructive')}
               onChange={(e) => setNewName(e.target.value)}
               onKeyDown={(e) => {
-                if (e.key === 'Enter' && !e.nativeEvent.isComposing && e.keyCode !== 229) handleCreate()
+                if (e.key === 'Enter' && !e.nativeEvent.isComposing && e.keyCode !== 229) {
+                  e.preventDefault()
+                  handleCreate()
+                }
               }}
             />
             <ColorPicker value={newColor} onChange={setNewColor} idPrefix="new-tag" />
-            <Button size="sm" className="ml-auto" disabled={!newName.trim()} onClick={handleCreate}>
+            <Button size="sm" className="ml-auto" disabled={!normalizedNewName || duplicateNewName} onClick={handleCreate}>
               <Plus data-icon="inline-start" />
               添加
             </Button>

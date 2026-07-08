@@ -50,6 +50,12 @@ export interface TradingSymbol {
 
 export type TradeDirection = 'long' | 'short'
 export type TradeStatus = 'open' | 'closed'
+export type ChartTimeframe = '5m' | '15m' | '1h' | '4h' | '1d'
+
+export interface TimeRange {
+  start: number
+  end: number
+}
 
 /** 标签七色：红橙黄绿青蓝紫 */
 export type TagColor = 'red' | 'orange' | 'yellow' | 'green' | 'cyan' | 'blue' | 'purple'
@@ -62,7 +68,18 @@ export interface TagDef {
   createdAt: number
 }
 
-export type ExecutionAction = 'entry' | 'scale-in' | 'scale-out' | 'exit'
+export type ExecutionAction =
+  | 'undecided'
+  | 'entry'
+  | 'scale-in'
+  | 'scale-out'
+  | 'exit'
+  | 'stop'
+  | 'stop-set'
+  | 'stop-moved'
+  | 'target-set'
+  | 'target-moved'
+  | 'order-edit'
 export type OrderType = 'market' | 'limit' | 'stop' | 'stop-limit' | 'stop-loss' | 'take-profit' | 'trailing-stop'
 
 export interface Execution {
@@ -72,9 +89,12 @@ export interface Execution {
   orderType: OrderType
   /** UTC epoch ms */
   time: number
-  price: number
-  /** 数量（正数；方向由 trade + action 决定） */
-  quantity: number
+  /** 成交价，或 stop/target/order edit 的目标价 */
+  price?: number
+  /** 仓位类 action 的数量；管理类 action 可为空 */
+  quantity?: number
+  /** 管理类 action 的手动锚点价，用于风险/目标区域绘制 */
+  anchorPrice?: number
   /** TradingView 原始信号文本，如 "TP1" / "SL" */
   signal?: string
   /** 原始导入行引用，如 tv:trade:7:row:14 */
@@ -107,12 +127,16 @@ export interface Trade {
   sourceRef?: string
   /** 初始止损价（R 计算基准；可后补） */
   initialStopLoss?: number
+  /** 初始止盈价（复盘图表参考；可后补） */
+  initialTakeProfit?: number
   executions: Execution[]
   events: TradeEvent[]
-  /** 参考图（备份截图）地址 */
+  /** 参考图（备份截图）attachment id；旧数据可能是 URL/data URL */
   referenceImages: string[]
-  /** 导入时附带的 K 线数据；缺失时详情页使用合成数据展示 */
+  /** 兼容旧数据：导入时附带的 5m K 线数据 */
   chartBars?: ChartBar[]
+  /** 按周期保存的 K 线数据 */
+  chartData?: Partial<Record<ChartTimeframe, ChartBar[]>>
   tags: string[]
   note?: string
   createdAt: number
@@ -129,16 +153,41 @@ export interface ChartBar {
   ema20?: number
 }
 
+export interface ChartCandle extends ChartBar {
+  id: string
+  symbolId: string
+  timeframe: ChartTimeframe
+  importIds: string[]
+}
+
+export interface ChartImport {
+  id: string
+  symbolId: string
+  timeframe: ChartTimeframe
+  fileName: string
+  sourcePath?: string
+  status: 'parsed' | 'failed'
+  rowCount: number
+  insertedCount: number
+  duplicateCount: number
+  conflictCount: number
+  startTime?: number
+  endTime?: number
+  detectedIntervalMs?: number
+  error?: string
+  createdAt: number
+}
+
 export interface NoteMention {
   type: 'trade' | 'image'
-  /** trade id 或图片 url */
+  /** trade id 或 attachment id；旧数据可能是图片 URL/data URL */
   ref: string
 }
 
 export interface Note {
   id: string
   title: string
-  /** Markdown 内容，@mention 以 [[trade:ID]] / [[image:URL]] 形式内嵌 */
+  /** Markdown 内容，@mention 以 [[trade:ID]] / [[image:attachmentId]] 形式内嵌 */
   content: string
   tags: string[]
   mentions: NoteMention[]

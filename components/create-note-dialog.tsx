@@ -16,8 +16,8 @@ import {
 import { Field, FieldGroup, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
-import { insertAtCursor, readPastedImage } from '@/lib/clipboard-images'
 import { useCairn } from '@/lib/store'
+import { uniqueTagNames } from '@/lib/tags'
 
 export function CreateNoteDialog() {
   const { createNote } = useCairn()
@@ -36,10 +36,7 @@ export function CreateNoteDialog() {
     createNote({
       title: title.trim() || '新建笔记',
       content: content.trim() || '### 新建笔记',
-      tags: tags
-        .split(',')
-        .map((tag) => tag.trim())
-        .filter(Boolean),
+      tags: uniqueTagNames(tags.split(',')),
       mentions: [],
     })
     setOpen(false)
@@ -60,7 +57,7 @@ export function CreateNoteDialog() {
       <DialogContent className="sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>新建笔记</DialogTitle>
-          <DialogDescription>笔记可在正文中使用 [[trade:ID]] 或 [[image:URL]]</DialogDescription>
+          <DialogDescription>保存后可在编辑页使用 @ 提及交易或图片</DialogDescription>
         </DialogHeader>
 
         <FieldGroup>
@@ -79,13 +76,6 @@ export function CreateNoteDialog() {
               rows={8}
               value={content}
               onChange={(e) => setContent(e.target.value)}
-              onPaste={(event) => {
-                const start = event.currentTarget.selectionStart
-                const end = event.currentTarget.selectionEnd
-                void readPastedImage(event).then((dataUrl) => {
-                  if (dataUrl) setContent((prev) => insertAtCursor(prev, `[[image:${dataUrl}]]`, start, end))
-                })
-              }}
             />
           </Field>
         </FieldGroup>

@@ -3,13 +3,14 @@
  * 这一层逻辑与 UI 无关，未来可直接移植到后端。
  */
 
+import { hasPositionFill, isEntryExecution } from './executions'
 import type { Trade, TradeMetrics, EquityPoint, StatsSummary } from './types'
 
 const EPS = 1e-9
 
 /** 计算单个 Trade 的派生指标（基于其全部 Execution） */
 export function computeTradeMetrics(trade: Trade): TradeMetrics {
-  const execs = [...trade.executions].sort((a, b) => a.time - b.time)
+  const execs = [...trade.executions].filter(hasPositionFill).sort((a, b) => a.time - b.time)
   const sign = trade.direction === 'long' ? 1 : -1
 
   let entryQty = 0
@@ -18,12 +19,14 @@ export function computeTradeMetrics(trade: Trade): TradeMetrics {
   let exitProceeds = 0
 
   for (const e of execs) {
-    if (e.action === 'entry' || e.action === 'scale-in') {
-      entryQty += e.quantity
-      entryCost += e.quantity * e.price
+    const quantity = e.quantity ?? 0
+    const price = e.price ?? 0
+    if (isEntryExecution(e)) {
+      entryQty += quantity
+      entryCost += quantity * price
     } else {
-      exitQty += e.quantity
-      exitProceeds += e.quantity * e.price
+      exitQty += quantity
+      exitProceeds += quantity * price
     }
   }
 

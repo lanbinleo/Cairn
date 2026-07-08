@@ -24,7 +24,7 @@ export class ErrorBoundary extends Component<{ children: ReactNode }, ErrorBound
           <div className="mx-auto flex max-w-2xl flex-col gap-3 rounded-lg border bg-card p-5">
             <h1 className="text-lg font-semibold">Cairn 前端启动失败</h1>
             <p className="text-sm text-muted-foreground">
-              错误已经写入本地启动日志。请查看 `%APPDATA%\app.cairn.desktop\cairn-startup.log`。
+              错误已经写入本地日志。请在设置页查看 `cairn.log`。
             </p>
             <pre className="max-h-96 overflow-auto rounded-md bg-muted p-3 text-xs">
               {this.state.error.stack ?? this.state.error.message}

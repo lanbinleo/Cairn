@@ -5,6 +5,7 @@
  * 使 K 线走势与交易记录相互吻合。
  */
 
+import { hasPositionFill } from './executions'
 import type { Trade, ChartBar } from './types'
 
 const BAR_MS = 5 * 60_000
@@ -39,7 +40,7 @@ function alignToBar(time: number): number {
  * 价格路径在各 Execution 时间点锚定其成交价，其余部分为受控随机游走。
  */
 export function generateChartBars(trade: Trade): ChartBar[] {
-  const execs = [...trade.executions].sort((a, b) => a.time - b.time)
+  const execs = [...trade.executions].filter(hasPositionFill).sort((a, b) => a.time - b.time)
   if (execs.length === 0) return []
 
   const pad = 60 * BAR_MS

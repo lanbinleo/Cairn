@@ -88,7 +88,7 @@ export default function PeriodDetailPage() {
           <CardTitle className="text-base">Period 资金曲线</CardTitle>
         </CardHeader>
         <CardContent>
-          <EquityChart points={curve} />
+          <EquityChart points={curve} baseline={account.initialBalance} />
         </CardContent>
       </Card>
 

@@ -85,7 +85,7 @@ export default function AccountDetailPage() {
           <CardTitle className="text-base">资金曲线</CardTitle>
         </CardHeader>
         <CardContent>
-          <EquityChart points={curve} />
+          <EquityChart points={curve} baseline={account.initialBalance} />
         </CardContent>
       </Card>
 

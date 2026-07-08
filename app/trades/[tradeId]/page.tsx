@@ -1,8 +1,10 @@
 'use client'
 
-import { Link, Navigate, useParams } from 'react-router-dom'
-import { CheckCircle2, ChevronRight, RotateCcw } from 'lucide-react'
+import { useRef, useState } from 'react'
+import { Link, Navigate, useNavigate, useParams } from 'react-router-dom'
+import { CheckCircle2, ChevronRight, Clipboard, Copy, ImagePlus, NotebookPen, Trash2 } from 'lucide-react'
 
+import { AttachmentImage } from '@/components/attachment-image'
 import { TradeChart } from '@/components/trade-chart'
 import { PnlText, RText } from '@/components/pnl-text'
 import { DirectionBadge, StatusBadge } from '@/components/trades-table'
@@ -12,27 +14,15 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Separator } from '@/components/ui/separator'
 import { useCairn } from '@/lib/store'
+import { executionActionLabel, isPositionExecutionAction, orderTypeLabel } from '@/lib/executions'
 import { computeTradeMetrics } from '@/lib/metrics'
-import { generateChartBars } from '@/lib/chart-data'
 import { fmtPrice, fmtDuration, fmtUtcDateTime, fmtUtcDate } from '@/lib/format'
+import { uniqueTagNames } from '@/lib/tags'
 import { timeToBarIndex } from '@/lib/bar-time'
-
-const actionLabel: Record<string, string> = {
-  entry: '进场',
-  'scale-in': '加仓',
-  'scale-out': '减仓',
-  exit: '离场',
-}
-
-const orderTypeLabel: Record<string, string> = {
-  market: '市价',
-  limit: '限价',
-  stop: '停损单（Stop）',
-  'stop-limit': '止损限价',
-  'stop-loss': '止损',
-  'take-profit': '止盈',
-  'trailing-stop': '移动止损离场',
-}
+import { readFileAsDataUrl } from '@/lib/tradingview-import'
+import { createTradeTransferPayload, stringifyTradeTransfer } from '@/lib/trade-transfer'
+import { CHART_TIMEFRAMES, chartTimeframeLabel, chartTimeframeMinutes } from '@/lib/chart-timeframes'
+import type { ChartTimeframe } from '@/lib/types'
 
 const eventLabel: Record<string, string> = {
   'sl-set': '设置止损',
@@ -43,26 +33,93 @@ const eventLabel: Record<string, string> = {
 }
 
 export default function TradeDetailPage() {
+  const navigate = useNavigate()
   const { tradeId = '' } = useParams()
-  const { getTrade, getAccount, getPeriod, getSymbol, getNotesMentioningTrade, symbolLabel, setTradeStatus } = useCairn()
+  const imageInputRef = useRef<HTMLInputElement | null>(null)
+  const [imageEditIndex, setImageEditIndex] = useState<number | null>(null)
+  const [chartTimeframe, setChartTimeframe] = useState<ChartTimeframe>('5m')
+  const [showTrailLines, setShowTrailLines] = useState(true)
+  const [showEntryLine, setShowEntryLine] = useState(true)
+  const { getTrade, getAccount, getPeriod, getSymbol, getNotesMentioningTrade, symbolLabel, setTradeStatus, updateTrade, createNote, createImageAttachment, deleteAttachment, getChartCandles } = useCairn()
   const trade = getTrade(tradeId)
   if (!trade) return <Navigate to="/trades" replace />
+  const activeTrade = trade
 
   const account = getAccount(trade.accountId)
   const period = getPeriod(trade.periodId)
   const symbol = getSymbol(trade.symbolId)
   const m = computeTradeMetrics(trade)
-  const bars = trade.chartBars?.length ? trade.chartBars : generateChartBars(trade)
+  const tags = uniqueTagNames(trade.tags)
+  const executionTimes = trade.executions.map((execution) => execution.time)
+  const chartPadding = chartTimeframeMinutes(chartTimeframe) * 60_000 * 80
+  const chartStart = executionTimes.length ? Math.min(...executionTimes) - chartPadding : undefined
+  const chartEnd = executionTimes.length ? Math.max(...executionTimes) + chartPadding : undefined
+  const libraryBars = getChartCandles(trade.symbolId, chartTimeframe, chartStart, chartEnd)
+  const bars = libraryBars.length ? libraryBars : trade.chartData?.[chartTimeframe] ?? (chartTimeframe === '5m' ? trade.chartBars : undefined) ?? []
   const mentioningNotes = getNotesMentioningTrade(trade.id)
 
+  function createLinkedNote() {
+    const note = createNote({
+      title: `Trade #${String(activeTrade.seq).padStart(3, '0')}`,
+      content: `[[trade:${activeTrade.id}]]\n`,
+      tags: [],
+      mentions: [{ type: 'trade', ref: activeTrade.id }],
+    })
+    navigate(`/notes/${note.id}/edit`)
+  }
+
+  function copyText(text: string) {
+    void navigator.clipboard?.writeText(text)
+  }
+
+  function copyTradeJson(includeChartData: boolean) {
+    copyText(stringifyTradeTransfer(createTradeTransferPayload(activeTrade, symbol, includeChartData)))
+  }
+
+  async function handleImageSelected(file?: File) {
+    if (!file) return
+    const dataUrl = await readFileAsDataUrl(file)
+    const attachment = await createImageAttachment({
+      ownerType: 'trade',
+      ownerId: activeTrade.id,
+      kind: 'reference-image',
+      fileName: file.name,
+      contentDataUrl: dataUrl,
+    })
+    const next = [...activeTrade.referenceImages]
+    if (imageEditIndex == null) {
+      next.push(attachment.id)
+    } else {
+      const previous = next[imageEditIndex]
+      next[imageEditIndex] = attachment.id
+      if (previous && !previous.startsWith('data:') && !previous.startsWith('http://') && !previous.startsWith('https://')) {
+        deleteAttachment(previous)
+      }
+    }
+    updateTrade(activeTrade.id, { referenceImages: next })
+    setImageEditIndex(null)
+  }
+
+  function stopLabelForExecutionIndex(index: number) {
+    const hasPriorStop =
+      activeTrade.initialStopLoss != null ||
+      activeTrade.executions.slice(0, index).some((execution) => execution.price != null && (execution.action === 'stop' || execution.action === 'stop-set' || execution.action === 'stop-moved'))
+    return hasPriorStop ? 'Move stop' : 'Set stop'
+  }
+
   const timeline = [
-    ...trade.executions.map((e) => ({
-      kind: 'exec' as const,
-      time: e.time,
-      title: `${actionLabel[e.action]} ${e.quantity} @ ${fmtPrice(e.price, symbol?.pricePrecision)}`,
-      detail: `${orderTypeLabel[e.orderType]}${e.signal ? ` · 信号 ${e.signal}` : ''}`,
-      tone: e.action === 'entry' || e.action === 'scale-in' ? 'entry' : 'exit',
-    })),
+    ...trade.executions.map((e, executionIndex) => {
+      const label = e.action === 'stop' ? stopLabelForExecutionIndex(executionIndex) : (executionActionLabel[e.action] ?? e.action)
+      const priceText = e.price == null ? '' : fmtPrice(e.price, symbol?.pricePrecision)
+      const isPositionAction = isPositionExecutionAction(e.action)
+      return {
+        kind: 'exec' as const,
+        time: e.time,
+        title: isPositionAction ? `${label} ${e.quantity ?? '—'} @ ${priceText || '—'}` : `${label}${priceText ? ` -> ${priceText}` : ''}`,
+        detail: `${orderTypeLabel[e.orderType] ?? e.orderType}${e.anchorPrice == null ? '' : ` · anchor ${fmtPrice(e.anchorPrice, symbol?.pricePrecision)}`}${e.signal ? ` · 信号 ${e.signal}` : ''}`,
+        tone: e.action === 'entry' || e.action === 'scale-in' || e.action.startsWith('target') ? 'entry' : 'exit',
+      }
+    }),
     ...trade.events.map((ev) => ({
       kind: 'event' as const,
       time: ev.time,
@@ -91,9 +148,9 @@ export default function TradeDetailPage() {
             <DirectionBadge direction={trade.direction} />
             <StatusBadge status={trade.status} />
           </div>
-          {trade.tags.length > 0 && (
+          {tags.length > 0 && (
             <div className="flex flex-wrap items-center gap-1.5">
-              {trade.tags.map((tag) => (
+              {tags.map((tag) => (
                 <TagBadge key={tag} name={tag} />
               ))}
             </div>
@@ -103,19 +160,26 @@ export default function TradeDetailPage() {
           </p>
         </div>
         <div className="flex items-center gap-2">
-          {trade.status === 'open' ? (
+          <Button variant="outline" onClick={() => copyText(trade.id)}>
+            <Clipboard data-icon="inline-start" />
+            复制 ID
+          </Button>
+          <Button variant="outline" onClick={() => copyTradeJson(false)}>
+            <Clipboard data-icon="inline-start" />
+            复制 JSON
+          </Button>
+          <Button variant="outline" onClick={() => copyTradeJson(true)}>
+            <Clipboard data-icon="inline-start" />
+            JSON + 图表
+          </Button>
+          <Button variant="outline" onClick={createLinkedNote}>
+            <NotebookPen data-icon="inline-start" />
+            新建笔记
+          </Button>
+          {trade.status === 'open' && (
             <Button variant="outline" onClick={() => setTradeStatus(trade.id, 'closed')}>
               <CheckCircle2 data-icon="inline-start" />
               标记为已平仓
-            </Button>
-          ) : (
-            <Button
-              variant="ghost"
-              className="text-muted-foreground"
-              onClick={() => setTradeStatus(trade.id, 'open')}
-            >
-              <RotateCcw data-icon="inline-start" />
-              重新打开
             </Button>
           )}
           <EditTradeDialog trade={trade} />
@@ -127,12 +191,40 @@ export default function TradeDetailPage() {
         <div className="flex flex-col gap-6 xl:col-span-3">
           <Card>
             <CardHeader>
-              <CardTitle className="text-base">复盘图表</CardTitle>
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <CardTitle className="text-base">复盘图表</CardTitle>
+                <div className="flex flex-wrap items-center gap-1">
+                  {CHART_TIMEFRAMES.map((item) => (
+                    <Button
+                      key={item.value}
+                      variant={chartTimeframe === item.value ? 'secondary' : 'ghost'}
+                      size="sm"
+                      onClick={() => setChartTimeframe(item.value)}
+                    >
+                      {item.label}
+                    </Button>
+                  ))}
+                  <Button
+                    variant={showTrailLines ? 'secondary' : 'ghost'}
+                    size="sm"
+                    onClick={() => setShowTrailLines((value) => !value)}
+                  >
+                    Trail line
+                  </Button>
+                  <Button
+                    variant={showEntryLine ? 'secondary' : 'ghost'}
+                    size="sm"
+                    onClick={() => setShowEntryLine((value) => !value)}
+                  >
+                    Entry line
+                  </Button>
+                </div>
+              </div>
             </CardHeader>
             <CardContent>
-              <TradeChart bars={bars} trade={trade} />
+              <TradeChart bars={bars} trade={trade} showTrailLines={showTrailLines} showEntryLine={showEntryLine} />
               <p className="mt-2 text-xs text-muted-foreground">
-                5m · UTC · EMA20 · 箭头为 Execution，圆点为 SL/TP 变动，虚线为初始止损
+                {chartTimeframeLabel(chartTimeframe)} · UTC · EMA · 箭头为仓位 Execution，圆点为管理 Execution，Trail line 显示止损/止盈轨迹
               </p>
             </CardContent>
           </Card>
@@ -178,23 +270,84 @@ export default function TradeDetailPage() {
             </CardContent>
           </Card>
 
-          {trade.referenceImages.length > 0 && (
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-base">参考图（备份）</CardTitle>
-              </CardHeader>
-              <CardContent className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                {trade.referenceImages.map((src, i) => (
-                  <img
-                    key={src + i}
-                    src={src || "/placeholder.svg"}
-                    alt={`交易 #${trade.seq} 参考图 ${i + 1}`}
-                    className="w-full rounded-lg border"
-                  />
-                ))}
-              </CardContent>
-            </Card>
-          )}
+          <Card>
+            <CardHeader>
+              <div className="flex items-center justify-between gap-3">
+                <CardTitle className="text-base">配图区</CardTitle>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    setImageEditIndex(null)
+                    imageInputRef.current?.click()
+                  }}
+                >
+                  <ImagePlus data-icon="inline-start" />
+                  添加图片
+                </Button>
+              </div>
+            </CardHeader>
+            <CardContent>
+              {trade.referenceImages.length === 0 ? (
+                <div className="flex min-h-36 items-center justify-center rounded-lg border border-dashed text-sm text-muted-foreground">
+                  暂无配图
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                  {trade.referenceImages.map((imageRef, i) => (
+                    <figure key={imageRef + i} className="overflow-hidden rounded-lg border">
+                      <AttachmentImage
+                        imageRef={imageRef}
+                        alt={`交易 #${trade.seq} 配图 ${i + 1}`}
+                        className="w-full"
+                      />
+                      <figcaption className="flex items-center justify-between gap-2 border-t p-2">
+                        <span className="text-xs text-muted-foreground">图片 {i + 1}</span>
+                        <div className="flex items-center gap-1">
+                          <Button variant="ghost" size="icon-sm" aria-label="复制图片引用" onClick={() => copyText(`[[image:${imageRef}]]`)}>
+                            <Copy />
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => {
+                              setImageEditIndex(i)
+                              imageInputRef.current?.click()
+                            }}
+                          >
+                            替换
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="icon-sm"
+                            aria-label="删除图片"
+                            onClick={() => {
+                              if (!imageRef.startsWith('data:') && !imageRef.startsWith('http://') && !imageRef.startsWith('https://')) {
+                                deleteAttachment(imageRef)
+                              }
+                              updateTrade(trade.id, { referenceImages: trade.referenceImages.filter((_, index) => index !== i) })
+                            }}
+                          >
+                            <Trash2 />
+                          </Button>
+                        </div>
+                      </figcaption>
+                    </figure>
+                  ))}
+                </div>
+              )}
+              <input
+                ref={imageInputRef}
+                type="file"
+                accept="image/*"
+                className="hidden"
+                onChange={(event) => {
+                  void handleImageSelected(event.target.files?.[0])
+                  event.target.value = ''
+                }}
+              />
+            </CardContent>
+          </Card>
         </div>
 
         {/* 侧栏：概要信息 */}
@@ -250,6 +403,14 @@ export default function TradeDetailPage() {
                   <span className="text-sm text-muted-foreground">初始止损</span>
                   <span className="font-mono text-sm tabular-nums">
                     {fmtPrice(trade.initialStopLoss, symbol?.pricePrecision)}
+                  </span>
+                </div>
+              )}
+              {trade.initialTakeProfit != null && (
+                <div className="flex items-baseline justify-between">
+                  <span className="text-sm text-muted-foreground">初始止盈</span>
+                  <span className="font-mono text-sm tabular-nums">
+                    {fmtPrice(trade.initialTakeProfit, symbol?.pricePrecision)}
                   </span>
                 </div>
               )}

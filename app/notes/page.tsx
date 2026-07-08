@@ -9,6 +9,7 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from '@/components/ui/empty'
 import { useCairn } from '@/lib/store'
+import { uniqueTagNames } from '@/lib/tags'
 import { fmtUtcDate } from '@/lib/format'
 import { cn } from '@/lib/utils'
 
@@ -55,7 +56,7 @@ export default function NotesPage() {
               >
                 <span className="text-sm font-medium text-balance">{note.title}</span>
                 <div className="flex flex-wrap items-center gap-1.5">
-                  {note.tags.map((tag) => (
+                  {uniqueTagNames(note.tags).map((tag) => (
                     <Badge key={tag} variant="secondary" className="text-[10px]">
                       {tag}
                     </Badge>
