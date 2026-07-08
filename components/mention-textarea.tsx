@@ -1,6 +1,7 @@
 'use client'
 
-import { useMemo, useRef, useState } from 'react'
+import { useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 
 import { Textarea } from '@/components/ui/textarea'
 import { insertAtCursor, readPastedImage } from '@/lib/clipboard-images'
@@ -30,6 +31,7 @@ export function MentionTextarea({ id, rows, value, onChange }: MentionTextareaPr
   const { trades, symbols, symbolLabel } = useCairn()
   const [activeQuery, setActiveQuery] = useState<{ query: string; start: number; end: number } | null>(null)
   const [activeIndex, setActiveIndex] = useState(0)
+  const [popupRect, setPopupRect] = useState<{ top: number; left: number; width: number; maxHeight: number } | null>(null)
 
   const suggestions = useMemo<Suggestion[]>(() => {
     if (!activeQuery) return []
@@ -83,6 +85,38 @@ export function MentionTextarea({ id, rows, value, onChange }: MentionTextareaPr
     })
   }
 
+  useLayoutEffect(() => {
+    if (!activeQuery || suggestions.length === 0) {
+      setPopupRect(null)
+      return
+    }
+
+    function updatePopupRect() {
+      const el = textareaRef.current
+      if (!el) return
+      const rect = el.getBoundingClientRect()
+      const width = Math.min(rect.width, window.innerWidth - 32)
+      const left = Math.min(Math.max(16, rect.left), window.innerWidth - width - 16)
+      const belowTop = rect.bottom + 8
+      const belowHeight = window.innerHeight - belowTop - 16
+      const aboveHeight = rect.top - 16
+      if (belowHeight >= 160 || belowHeight >= aboveHeight) {
+        setPopupRect({ top: belowTop, left, width, maxHeight: Math.max(120, Math.min(288, belowHeight)) })
+        return
+      }
+      const maxHeight = Math.max(120, Math.min(288, aboveHeight))
+      setPopupRect({ top: Math.max(16, rect.top - maxHeight - 8), left, width, maxHeight })
+    }
+
+    updatePopupRect()
+    window.addEventListener('resize', updatePopupRect)
+    window.addEventListener('scroll', updatePopupRect, true)
+    return () => {
+      window.removeEventListener('resize', updatePopupRect)
+      window.removeEventListener('scroll', updatePopupRect, true)
+    }
+  }, [activeQuery, suggestions.length])
+
   return (
     <div className="relative">
       <Textarea
@@ -126,32 +160,42 @@ export function MentionTextarea({ id, rows, value, onChange }: MentionTextareaPr
           })
         }}
       />
-      {activeQuery && suggestions.length > 0 && (
-        <div className="absolute z-20 mt-2 max-h-72 w-full overflow-y-auto rounded-lg border bg-popover p-1 text-popover-foreground shadow-md">
-          {suggestions.map((item, index) => (
-            <button
-              key={`${item.kind}-${item.token.slice(0, 80)}-${index}`}
-              type="button"
-              className={cn(
-                'flex w-full items-center gap-3 rounded-md px-2 py-2 text-left text-sm',
-                index === activeIndex ? 'bg-accent text-accent-foreground' : 'hover:bg-muted/70',
-              )}
-              onMouseDown={(event) => {
-                event.preventDefault()
-                insertSuggestion(item)
-              }}
-            >
-              {item.kind === 'image' && (
-                <img src={item.src} alt="" className="size-10 rounded border object-cover" />
-              )}
-              <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-                <span className="truncate font-medium">{item.label}</span>
-                <span className="truncate text-xs text-muted-foreground">{item.detail}</span>
-              </span>
-            </button>
-          ))}
-        </div>
-      )}
+      {activeQuery &&
+        suggestions.length > 0 &&
+        popupRect &&
+        createPortal(
+          <div
+            className="fixed z-[100] overflow-y-auto rounded-lg border bg-popover p-1 text-popover-foreground shadow-md"
+            style={{
+              top: popupRect.top,
+              left: popupRect.left,
+              width: popupRect.width,
+              maxHeight: popupRect.maxHeight,
+            }}
+          >
+            {suggestions.map((item, index) => (
+              <button
+                key={`${item.kind}-${item.token.slice(0, 80)}-${index}`}
+                type="button"
+                className={cn(
+                  'flex w-full items-center gap-3 rounded-md px-2 py-2 text-left text-sm',
+                  index === activeIndex ? 'bg-accent text-accent-foreground' : 'hover:bg-muted/70',
+                )}
+                onMouseDown={(event) => {
+                  event.preventDefault()
+                  insertSuggestion(item)
+                }}
+              >
+                {item.kind === 'image' && <img src={item.src} alt="" className="size-10 rounded border object-cover" />}
+                <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+                  <span className="truncate font-medium">{item.label}</span>
+                  <span className="truncate text-xs text-muted-foreground">{item.detail}</span>
+                </span>
+              </button>
+            ))}
+          </div>,
+          document.body,
+        )}
     </div>
   )
 }

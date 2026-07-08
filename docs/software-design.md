@@ -8,7 +8,7 @@ The workflow is:
 
 1. Create Account, Period, and Symbol.
 2. Import TradingView trade exports, optional chart CSV, and reference images.
-3. Review grouped Trades, Executions, TradeEvents, charts, tags, and notes.
+3. Review grouped Trades, Executions, chart overlays, tags, and notes.
 4. Analyze account/period/trade performance.
 5. Manage imported chart data and coverage.
 6. Create notes that mention trades and trade images.
@@ -24,7 +24,7 @@ The workflow is:
 
 ## Design Principles
 
-- Execution is the only成交事实来源. PnL, average prices, realized quantity, duration, and equity are computed from Executions.
+- Execution is the trade action timeline. Position-changing Executions are the only fill source for PnL, average prices, realized quantity, duration, and equity. Trade-management Executions describe stop/target/order changes for review and chart overlays.
 - Time is UTC epoch milliseconds. Bar index is only a UI helper.
 - Imports do not overwrite existing trades. Cairn creates global trade `seq` values and keeps `sourceRef` for imported rows.
 - Backtest and live trading use the same model. `Account.kind` distinguishes them.
@@ -63,18 +63,23 @@ A Trade represents one complete position lifecycle. `seq` is a global display nu
 
 ### Execution
 
-Execution is an atomic fill:
+Execution is an atomic trade action. It can be a position-changing fill or a trade-management update:
 
-- `action`: `entry`, `scale-in`, `scale-out`, `exit`
+- Pending action: `undecided`
+- Position-changing actions: `entry`, `scale-in`, `scale-out`, `exit`
+- Trade-management actions: `stop`, `target-set`, `target-moved`, `order-edit`
+- Legacy stop actions `stop-set` and `stop-moved` may still appear in restored/imported data. New manual UI records use `stop`; the app displays Set Stop or Move Stop from context.
 - `orderType`: `market`, `limit`, `stop`, `stop-limit`, `stop-loss`, `take-profit`, `trailing-stop`
-- `quantity` is always positive.
-- Buy/sell meaning is derived from `Trade.direction` and `Execution.action`.
+- `price` is the fill price for position-changing actions, or the stop/target/order price for management actions.
+- `quantity` is required for position-changing actions and may be empty for management actions.
+- `anchorPrice` is an optional manual anchor used to draw risk/reward zones for management stages.
+- Buy/sell meaning is derived from `Trade.direction` and position-changing `Execution.action`.
 - `signal` preserves TradingView text.
 - `sourceRef` preserves imported row identity.
 
 ### TradeEvent
 
-TradeEvent is a non-fill timeline item:
+TradeEvent is retained for imported chart annotations and legacy data:
 
 - `sl-set`
 - `sl-moved`
@@ -82,7 +87,7 @@ TradeEvent is a non-fill timeline item:
 - `tp-moved`
 - `note`
 
-SL/TP movement is not an Execution. It appears on the trade timeline and chart markers without changing position or PnL.
+New manual trade-management records should be stored as Executions. TradeEvent records may still be rendered on the timeline and chart for compatibility.
 
 ### ImportBatch
 
@@ -124,13 +129,13 @@ TradingView import supports:
 - Order type inference from order type + signal text.
 - Source row preservation through `sourceRef`.
 - Optional chart CSV parsing for OHLC, EMA, and plotted SL/TP level columns.
-- Chart SL/TP level changes become TradeEvents if the chart time overlaps the trade.
+- Chart SL/TP level changes become TradeEvents if the chart time overlaps the trade. Manual stop/target/order changes are stored as trade-management Executions.
 
 If trade export and chart CSV time ranges do not overlap, chart data is not attached to that trade.
 
 ## Metrics
 
-Metrics are computed from Executions:
+Metrics are computed from position-changing Executions only:
 
 - Average entry/exit
 - Realized PnL
@@ -141,13 +146,23 @@ Metrics are computed from Executions:
 - Expectancy
 - Max drawdown
 
-Trade status is stored for workflow, but closed-trade metrics still derive from execution data. Trade detail editing can update executions, tags, initial stop loss, notes, and reference images.
+Trade status is stored for workflow, but closed-trade metrics still derive from position-changing execution data. Trade detail editing can update executions, tags, initial stop loss, optional initial take profit, notes, and reference images.
+
+## Trade Chart Overlays
+
+Trade charts can render execution management stages:
+
+- `Trail line`: stepped stop/target lines.
+- `Entry line`: an entry/average-entry reference line.
+- `Zones`: retained as an optional visual aid for risk/reward areas between an execution's `anchorPrice` and the active stop/target price.
+
+A management stage begins at a `stop`, `target-set`, `target-moved`, or `order-edit` execution and ends at the next stop/target/order-edit execution. If a field is not changed, the previous active stop or target continues through the next stage.
 
 ## Tags
 
-TagDef is global. Trade tags reference tag names. Renaming a TagDef updates all Trade tag references. Trade list filtering uses AND semantics across selected tags.
+TagDef is global. Trade tags reference tag names. Tag names are trimmed, whitespace-normalized, and unique by case-insensitive comparison. Renaming a TagDef updates all Trade tag references. Deleting a TagDef removes that tag from referencing trades after user confirmation. Trade list filtering uses AND semantics across selected tags.
 
-Note tags are text tags and are independent from Trade tags.
+Note tags are text tags and are independent from Trade tags. Note tag input uses the same trimming and de-duplication behavior.
 
 ## Notes
 

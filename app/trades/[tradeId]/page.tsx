@@ -2,7 +2,7 @@
 
 import { useRef, useState } from 'react'
 import { Link, Navigate, useNavigate, useParams } from 'react-router-dom'
-import { CheckCircle2, ChevronRight, Clipboard, Copy, ImagePlus, NotebookPen, RotateCcw, Trash2 } from 'lucide-react'
+import { CheckCircle2, ChevronRight, Clipboard, Copy, ImagePlus, NotebookPen, Trash2 } from 'lucide-react'
 
 import { TradeChart } from '@/components/trade-chart'
 import { PnlText, RText } from '@/components/pnl-text'
@@ -13,29 +13,14 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Separator } from '@/components/ui/separator'
 import { useCairn } from '@/lib/store'
+import { executionActionLabel, isPositionExecutionAction, orderTypeLabel } from '@/lib/executions'
 import { computeTradeMetrics } from '@/lib/metrics'
 import { fmtPrice, fmtDuration, fmtUtcDateTime, fmtUtcDate } from '@/lib/format'
+import { uniqueTagNames } from '@/lib/tags'
 import { timeToBarIndex } from '@/lib/bar-time'
 import { readFileAsDataUrl } from '@/lib/tradingview-import'
 import { CHART_TIMEFRAMES, chartTimeframeLabel, chartTimeframeMinutes } from '@/lib/chart-timeframes'
 import type { ChartTimeframe } from '@/lib/types'
-
-const actionLabel: Record<string, string> = {
-  entry: '进场',
-  'scale-in': '加仓',
-  'scale-out': '减仓',
-  exit: '离场',
-}
-
-const orderTypeLabel: Record<string, string> = {
-  market: '市价',
-  limit: '限价',
-  stop: '停损单（Stop）',
-  'stop-limit': '止损限价',
-  'stop-loss': '止损',
-  'take-profit': '止盈',
-  'trailing-stop': '移动止损离场',
-}
 
 const eventLabel: Record<string, string> = {
   'sl-set': '设置止损',
@@ -51,6 +36,8 @@ export default function TradeDetailPage() {
   const imageInputRef = useRef<HTMLInputElement | null>(null)
   const [imageEditIndex, setImageEditIndex] = useState<number | null>(null)
   const [chartTimeframe, setChartTimeframe] = useState<ChartTimeframe>('5m')
+  const [showTrailLines, setShowTrailLines] = useState(true)
+  const [showEntryLine, setShowEntryLine] = useState(true)
   const { getTrade, getAccount, getPeriod, getSymbol, getNotesMentioningTrade, symbolLabel, setTradeStatus, updateTrade, createNote, getChartCandles } = useCairn()
   const trade = getTrade(tradeId)
   if (!trade) return <Navigate to="/trades" replace />
@@ -60,6 +47,7 @@ export default function TradeDetailPage() {
   const period = getPeriod(trade.periodId)
   const symbol = getSymbol(trade.symbolId)
   const m = computeTradeMetrics(trade)
+  const tags = uniqueTagNames(trade.tags)
   const executionTimes = trade.executions.map((execution) => execution.time)
   const chartPadding = chartTimeframeMinutes(chartTimeframe) * 60_000 * 80
   const chartStart = executionTimes.length ? Math.min(...executionTimes) - chartPadding : undefined
@@ -95,14 +83,26 @@ export default function TradeDetailPage() {
     setImageEditIndex(null)
   }
 
+  function stopLabelForExecutionIndex(index: number) {
+    const hasPriorStop =
+      activeTrade.initialStopLoss != null ||
+      activeTrade.executions.slice(0, index).some((execution) => execution.price != null && (execution.action === 'stop' || execution.action === 'stop-set' || execution.action === 'stop-moved'))
+    return hasPriorStop ? 'Move stop' : 'Set stop'
+  }
+
   const timeline = [
-    ...trade.executions.map((e) => ({
-      kind: 'exec' as const,
-      time: e.time,
-      title: `${actionLabel[e.action]} ${e.quantity} @ ${fmtPrice(e.price, symbol?.pricePrecision)}`,
-      detail: `${orderTypeLabel[e.orderType]}${e.signal ? ` · 信号 ${e.signal}` : ''}`,
-      tone: e.action === 'entry' || e.action === 'scale-in' ? 'entry' : 'exit',
-    })),
+    ...trade.executions.map((e, executionIndex) => {
+      const label = e.action === 'stop' ? stopLabelForExecutionIndex(executionIndex) : (executionActionLabel[e.action] ?? e.action)
+      const priceText = e.price == null ? '' : fmtPrice(e.price, symbol?.pricePrecision)
+      const isPositionAction = isPositionExecutionAction(e.action)
+      return {
+        kind: 'exec' as const,
+        time: e.time,
+        title: isPositionAction ? `${label} ${e.quantity ?? '—'} @ ${priceText || '—'}` : `${label}${priceText ? ` -> ${priceText}` : ''}`,
+        detail: `${orderTypeLabel[e.orderType] ?? e.orderType}${e.anchorPrice == null ? '' : ` · anchor ${fmtPrice(e.anchorPrice, symbol?.pricePrecision)}`}${e.signal ? ` · 信号 ${e.signal}` : ''}`,
+        tone: e.action === 'entry' || e.action === 'scale-in' || e.action.startsWith('target') ? 'entry' : 'exit',
+      }
+    }),
     ...trade.events.map((ev) => ({
       kind: 'event' as const,
       time: ev.time,
@@ -131,9 +131,9 @@ export default function TradeDetailPage() {
             <DirectionBadge direction={trade.direction} />
             <StatusBadge status={trade.status} />
           </div>
-          {trade.tags.length > 0 && (
+          {tags.length > 0 && (
             <div className="flex flex-wrap items-center gap-1.5">
-              {trade.tags.map((tag) => (
+              {tags.map((tag) => (
                 <TagBadge key={tag} name={tag} />
               ))}
             </div>
@@ -151,19 +151,10 @@ export default function TradeDetailPage() {
             <NotebookPen data-icon="inline-start" />
             新建笔记
           </Button>
-          {trade.status === 'open' ? (
+          {trade.status === 'open' && (
             <Button variant="outline" onClick={() => setTradeStatus(trade.id, 'closed')}>
               <CheckCircle2 data-icon="inline-start" />
               标记为已平仓
-            </Button>
-          ) : (
-            <Button
-              variant="ghost"
-              className="text-muted-foreground"
-              onClick={() => setTradeStatus(trade.id, 'open')}
-            >
-              <RotateCcw data-icon="inline-start" />
-              重新打开
             </Button>
           )}
           <EditTradeDialog trade={trade} />
@@ -188,13 +179,27 @@ export default function TradeDetailPage() {
                       {item.label}
                     </Button>
                   ))}
+                  <Button
+                    variant={showTrailLines ? 'secondary' : 'ghost'}
+                    size="sm"
+                    onClick={() => setShowTrailLines((value) => !value)}
+                  >
+                    Trail line
+                  </Button>
+                  <Button
+                    variant={showEntryLine ? 'secondary' : 'ghost'}
+                    size="sm"
+                    onClick={() => setShowEntryLine((value) => !value)}
+                  >
+                    Entry line
+                  </Button>
                 </div>
               </div>
             </CardHeader>
             <CardContent>
-              <TradeChart bars={bars} trade={trade} />
+              <TradeChart bars={bars} trade={trade} showTrailLines={showTrailLines} showEntryLine={showEntryLine} />
               <p className="mt-2 text-xs text-muted-foreground">
-                {chartTimeframeLabel(chartTimeframe)} · UTC · EMA · 箭头为 Execution，圆点为 SL/TP 变动，虚线为初始止损
+                {chartTimeframeLabel(chartTimeframe)} · UTC · EMA · 箭头为仓位 Execution，圆点为管理 Execution，Trail line 显示止损/止盈轨迹
               </p>
             </CardContent>
           </Card>
@@ -368,6 +373,14 @@ export default function TradeDetailPage() {
                   <span className="text-sm text-muted-foreground">初始止损</span>
                   <span className="font-mono text-sm tabular-nums">
                     {fmtPrice(trade.initialStopLoss, symbol?.pricePrecision)}
+                  </span>
+                </div>
+              )}
+              {trade.initialTakeProfit != null && (
+                <div className="flex items-baseline justify-between">
+                  <span className="text-sm text-muted-foreground">初始止盈</span>
+                  <span className="font-mono text-sm tabular-nums">
+                    {fmtPrice(trade.initialTakeProfit, symbol?.pricePrecision)}
                   </span>
                 </div>
               )}

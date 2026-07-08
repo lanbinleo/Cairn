@@ -52,6 +52,11 @@ export type TradeDirection = 'long' | 'short'
 export type TradeStatus = 'open' | 'closed'
 export type ChartTimeframe = '5m' | '15m' | '1h' | '4h' | '1d'
 
+export interface TimeRange {
+  start: number
+  end: number
+}
+
 /** 标签七色：红橙黄绿青蓝紫 */
 export type TagColor = 'red' | 'orange' | 'yellow' | 'green' | 'cyan' | 'blue' | 'purple'
 
@@ -63,7 +68,18 @@ export interface TagDef {
   createdAt: number
 }
 
-export type ExecutionAction = 'entry' | 'scale-in' | 'scale-out' | 'exit'
+export type ExecutionAction =
+  | 'undecided'
+  | 'entry'
+  | 'scale-in'
+  | 'scale-out'
+  | 'exit'
+  | 'stop'
+  | 'stop-set'
+  | 'stop-moved'
+  | 'target-set'
+  | 'target-moved'
+  | 'order-edit'
 export type OrderType = 'market' | 'limit' | 'stop' | 'stop-limit' | 'stop-loss' | 'take-profit' | 'trailing-stop'
 
 export interface Execution {
@@ -73,9 +89,12 @@ export interface Execution {
   orderType: OrderType
   /** UTC epoch ms */
   time: number
-  price: number
-  /** 数量（正数；方向由 trade + action 决定） */
-  quantity: number
+  /** 成交价，或 stop/target/order edit 的目标价 */
+  price?: number
+  /** 仓位类 action 的数量；管理类 action 可为空 */
+  quantity?: number
+  /** 管理类 action 的手动锚点价，用于风险/目标区域绘制 */
+  anchorPrice?: number
   /** TradingView 原始信号文本，如 "TP1" / "SL" */
   signal?: string
   /** 原始导入行引用，如 tv:trade:7:row:14 */
@@ -108,6 +127,8 @@ export interface Trade {
   sourceRef?: string
   /** 初始止损价（R 计算基准；可后补） */
   initialStopLoss?: number
+  /** 初始止盈价（复盘图表参考；可后补） */
+  initialTakeProfit?: number
   executions: Execution[]
   events: TradeEvent[]
   /** 参考图（备份截图）地址 */
