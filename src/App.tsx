@@ -1,4 +1,5 @@
-import { Route, Routes, useLocation } from 'react-router-dom'
+import { useEffect, useState } from 'react'
+import { Route, Routes, useLocation, type Location } from 'react-router-dom'
 
 import AccountsPage from '@/app/accounts/page'
 import AccountDetailPage from '@/app/accounts/[accountId]/page'
@@ -19,11 +20,39 @@ import { WindowTitlebar, shouldShowWindowTitlebar } from '@/components/window-ti
 import { CairnProvider } from '@/lib/store'
 import { cn } from '@/lib/utils'
 
+function routeKey(location: Location) {
+  return `${location.pathname}${location.search}`
+}
+
 function AppRoutes() {
   const location = useLocation()
+  const [displayLocation, setDisplayLocation] = useState(location)
+  const [transitionPhase, setTransitionPhase] = useState<'idle' | 'exit' | 'enter'>('idle')
+
+  useEffect(() => {
+    if (routeKey(location) === routeKey(displayLocation)) return
+
+    setTransitionPhase('exit')
+    const exitTimer = window.setTimeout(() => {
+      setDisplayLocation(location)
+      setTransitionPhase('enter')
+    }, 120)
+    const enterTimer = window.setTimeout(() => {
+      setTransitionPhase('idle')
+    }, 360)
+
+    return () => {
+      window.clearTimeout(exitTimer)
+      window.clearTimeout(enterTimer)
+    }
+  }, [displayLocation, location])
+
   return (
-    <div key={location.pathname} className="animate-page-enter">
-      <Routes location={location}>
+    <div
+      key={routeKey(displayLocation)}
+      className={transitionPhase === 'exit' ? 'animate-page-exit' : transitionPhase === 'enter' ? 'animate-page-enter' : undefined}
+    >
+      <Routes location={displayLocation}>
         <Route path="/" element={<DashboardPage />} />
         <Route path="/accounts" element={<AccountsPage />} />
         <Route path="/accounts/:accountId" element={<AccountDetailPage />} />

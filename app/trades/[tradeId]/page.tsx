@@ -2,7 +2,7 @@
 
 import { useRef, useState } from 'react'
 import { Link, Navigate, useNavigate, useParams } from 'react-router-dom'
-import { CheckCircle2, ChevronRight, Clipboard, Copy, ImagePlus, NotebookPen, Trash2 } from 'lucide-react'
+import { CheckCircle2, ChevronDown, ChevronRight, Clipboard, Copy, ImagePlus, NotebookPen, Trash2 } from 'lucide-react'
 
 import { AttachmentImage } from '@/components/attachment-image'
 import { TradeChart } from '@/components/trade-chart'
@@ -12,9 +12,16 @@ import { EditTradeDialog } from '@/components/edit-trade-dialog'
 import { TagBadge } from '@/components/tag-badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
 import { Separator } from '@/components/ui/separator'
 import { useCairn } from '@/lib/store'
 import { executionActionLabel, isPositionExecutionAction, orderTypeLabel } from '@/lib/executions'
+import { aggregateDisplayExecutions } from '@/lib/execution-display'
 import { computeTradeMetrics } from '@/lib/metrics'
 import { fmtPrice, fmtDuration, fmtUtcDateTime, fmtUtcDate } from '@/lib/format'
 import { uniqueTagNames } from '@/lib/tags'
@@ -107,16 +114,19 @@ export default function TradeDetailPage() {
     return hasPriorStop ? 'Move stop' : 'Set stop'
   }
 
+  const displayExecutions = aggregateDisplayExecutions(trade.executions, chartTimeframeMinutes(chartTimeframe) * 60_000)
   const timeline = [
-    ...trade.executions.map((e, executionIndex) => {
+    ...displayExecutions.map((e) => {
+      const executionIndex = activeTrade.executions.findIndex((execution) => execution.id === e.aggregateExecutionIds[0])
       const label = e.action === 'stop' ? stopLabelForExecutionIndex(executionIndex) : (executionActionLabel[e.action] ?? e.action)
       const priceText = e.price == null ? '' : fmtPrice(e.price, symbol?.pricePrecision)
       const isPositionAction = isPositionExecutionAction(e.action)
+      const aggregateText = e.aggregateCount > 1 ? ` · 合并 ${e.aggregateCount} 笔同 K 线同价离场` : ''
       return {
         kind: 'exec' as const,
         time: e.time,
         title: isPositionAction ? `${label} ${e.quantity ?? '—'} @ ${priceText || '—'}` : `${label}${priceText ? ` -> ${priceText}` : ''}`,
-        detail: `${orderTypeLabel[e.orderType] ?? e.orderType}${e.anchorPrice == null ? '' : ` · anchor ${fmtPrice(e.anchorPrice, symbol?.pricePrecision)}`}${e.signal ? ` · 信号 ${e.signal}` : ''}`,
+        detail: `${orderTypeLabel[e.orderType] ?? e.orderType}${e.anchorPrice == null ? '' : ` · anchor ${fmtPrice(e.anchorPrice, symbol?.pricePrecision)}`}${e.signal ? ` · 信号 ${e.signal}` : ''}${aggregateText}`,
         tone: e.action === 'entry' || e.action === 'scale-in' || e.action.startsWith('target') ? 'entry' : 'exit',
       }
     }),
@@ -160,18 +170,31 @@ export default function TradeDetailPage() {
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <Button variant="outline" onClick={() => copyText(trade.id)}>
-            <Clipboard data-icon="inline-start" />
-            复制 ID
-          </Button>
-          <Button variant="outline" onClick={() => copyTradeJson(false)}>
-            <Clipboard data-icon="inline-start" />
-            复制 JSON
-          </Button>
-          <Button variant="outline" onClick={() => copyTradeJson(true)}>
-            <Clipboard data-icon="inline-start" />
-            JSON + 图表
-          </Button>
+          <div className="inline-flex items-center rounded-lg shadow-sm" data-slot="button-group">
+            <Button variant="outline" className="rounded-r-none border-r-0" onClick={() => copyText(trade.id)}>
+              <Clipboard data-icon="inline-start" />
+              复制 ID
+            </Button>
+            <DropdownMenu>
+              <DropdownMenuTrigger
+                render={
+                  <Button variant="outline" size="icon" className="rounded-l-none px-0" aria-label="更多复制选项">
+                    <ChevronDown />
+                  </Button>
+                }
+              />
+              <DropdownMenuContent align="end" className="w-44">
+                <DropdownMenuItem onClick={() => copyTradeJson(false)}>
+                  <Clipboard />
+                  复制 JSON
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => copyTradeJson(true)}>
+                  <Clipboard />
+                  JSON + 图表
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
           <Button variant="outline" onClick={createLinkedNote}>
             <NotebookPen data-icon="inline-start" />
             新建笔记

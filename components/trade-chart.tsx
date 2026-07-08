@@ -14,6 +14,7 @@ import {
   type SeriesMarker,
 } from 'lightweight-charts'
 import { executionActionLabel, hasPositionFill, isEntryExecution, isManagementExecutionAction } from '@/lib/executions'
+import { aggregateDisplayExecutions, inferChartBarIntervalMs } from '@/lib/execution-display'
 import type { ChartBar, Trade } from '@/lib/types'
 
 export type TradeChartOverlayStyle = 'zones' | 'lines' | 'both'
@@ -272,7 +273,8 @@ export function TradeChart({
     }
 
     /* Execution 标记 */
-    const execMarkers: SeriesMarker<UTCTimestamp>[] = [...trade.executions]
+    const displayExecutions = aggregateDisplayExecutions(trade.executions, inferChartBarIntervalMs(bars))
+    const execMarkers: SeriesMarker<UTCTimestamp>[] = displayExecutions
       .filter((execution) => execution.action !== 'undecided')
       .sort((a, b) => a.time - b.time)
       .map((e) => {
@@ -300,12 +302,13 @@ export function TradeChart({
         }
         const isBuy = (trade.direction === 'long' && isEntryExecution(e)) || (trade.direction === 'short' && !isEntryExecution(e))
         const label = executionActionLabel[e.action] ?? e.action
+        const countText = e.aggregateCount > 1 ? ` (${e.aggregateCount})` : ''
         return {
           time: toTs(e.time),
           position: isBuy ? ('belowBar' as const) : ('aboveBar' as const),
           shape: isBuy ? ('arrowUp' as const) : ('arrowDown' as const),
           color: isBuy ? p.up : p.down,
-          text: `${label} ${e.quantity}@${e.price}`,
+          text: `${label} ${e.quantity}@${e.price}${countText}`,
         }
       })
 

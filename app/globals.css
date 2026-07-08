@@ -225,24 +225,46 @@
   }
 }
 
-/* 页面切换：快速下沉再弹起 */
+/* 页面切换：旧页面收起，新页面浮起 */
+@keyframes page-exit {
+  0% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+    filter: blur(0);
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(10px) scale(0.965);
+    filter: blur(1px);
+  }
+}
+
 @keyframes page-enter {
   0% {
     opacity: 0;
-    transform: translateY(-2px) scale(0.995);
-  }
-  55% {
-    opacity: 1;
-    transform: translateY(2px) scale(0.998);
+    transform: translateY(14px) scale(0.965);
+    filter: blur(1px);
   }
   100% {
     opacity: 1;
     transform: translateY(0) scale(1);
+    filter: blur(0);
   }
 }
 
+.animate-page-exit,
 .animate-page-enter {
-  animation: page-enter 0.16s cubic-bezier(0.2, 0.9, 0.2, 1) both;
+  transform-origin: top center;
+  will-change: opacity, transform, filter;
+}
+
+.animate-page-exit {
+  pointer-events: none;
+  animation: page-exit 0.12s ease-in both;
+}
+
+.animate-page-enter {
+  animation: page-enter 0.22s ease-in-out both;
 }
 
 /* 卡片错落进场 */
@@ -263,6 +285,7 @@
 
 @media (prefers-reduced-motion: reduce) {
   .animate-page-enter,
+  .animate-page-exit,
   .animate-card-enter {
     animation: none;
   }

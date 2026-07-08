@@ -123,8 +123,13 @@ TradingView import supports:
 
 - Chinese and English field names.
 - Workbook sheet auto-selection by required trade columns.
-- TradingView `交易编号` / `Trade #` grouping when present.
-- Net-position grouping when trade number is unavailable.
+- When every imported row has TradingView `交易编号` / `Trade #`, Cairn first restores each TradingView entry/exit pair, then merges overlapping same-direction pairs into one Cairn Trade.
+- When TradingView trade numbers are unavailable or incomplete, Cairn falls back to position simulation by Account, Period, Symbol, and direction.
+- Within one Cairn Trade, repeated entries are stored as `scale-in` executions until the simulated position is closed.
+- Long and short positions are tracked independently and never offset each other.
+- TradingView trade numbers are preserved as source references, but overlapping TradingView pairs may share one Cairn Trade.
+- Partial exits become `scale-out`; the exit that closes the simulated position becomes `exit`.
+- Import preview warns when an exit has no matching simulated position or exits more quantity than the current simulated position.
 - UTC time parsing from Excel serials, ISO strings, Unix seconds, or Unix milliseconds.
 - Order type inference from order type + signal text.
 - Source row preservation through `sourceRef`.
