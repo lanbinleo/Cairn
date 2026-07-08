@@ -8,6 +8,7 @@ Cairn is a local-first desktop app for personal trade journaling and review. It 
 | --- | --- |
 | [Software Design](./software-design.md) | Product scope, architecture, domain model, storage, import rules, metrics, backup, and packaging |
 | [Development Workflow](./development-workflow.md) | Branching, commits, verification, version surfaces, local data paths, and release process |
+| [0.1.2 Release Notes](./release-0.1.2.md) | Trade execution management, chart-data coverage, tag normalization, and dialog safety |
 | [0.1.1 Release Notes](./release-0.1.1.md) | Logo refresh, automatic local backups, release metadata, and operational notes |
 | [Future Backup Sync](./future-backup-sync.md) | Future account-based backup and restore direction |
 
