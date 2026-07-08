@@ -55,6 +55,43 @@ export async function exportLocalBackup(): Promise<string> {
   return invoke<string>('export_backup')
 }
 
+export async function saveAttachmentFile(input: {
+  ownerType: string
+  ownerId: string
+  kind: string
+  attachmentId: string
+  fileName: string
+  contentDataUrl: string
+}): Promise<{ fileName: string; relativePath: string; mimeType: string }> {
+  if (!isTauriRuntime()) {
+    return {
+      fileName: input.fileName,
+      relativePath: input.contentDataUrl,
+      mimeType: input.contentDataUrl.match(/^data:([^;]+)/)?.[1] ?? 'image/png',
+    }
+  }
+  return invoke<{ file_name: string; relative_path: string; mime_type: string }>('save_attachment_file', {
+    owner_type: input.ownerType,
+    owner_id: input.ownerId,
+    kind: input.kind,
+    attachment_id: input.attachmentId,
+    file_name: input.fileName,
+    content_data_url: input.contentDataUrl,
+  }).then((saved) => ({
+    fileName: saved.file_name,
+    relativePath: saved.relative_path,
+    mimeType: saved.mime_type,
+  }))
+}
+
+export async function readAttachmentFile(relativePath: string): Promise<string> {
+  if (relativePath.startsWith('data:') || relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
+    return relativePath
+  }
+  if (!isTauriRuntime()) return relativePath
+  return invoke<string>('read_attachment_file', { relative_path: relativePath })
+}
+
 export async function saveChartSourceFile(input: {
   fileName: string
   contentBase64: string

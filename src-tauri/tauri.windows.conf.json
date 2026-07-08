@@ -1,0 +1,16 @@
+{
+  "app": {
+    "windows": [
+      {
+        "title": "Cairn",
+        "width": 1168,
+        "height": 720,
+        "minWidth": 1024,
+        "minHeight": 720,
+        "decorations": false,
+        "visible": true,
+        "focus": true
+      }
+    ]
+  }
+}

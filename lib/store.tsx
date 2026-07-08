@@ -6,7 +6,7 @@
  */
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react'
-import { loadLocalState, saveLocalRecord, saveLocalRecords, deleteLocalRecord, restoreLocalState, exportLocalBackup } from './local-db'
+import { loadLocalState, saveLocalRecord, saveLocalRecords, deleteLocalRecord, restoreLocalState, exportLocalBackup, saveAttachmentFile } from './local-db'
 import type { CairnStateSnapshot } from './seed'
 import { seedState } from './seed'
 import { logFrontendError, logFrontendMessage } from './frontend-log'
@@ -44,6 +44,14 @@ interface CairnStore {
   createPeriod: (input: Omit<Period, 'id' | 'createdAt'>) => Period
   createSymbol: (input: Omit<(typeof seedState.symbols)[number], 'id'>) => (typeof seedState.symbols)[number]
   createNote: (input: Omit<(typeof seedState.notes)[number], 'id' | 'createdAt' | 'updatedAt'>) => (typeof seedState.notes)[number]
+  createImageAttachment: (input: {
+    ownerType: Attachment['ownerType']
+    ownerId: string
+    kind: Extract<Attachment['kind'], 'reference-image' | 'note-image'>
+    fileName: string
+    contentDataUrl: string
+  }) => Promise<Attachment>
+  deleteAttachment: (id: string) => void
   createTrades: (records: Trade[]) => void
   createImportBatch: (batch: ImportBatch) => void
   createChartImport: (record: ChartImport, candles: ChartCandle[]) => void
@@ -153,6 +161,42 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
     void saveLocalRecord('notes', created)
     return created
   }, [makeId])
+
+  const createImageAttachment = useCallback(async (input: {
+    ownerType: Attachment['ownerType']
+    ownerId: string
+    kind: Extract<Attachment['kind'], 'reference-image' | 'note-image'>
+    fileName: string
+    contentDataUrl: string
+  }): Promise<Attachment> => {
+    const id = makeId('att')
+    const saved = await saveAttachmentFile({
+      ownerType: input.ownerType,
+      ownerId: input.ownerId,
+      kind: input.kind,
+      attachmentId: id,
+      fileName: input.fileName,
+      contentDataUrl: input.contentDataUrl,
+    })
+    const created: Attachment = {
+      id,
+      ownerType: input.ownerType,
+      ownerId: input.ownerId,
+      kind: input.kind,
+      fileName: saved.fileName,
+      relativePath: saved.relativePath,
+      mimeType: saved.mimeType,
+      createdAt: Date.now(),
+    }
+    setAttachments((prev) => [...prev.filter((item) => item.id !== id), created])
+    void saveLocalRecord('attachments', created)
+    return created
+  }, [makeId])
+
+  const deleteAttachment = useCallback((id: string) => {
+    setAttachments((prev) => prev.filter((item) => item.id !== id))
+    void deleteLocalRecord('attachments', id)
+  }, [])
 
   const createTrades = useCallback((records: Trade[]) => {
     if (records.length === 0) return
@@ -453,6 +497,8 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
       createPeriod,
       createSymbol,
       createNote,
+      createImageAttachment,
+      deleteAttachment,
       createTrades,
       createImportBatch,
       createChartImport,
@@ -477,7 +523,7 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
       updateTag,
       deleteTag,
     }),
-    [accounts, periods, trades, tagDefs, importBatches, attachments, chartImports, chartCandles, symbols, notes, updateAccount, updatePeriod, updateTrade, updateNote, createAccount, createPeriod, createSymbol, createNote, createTrades, createImportBatch, createChartImport, deleteChartImport, rollbackImportBatch, deleteAccount, deletePeriod, deleteTrade, deleteSymbol, deleteNote, restoreState, exportBackup, setTradeStatus, createTag, updateTag, deleteTag],
+    [accounts, periods, trades, tagDefs, importBatches, attachments, chartImports, chartCandles, symbols, notes, updateAccount, updatePeriod, updateTrade, updateNote, createAccount, createPeriod, createSymbol, createNote, createImageAttachment, deleteAttachment, createTrades, createImportBatch, createChartImport, deleteChartImport, rollbackImportBatch, deleteAccount, deletePeriod, deleteTrade, deleteSymbol, deleteNote, restoreState, exportBackup, setTradeStatus, createTag, updateTag, deleteTag],
   )
 
   return <StoreContext.Provider value={value}>{children}</StoreContext.Provider>

@@ -1,6 +1,6 @@
 [package]
 name = "cairn"
-version = "0.1.2"
+version = "0.1.3"
 description = "CAIRN trading journal desktop app"
 authors = ["CAIRN"]
 license = ""
@@ -22,3 +22,5 @@ rusqlite = { version = "0.37", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-process = "2.3.1"
+tauri-plugin-updater = "2.10.1"

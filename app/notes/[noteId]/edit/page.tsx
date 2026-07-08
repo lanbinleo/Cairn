@@ -83,6 +83,7 @@ export default function NoteEditPage() {
                   rows={18}
                   value={content}
                   onChange={setContent}
+                  noteId={activeNote.id}
                 />
               </Field>
             </FieldGroup>

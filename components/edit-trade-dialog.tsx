@@ -20,7 +20,6 @@ import { Input } from '@/components/ui/input'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Textarea } from '@/components/ui/textarea'
 import { barIndexToTime, barsPerDay, isValidBarIndex, timeToBarIndex, utcDayStart } from '@/lib/bar-time'
-import { insertAtCursor, readPastedImage } from '@/lib/clipboard-images'
 import {
   EXECUTION_ACTION_OPTIONS,
   ORDER_TYPE_OPTIONS,
@@ -407,13 +406,6 @@ export function EditTradeDialog({ trade }: { trade: Trade }) {
                   placeholder="这笔交易的执行、情绪与教训…"
                   value={note}
                   onChange={(e) => setNote(e.target.value)}
-                  onPaste={(event) => {
-                    const start = event.currentTarget.selectionStart
-                    const end = event.currentTarget.selectionEnd
-                    void readPastedImage(event).then((dataUrl) => {
-                      if (dataUrl) setNote((prev) => insertAtCursor(prev, `[[image:${dataUrl}]]`, start, end))
-                    })
-                  }}
                 />
               </Field>
             </FieldGroup>

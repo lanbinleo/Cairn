@@ -1,17 +1,44 @@
 'use client'
 
+import type { ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 import { Badge } from '@/components/ui/badge'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { PnlText, RText } from '@/components/pnl-text'
 import { TradeTitle } from '@/components/trade-title'
 import { TagBadge } from '@/components/tag-badge'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { computeTradeMetrics } from '@/lib/metrics'
 import { fmtUtcDateTime, fmtDuration } from '@/lib/format'
 import { useCairn } from '@/lib/store'
 import { uniqueTagNames } from '@/lib/tags'
 import type { Trade } from '@/lib/types'
 import { cn } from '@/lib/utils'
+
+const quoteSuffixes = ['USDT', 'USDC', 'USD', 'BTC', 'ETH', 'PERP']
+
+function compactSymbolCode(code: string) {
+  const upper = code.toUpperCase()
+  const suffix = quoteSuffixes.find((item) => upper.endsWith(item) && upper.length > item.length)
+  return suffix ? code.slice(0, -suffix.length) : code
+}
+
+function EllipsisTooltip({
+  children,
+  content,
+  className,
+}: {
+  children: ReactNode
+  content: ReactNode
+  className?: string
+}) {
+  return (
+    <Tooltip>
+      <TooltipTrigger render={<span className={cn('block truncate', className)}>{children}</span>} />
+      <TooltipContent className="max-w-md">{content}</TooltipContent>
+    </Tooltip>
+  )
+}
 
 export function DirectionBadge({ direction }: { direction: Trade['direction'] }) {
   return (
@@ -51,19 +78,19 @@ export function TradesTable({
   }
 
   return (
-    <Table>
+    <Table className="table-fixed">
       <TableHeader>
         <TableRow>
           <TableHead className="w-28">交易</TableHead>
-          <TableHead>品种</TableHead>
+          <TableHead className="w-20">品种</TableHead>
           <TableHead className="w-14">方向</TableHead>
-          {showContext && <TableHead>账户 / Period</TableHead>}
-          <TableHead>标签</TableHead>
-          <TableHead>进场时间（UTC）</TableHead>
-          <TableHead className="text-right">持仓</TableHead>
-          <TableHead className="text-right">PnL</TableHead>
-          <TableHead className="text-right">R</TableHead>
-          <TableHead>状态</TableHead>
+          {showContext && <TableHead className="w-36">账户 / Period</TableHead>}
+          <TableHead className="w-28">标签</TableHead>
+          <TableHead className="w-40">进场时间（UTC）</TableHead>
+          <TableHead className="w-16 text-right">持仓</TableHead>
+          <TableHead className="w-24 text-right">PnL</TableHead>
+          <TableHead className="w-20 text-right">R</TableHead>
+          <TableHead className="w-20">状态</TableHead>
         </TableRow>
       </TableHeader>
       <TableBody>
@@ -71,34 +98,68 @@ export function TradesTable({
           const m = computeTradeMetrics(trade)
           const account = getAccount(trade.accountId)
           const period = getPeriod(trade.periodId)
+          const symbol = symbols.find((x) => x.id === trade.symbolId)
+          const symbolFull = symbol ? `${symbol.exchange}:${symbol.code}` : trade.symbolId
+          const symbolShort = symbol ? compactSymbolCode(symbol.code) : symbolLabel(trade.symbolId)
           const tags = uniqueTagNames(trade.tags)
           return (
             <TableRow key={trade.id} className="group">
               <TableCell>
                 <TradeTitle trade={trade} className="text-sm" />
               </TableCell>
-              <TableCell>
-                <Link to={`/trades/${trade.id}`} className="block font-mono text-muted-foreground group-hover:text-foreground">
-                  {symbolLabel(trade.symbolId)}
-                </Link>
+              <TableCell className="min-w-0">
+                <Tooltip>
+                  <TooltipTrigger
+                    render={
+                      <Link to={`/trades/${trade.id}`} className="block truncate font-mono text-muted-foreground group-hover:text-foreground">
+                        {symbolShort}
+                      </Link>
+                    }
+                  />
+                  <TooltipContent className="max-w-md">
+                    <span className="flex flex-col gap-0.5 py-0.5">
+                      <span className="font-mono font-medium">{symbolFull}</span>
+                      {symbol?.name && <span>{symbol.name}</span>}
+                    </span>
+                  </TooltipContent>
+                </Tooltip>
               </TableCell>
               <TableCell>
                 <DirectionBadge direction={trade.direction} />
               </TableCell>
               {showContext && (
-                <TableCell className="text-muted-foreground">
-                  {account?.name} · {period?.name}
+                <TableCell className="min-w-0 text-muted-foreground">
+                  <EllipsisTooltip content={`${account?.name ?? '未知账户'} · ${period?.name ?? '未知 Period'}`}>
+                    {account?.name} · {period?.name}
+                  </EllipsisTooltip>
                 </TableCell>
               )}
-              <TableCell>
-                <div className="flex max-w-44 flex-wrap gap-1">
-                  {tags.slice(0, 2).map((tag) => (
-                    <TagBadge key={tag} name={tag} className="text-[10px]" />
-                  ))}
-                  {tags.length > 2 && (
-                    <span className="self-center text-[10px] text-muted-foreground">+{tags.length - 2}</span>
-                  )}
-                </div>
+              <TableCell className="min-w-0">
+                {tags.length === 0 ? (
+                  <span className="text-xs text-muted-foreground">—</span>
+                ) : (
+                  <Tooltip>
+                    <TooltipTrigger
+                      render={
+                        <div className="flex min-w-0 max-w-full flex-nowrap items-center gap-1 overflow-hidden">
+                          {tags.slice(0, 1).map((tag) => (
+                            <TagBadge key={tag} name={tag} className="max-w-16 truncate text-[10px]" />
+                          ))}
+                          {tags.length > 1 && (
+                            <span className="shrink-0 text-[10px] text-muted-foreground">+{tags.length - 1}</span>
+                          )}
+                        </div>
+                      }
+                    />
+                    <TooltipContent>
+                      <span className="flex max-w-56 flex-wrap gap-1 py-0.5">
+                        {tags.map((tag) => (
+                          <TagBadge key={tag} name={tag} className="text-[10px]" />
+                        ))}
+                      </span>
+                    </TooltipContent>
+                  </Tooltip>
+                )}
               </TableCell>
               <TableCell className="font-mono text-muted-foreground">{fmtUtcDateTime(m.entryTime, false)}</TableCell>
               <TableCell className="text-right font-mono text-muted-foreground">

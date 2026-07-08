@@ -1,6 +1,6 @@
 {
   "name": "cairn",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "private": true,
   "type": "module",
   "scripts": {
@@ -11,12 +11,15 @@
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "tauri:dev:isolated": "powershell -ExecutionPolicy Bypass -File scripts/dev-isolated.ps1",
+    "tauri:build:local": "tauri build --config src-tauri/tauri.local.conf.json",
     "tauri:build": "tauri build",
     "release:check": "powershell -ExecutionPolicy Bypass -File scripts/release.ps1"
   },
   "dependencies": {
     "@base-ui/react": "^1.5.0",
     "@tauri-apps/api": "^2.9.0",
+    "@tauri-apps/plugin-process": "2.3.1",
+    "@tauri-apps/plugin-updater": "2.10.1",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "harmonyos-sans": "^1.0.0",

@@ -131,7 +131,7 @@ export interface Trade {
   initialTakeProfit?: number
   executions: Execution[]
   events: TradeEvent[]
-  /** 参考图（备份截图）地址 */
+  /** 参考图（备份截图）attachment id；旧数据可能是 URL/data URL */
   referenceImages: string[]
   /** 兼容旧数据：导入时附带的 5m K 线数据 */
   chartBars?: ChartBar[]
@@ -180,14 +180,14 @@ export interface ChartImport {
 
 export interface NoteMention {
   type: 'trade' | 'image'
-  /** trade id 或图片 url */
+  /** trade id 或 attachment id；旧数据可能是图片 URL/data URL */
   ref: string
 }
 
 export interface Note {
   id: string
   title: string
-  /** Markdown 内容，@mention 以 [[trade:ID]] / [[image:URL]] 形式内嵌 */
+  /** Markdown 内容，@mention 以 [[trade:ID]] / [[image:attachmentId]] 形式内嵌 */
   content: string
   tags: string[]
   mentions: NoteMention[]

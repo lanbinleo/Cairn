@@ -104,6 +104,12 @@
   --profit-foreground: oklch(0.985 0.002 106.4);
   --loss: oklch(0.6 0.21 18);
   --loss-foreground: oklch(0.985 0.002 106.4);
+  /* 蓝黄盈亏对：蓝 = 盈利，黄 = 亏损 */
+  --profit-alt: oklch(0.545 0.19 258);
+  --profit-alt-foreground: oklch(0.985 0.002 106.4);
+  --loss-alt: oklch(0.68 0.155 84);
+  --loss-alt-foreground: oklch(0.24 0.05 84);
+  --loss-alt-text: oklch(0.58 0.14 80);
   /* 琥珀黄：用于 EMA、提示与第四图表色 */
   --warning: oklch(0.72 0.15 72);
   --warning-foreground: oklch(0.28 0.05 72);
@@ -121,9 +127,9 @@
   --sidebar-accent-foreground: oklch(0.45 0.17 258);
   --sidebar-border: oklch(0.918 0.003 106.4);
   --sidebar-ring: oklch(0.545 0.19 258);
-  --scrollbar-track: oklch(0.94 0.002 106.4);
-  --scrollbar-thumb: oklch(0.74 0.006 106.4);
-  --scrollbar-thumb-hover: oklch(0.62 0.01 58.07);
+  --scrollbar-track: oklch(0.94 0.002 106.4 / 45%);
+  --scrollbar-thumb: oklch(0.68 0.008 58.07 / 55%);
+  --scrollbar-thumb-hover: oklch(0.52 0.012 58.07 / 75%);
 }
 
 .dark {
@@ -151,6 +157,11 @@
   --profit-foreground: oklch(0.15 0.03 162);
   --loss: oklch(0.7 0.18 16);
   --loss-foreground: oklch(0.15 0.03 16);
+  --profit-alt: oklch(0.68 0.15 255);
+  --profit-alt-foreground: oklch(0.13 0.03 255);
+  --loss-alt: oklch(0.83 0.16 90);
+  --loss-alt-foreground: oklch(0.2 0.05 90);
+  --loss-alt-text: oklch(0.83 0.16 90);
   --warning: oklch(0.8 0.14 78);
   --warning-foreground: oklch(0.2 0.04 78);
   --chart-1: oklch(0.68 0.15 255);
@@ -166,9 +177,9 @@
   --sidebar-accent-foreground: oklch(0.78 0.12 255);
   --sidebar-border: oklch(1 0 0 / 9%);
   --sidebar-ring: oklch(0.68 0.15 255);
-  --scrollbar-track: oklch(0.22 0.004 106.4);
-  --scrollbar-thumb: oklch(0.38 0.006 106.4);
-  --scrollbar-thumb-hover: oklch(0.5 0.008 58.07);
+  --scrollbar-track: oklch(0.22 0.004 106.4 / 45%);
+  --scrollbar-thumb: oklch(0.48 0.008 58.07 / 58%);
+  --scrollbar-thumb-hover: oklch(0.62 0.01 58.07 / 78%);
 }
 
 @layer base {
@@ -181,16 +192,17 @@
     @apply bg-background text-foreground;
   }
   ::-webkit-scrollbar {
-    width: 10px;
-    height: 10px;
+    width: 8px;
+    height: 8px;
   }
   ::-webkit-scrollbar-track {
     background: var(--scrollbar-track);
   }
   ::-webkit-scrollbar-thumb {
-    border: 2px solid var(--scrollbar-track);
+    border: 2px solid transparent;
     border-radius: 999px;
     background: var(--scrollbar-thumb);
+    background-clip: padding-box;
   }
   ::-webkit-scrollbar-thumb:hover {
     background: var(--scrollbar-thumb-hover);
@@ -213,20 +225,24 @@
   }
 }
 
-/* 页面切换：内容自下而上淡入 */
+/* 页面切换：快速下沉再弹起 */
 @keyframes page-enter {
-  from {
+  0% {
     opacity: 0;
-    transform: translateY(10px);
+    transform: translateY(-2px) scale(0.995);
   }
-  to {
+  55% {
     opacity: 1;
-    transform: translateY(0);
+    transform: translateY(2px) scale(0.998);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
   }
 }
 
 .animate-page-enter {
-  animation: page-enter 0.35s cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation: page-enter 0.16s cubic-bezier(0.2, 0.9, 0.2, 1) both;
 }
 
 /* 卡片错落进场 */

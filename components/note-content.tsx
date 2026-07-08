@@ -2,6 +2,7 @@
 
 import type { ReactNode } from 'react'
 
+import { AttachmentImage } from '@/components/attachment-image'
 import { TradeTitle } from '@/components/trade-title'
 import { useCairn } from '@/lib/store'
 
@@ -17,7 +18,7 @@ function TradeMention({ tradeId }: { tradeId: string }) {
   )
 }
 
-/** 解析行内元素：[[trade:ID]] / [[image:URL]] / **bold** */
+/** 解析行内元素：[[trade:ID]] / [[image:attachmentId]] / **bold** */
 function renderInline(text: string, keyPrefix: string): ReactNode[] {
   const out: ReactNode[] = []
   // 先按 mention 切分
@@ -29,9 +30,9 @@ function renderInline(text: string, keyPrefix: string): ReactNode[] {
         out.push(<TradeMention key={`${keyPrefix}-m${i}`} tradeId={mention[2]} />)
       } else {
         out.push(
-          <img
+          <AttachmentImage
             key={`${keyPrefix}-m${i}`}
-            src={mention[2] || "/placeholder.svg"}
+            imageRef={mention[2]}
             alt="笔记引用图片"
             className="my-2 w-full max-w-xl rounded-lg border"
           />,

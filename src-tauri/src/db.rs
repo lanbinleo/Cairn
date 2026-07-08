@@ -16,6 +16,7 @@ use crate::paths;
 const AUTO_BACKUP_RETENTION_DAYS: i64 = 7;
 const AUTO_BACKUP_PREFIX: &str = "cairn-auto-backup-";
 const AUTO_BACKUP_SUFFIX: &str = ".json";
+const CURRENT_SCHEMA_VERSION: i64 = 2;
 
 pub struct Db {
     conn: Mutex<Connection>,
@@ -42,7 +43,14 @@ pub fn init(app: &AppHandle) -> Result<Db, String> {
         fs::create_dir_all(parent).map_err(|err| err.to_string())?;
     }
     let conn = Connection::open(db_path).map_err(|err| err.to_string())?;
-    migrate(&conn)?;
+    let migration_backup = backup_before_migration_if_needed(app, &conn)?;
+    if let Err(err) = migrate(&conn) {
+        let backup_hint = migration_backup
+            .as_ref()
+            .map(|path| format!(" A pre-migration backup was created at {}.", path.display()))
+            .unwrap_or_default();
+        return Err(format!("{err}.{backup_hint}"));
+    }
     Ok(Db {
         conn: Mutex::new(conn),
     })
@@ -193,10 +201,52 @@ fn migrate(conn: &Connection) -> Result<(), String> {
 
         INSERT OR IGNORE INTO schema_migrations(version, name, applied_at)
           VALUES (1, 'entity_tables', unixepoch() * 1000);
+
+        INSERT OR IGNORE INTO schema_migrations(version, name, applied_at)
+          VALUES (2, 'attachment_file_references', unixepoch() * 1000);
         "#,
     )
     .map_err(|err| err.to_string())?;
     Ok(())
+}
+
+fn backup_before_migration_if_needed(app: &AppHandle, conn: &Connection) -> Result<Option<PathBuf>, String> {
+    if !table_exists(conn, "schema_migrations")? {
+        return Ok(None);
+    }
+    let version = current_schema_version(conn)?;
+    if version >= CURRENT_SCHEMA_VERSION || active_entity_count(conn)? == 0 {
+        return Ok(None);
+    }
+
+    let dir = paths::app_data_dir(app)?.join("backups").join("migrations");
+    fs::create_dir_all(&dir).map_err(|err| err.to_string())?;
+    let path = dir.join(format!(
+        "cairn-migration-backup-v{version}-to-v{CURRENT_SCHEMA_VERSION}-{}.json",
+        now_ms()
+    ));
+    write_backup_file(conn, path.clone(), "pre-migration")?;
+    Ok(Some(path))
+}
+
+fn table_exists(conn: &Connection, table: &str) -> Result<bool, String> {
+    let exists: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+            params![table],
+            |row| row.get(0),
+        )
+        .map_err(|err| err.to_string())?;
+    Ok(exists > 0)
+}
+
+fn current_schema_version(conn: &Connection) -> Result<i64, String> {
+    conn.query_row(
+        "SELECT COALESCE(MAX(version), 0) FROM schema_migrations",
+        [],
+        |row| row.get(0),
+    )
+    .map_err(|err| err.to_string())
 }
 
 pub fn load_or_seed(db: &Db, seed: AppState) -> Result<AppState, String> {
@@ -466,21 +516,16 @@ fn save_simple_record(conn: &Connection, collection: &str, id: &str, data: Value
 }
 
 fn save_trade(conn: &Connection, id: &str, data: Value) -> Result<(), String> {
-    soft_delete_trade_children(conn, id)?;
+    soft_delete_trade_data_children(conn, id)?;
 
     let mut trade_data = data.clone();
     let executions = trade_data.get_mut("executions").map(Value::take).unwrap_or(Value::Array(vec![]));
     let events = trade_data.get_mut("events").map(Value::take).unwrap_or(Value::Array(vec![]));
     let chart_bars = trade_data.get_mut("chartBars").map(Value::take);
-    let reference_images = trade_data
-        .get_mut("referenceImages")
-        .map(Value::take)
-        .unwrap_or(Value::Array(vec![]));
 
     if let Value::Object(map) = &mut trade_data {
         map.insert("executions".to_string(), Value::Array(vec![]));
         map.insert("events".to_string(), Value::Array(vec![]));
-        map.insert("referenceImages".to_string(), Value::Array(vec![]));
     }
 
     let json = serde_json::to_string(&trade_data).map_err(|err| err.to_string())?;
@@ -566,24 +611,6 @@ fn save_trade(conn: &Connection, id: &str, data: Value) -> Result<(), String> {
         }
     }
 
-    if let Value::Array(images) = reference_images {
-        for (index, image) in images.iter().enumerate() {
-            if let Some(path) = image.as_str() {
-                let attachment = serde_json::json!({
-                    "id": format!("att-{id}-{}", index + 1),
-                    "ownerType": "trade",
-                    "ownerId": id,
-                    "kind": "reference-image",
-                    "fileName": format!("reference-{}.png", index + 1),
-                    "relativePath": path,
-                    "createdAt": now_ms(),
-                });
-                let attachment_id = attachment["id"].as_str().unwrap_or_default().to_string();
-                save_simple_record(conn, "attachments", &attachment_id, attachment)?;
-            }
-        }
-    }
-
     Ok(())
 }
 
@@ -625,11 +652,17 @@ fn read_trades(conn: &Connection) -> Result<Vec<Value>, String> {
         let executions = read_child_rows(conn, "executions", &id, "time ASC, id ASC")?;
         let events = read_child_rows(conn, "trade_events", &id, "time ASC, id ASC")?;
         let chart_bars = read_chart_bars(conn, &id)?;
-        let reference_images = read_trade_reference_images(conn, &id)?;
+        let legacy_reference_images = read_trade_reference_images(conn, &id)?;
         if let Value::Object(map) = &mut trade {
+            let has_reference_images = map
+                .get("referenceImages")
+                .and_then(Value::as_array)
+                .is_some_and(|items| !items.is_empty());
             map.insert("executions".to_string(), Value::Array(executions));
             map.insert("events".to_string(), Value::Array(events));
-            map.insert("referenceImages".to_string(), Value::Array(reference_images));
+            if !has_reference_images {
+                map.insert("referenceImages".to_string(), Value::Array(legacy_reference_images));
+            }
             if let Some(bars) = chart_bars {
                 map.insert("chartBars".to_string(), Value::Array(bars));
             }
@@ -741,7 +774,7 @@ fn soft_delete_trade(conn: &Connection, id: &str) -> Result<(), String> {
     soft_delete_trade_children(conn, id)
 }
 
-fn soft_delete_trade_children(conn: &Connection, id: &str) -> Result<(), String> {
+fn soft_delete_trade_data_children(conn: &Connection, id: &str) -> Result<(), String> {
     for table in ["executions", "trade_events", "chart_data"] {
         conn.execute(
             &format!("UPDATE {table} SET deleted_at = unixepoch() * 1000 WHERE trade_id = ?1"),
@@ -749,6 +782,11 @@ fn soft_delete_trade_children(conn: &Connection, id: &str) -> Result<(), String>
         )
         .map_err(|err| err.to_string())?;
     }
+    Ok(())
+}
+
+fn soft_delete_trade_children(conn: &Connection, id: &str) -> Result<(), String> {
+    soft_delete_trade_data_children(conn, id)?;
     conn.execute(
         "UPDATE attachments SET deleted_at = unixepoch() * 1000 WHERE owner_type = 'trade' AND owner_id = ?1",
         params![id],

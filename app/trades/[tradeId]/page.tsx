@@ -4,6 +4,7 @@ import { useRef, useState } from 'react'
 import { Link, Navigate, useNavigate, useParams } from 'react-router-dom'
 import { CheckCircle2, ChevronRight, Clipboard, Copy, ImagePlus, NotebookPen, Trash2 } from 'lucide-react'
 
+import { AttachmentImage } from '@/components/attachment-image'
 import { TradeChart } from '@/components/trade-chart'
 import { PnlText, RText } from '@/components/pnl-text'
 import { DirectionBadge, StatusBadge } from '@/components/trades-table'
@@ -19,6 +20,7 @@ import { fmtPrice, fmtDuration, fmtUtcDateTime, fmtUtcDate } from '@/lib/format'
 import { uniqueTagNames } from '@/lib/tags'
 import { timeToBarIndex } from '@/lib/bar-time'
 import { readFileAsDataUrl } from '@/lib/tradingview-import'
+import { createTradeTransferPayload, stringifyTradeTransfer } from '@/lib/trade-transfer'
 import { CHART_TIMEFRAMES, chartTimeframeLabel, chartTimeframeMinutes } from '@/lib/chart-timeframes'
 import type { ChartTimeframe } from '@/lib/types'
 
@@ -38,7 +40,7 @@ export default function TradeDetailPage() {
   const [chartTimeframe, setChartTimeframe] = useState<ChartTimeframe>('5m')
   const [showTrailLines, setShowTrailLines] = useState(true)
   const [showEntryLine, setShowEntryLine] = useState(true)
-  const { getTrade, getAccount, getPeriod, getSymbol, getNotesMentioningTrade, symbolLabel, setTradeStatus, updateTrade, createNote, getChartCandles } = useCairn()
+  const { getTrade, getAccount, getPeriod, getSymbol, getNotesMentioningTrade, symbolLabel, setTradeStatus, updateTrade, createNote, createImageAttachment, deleteAttachment, getChartCandles } = useCairn()
   const trade = getTrade(tradeId)
   if (!trade) return <Navigate to="/trades" replace />
   const activeTrade = trade
@@ -70,14 +72,29 @@ export default function TradeDetailPage() {
     void navigator.clipboard?.writeText(text)
   }
 
+  function copyTradeJson(includeChartData: boolean) {
+    copyText(stringifyTradeTransfer(createTradeTransferPayload(activeTrade, symbol, includeChartData)))
+  }
+
   async function handleImageSelected(file?: File) {
     if (!file) return
     const dataUrl = await readFileAsDataUrl(file)
+    const attachment = await createImageAttachment({
+      ownerType: 'trade',
+      ownerId: activeTrade.id,
+      kind: 'reference-image',
+      fileName: file.name,
+      contentDataUrl: dataUrl,
+    })
     const next = [...activeTrade.referenceImages]
     if (imageEditIndex == null) {
-      next.push(dataUrl)
+      next.push(attachment.id)
     } else {
-      next[imageEditIndex] = dataUrl
+      const previous = next[imageEditIndex]
+      next[imageEditIndex] = attachment.id
+      if (previous && !previous.startsWith('data:') && !previous.startsWith('http://') && !previous.startsWith('https://')) {
+        deleteAttachment(previous)
+      }
     }
     updateTrade(activeTrade.id, { referenceImages: next })
     setImageEditIndex(null)
@@ -146,6 +163,14 @@ export default function TradeDetailPage() {
           <Button variant="outline" onClick={() => copyText(trade.id)}>
             <Clipboard data-icon="inline-start" />
             复制 ID
+          </Button>
+          <Button variant="outline" onClick={() => copyTradeJson(false)}>
+            <Clipboard data-icon="inline-start" />
+            复制 JSON
+          </Button>
+          <Button variant="outline" onClick={() => copyTradeJson(true)}>
+            <Clipboard data-icon="inline-start" />
+            JSON + 图表
           </Button>
           <Button variant="outline" onClick={createLinkedNote}>
             <NotebookPen data-icon="inline-start" />
@@ -269,17 +294,17 @@ export default function TradeDetailPage() {
                 </div>
               ) : (
                 <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                  {trade.referenceImages.map((src, i) => (
-                    <figure key={src + i} className="overflow-hidden rounded-lg border">
-                      <img
-                        src={src || "/placeholder.svg"}
+                  {trade.referenceImages.map((imageRef, i) => (
+                    <figure key={imageRef + i} className="overflow-hidden rounded-lg border">
+                      <AttachmentImage
+                        imageRef={imageRef}
                         alt={`交易 #${trade.seq} 配图 ${i + 1}`}
                         className="w-full"
                       />
                       <figcaption className="flex items-center justify-between gap-2 border-t p-2">
                         <span className="text-xs text-muted-foreground">图片 {i + 1}</span>
                         <div className="flex items-center gap-1">
-                          <Button variant="ghost" size="icon-sm" aria-label="复制图片引用" onClick={() => copyText(src)}>
+                          <Button variant="ghost" size="icon-sm" aria-label="复制图片引用" onClick={() => copyText(`[[image:${imageRef}]]`)}>
                             <Copy />
                           </Button>
                           <Button
@@ -296,7 +321,12 @@ export default function TradeDetailPage() {
                             variant="ghost"
                             size="icon-sm"
                             aria-label="删除图片"
-                            onClick={() => updateTrade(trade.id, { referenceImages: trade.referenceImages.filter((_, index) => index !== i) })}
+                            onClick={() => {
+                              if (!imageRef.startsWith('data:') && !imageRef.startsWith('http://') && !imageRef.startsWith('https://')) {
+                                deleteAttachment(imageRef)
+                              }
+                              updateTrade(trade.id, { referenceImages: trade.referenceImages.filter((_, index) => index !== i) })
+                            }}
                           >
                             <Trash2 />
                           </Button>

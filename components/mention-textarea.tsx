@@ -3,6 +3,7 @@
 import { useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 
+import { AttachmentImage } from '@/components/attachment-image'
 import { Textarea } from '@/components/ui/textarea'
 import { insertAtCursor, readPastedImage } from '@/lib/clipboard-images'
 import { useCairn } from '@/lib/store'
@@ -10,13 +11,14 @@ import { cn } from '@/lib/utils'
 
 type Suggestion =
   | { kind: 'trade'; label: string; detail: string; token: string }
-  | { kind: 'image'; label: string; detail: string; token: string; src: string }
+  | { kind: 'image'; label: string; detail: string; token: string; imageRef: string; tradeId: string; imageIndex: number }
 
 interface MentionTextareaProps {
   id?: string
   rows?: number
   value: string
   onChange: (value: string) => void
+  noteId?: string
 }
 
 function mentionQuery(value: string, caret: number) {
@@ -26,9 +28,17 @@ function mentionQuery(value: string, caret: number) {
   return { query: match[1] ?? '', start: match.index, end: caret }
 }
 
-export function MentionTextarea({ id, rows, value, onChange }: MentionTextareaProps) {
+function compactSearchText(value: string) {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, '')
+}
+
+function isDataUrl(value: string) {
+  return value.startsWith('data:')
+}
+
+export function MentionTextarea({ id, rows, value, onChange, noteId }: MentionTextareaProps) {
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
-  const { trades, symbols, symbolLabel } = useCairn()
+  const { trades, symbols, attachments, symbolLabel, createImageAttachment, updateTrade } = useCairn()
   const [activeQuery, setActiveQuery] = useState<{ query: string; start: number; end: number } | null>(null)
   const [activeIndex, setActiveIndex] = useState(0)
   const [popupRect, setPopupRect] = useState<{ top: number; left: number; width: number; maxHeight: number } | null>(null)
@@ -51,21 +61,31 @@ export function MentionTextarea({ id, rows, value, onChange }: MentionTextareaPr
         })
 
     const imageSuggestions: Suggestion[] = trades.flatMap((trade) =>
-      trade.referenceImages.map((src, index) => ({
-        kind: 'image',
-        label: `IMG · Trade #${String(trade.seq).padStart(3, '0')} · ${index + 1}`,
-        detail: symbolLabel(trade.symbolId),
-        token: `[[image:${src}]]`,
-        src,
-      })),
+      trade.referenceImages.map((src, index) => {
+        const attachment = attachments.find((item) => item.id === src || (item.ownerType === 'trade' && item.ownerId === trade.id && item.relativePath === src))
+        const imageRef = attachment?.id ?? src
+        return {
+          kind: 'image',
+          label: `IMG · Trade #${String(trade.seq).padStart(3, '0')} · ${index + 1}`,
+          detail: symbolLabel(trade.symbolId),
+          token: `[[image:${imageRef}]]`,
+          imageRef,
+          tradeId: trade.id,
+          imageIndex: index,
+        }
+      }),
     )
 
     const all = wantsImage ? imageSuggestions : [...tradeSuggestions, ...imageSuggestions]
     if (!query || query === 'img') return all.slice(0, 8)
+    const compactQuery = compactSearchText(query)
     return all
-      .filter((item) => `${item.label} ${item.detail}`.toLowerCase().includes(query))
+      .filter((item) => {
+        const text = `${item.label} ${item.detail}`.toLowerCase()
+        return text.includes(query) || compactSearchText(text).includes(compactQuery)
+      })
       .slice(0, 8)
-  }, [activeQuery, trades, symbols, symbolLabel])
+  }, [activeQuery, trades, symbols, attachments, symbolLabel])
 
   function refreshQuery(caret: number, nextValue = value) {
     const next = mentionQuery(nextValue, caret)
@@ -73,13 +93,30 @@ export function MentionTextarea({ id, rows, value, onChange }: MentionTextareaPr
     setActiveIndex(0)
   }
 
-  function insertSuggestion(item: Suggestion) {
+  async function insertSuggestion(item: Suggestion) {
     if (!activeQuery) return
-    const next = `${value.slice(0, activeQuery.start)}${item.token}${value.slice(activeQuery.end)}`
+    let token = item.token
+    if (item.kind === 'image' && isDataUrl(item.imageRef)) {
+      const trade = trades.find((candidate) => candidate.id === item.tradeId)
+      if (trade) {
+        const attachment = await createImageAttachment({
+          ownerType: 'trade',
+          ownerId: trade.id,
+          kind: 'reference-image',
+          fileName: `trade-${String(trade.seq).padStart(3, '0')}-image-${item.imageIndex + 1}.png`,
+          contentDataUrl: item.imageRef,
+        })
+        const nextImages = [...trade.referenceImages]
+        nextImages[item.imageIndex] = attachment.id
+        updateTrade(trade.id, { referenceImages: nextImages })
+        token = `[[image:${attachment.id}]]`
+      }
+    }
+    const next = `${value.slice(0, activeQuery.start)}${token}${value.slice(activeQuery.end)}`
     onChange(next)
     setActiveQuery(null)
     requestAnimationFrame(() => {
-      const caret = activeQuery.start + item.token.length
+      const caret = activeQuery.start + token.length
       textareaRef.current?.focus()
       textareaRef.current?.setSelectionRange(caret, caret)
     })
@@ -143,7 +180,7 @@ export function MentionTextarea({ id, rows, value, onChange }: MentionTextareaPr
             }
             if (event.key === 'Enter') {
               event.preventDefault()
-              insertSuggestion(suggestions[activeIndex])
+              void insertSuggestion(suggestions[activeIndex])
               return
             }
             if (event.key === 'Escape') {
@@ -156,7 +193,16 @@ export function MentionTextarea({ id, rows, value, onChange }: MentionTextareaPr
           const start = event.currentTarget.selectionStart
           const end = event.currentTarget.selectionEnd
           void readPastedImage(event).then((dataUrl) => {
-            if (dataUrl) onChange(insertAtCursor(value, `[[image:${dataUrl}]]`, start, end))
+            if (!dataUrl || !noteId) return
+            void createImageAttachment({
+              ownerType: 'note',
+              ownerId: noteId,
+              kind: 'note-image',
+              fileName: `note-${noteId}-image.png`,
+              contentDataUrl: dataUrl,
+            }).then((attachment) => {
+              onChange(insertAtCursor(value, `[[image:${attachment.id}]]`, start, end))
+            })
           })
         }}
       />
@@ -183,10 +229,10 @@ export function MentionTextarea({ id, rows, value, onChange }: MentionTextareaPr
                 )}
                 onMouseDown={(event) => {
                   event.preventDefault()
-                  insertSuggestion(item)
+                  void insertSuggestion(item)
                 }}
               >
-                {item.kind === 'image' && <img src={item.src} alt="" className="size-10 rounded border object-cover" />}
+                {item.kind === 'image' && <AttachmentImage imageRef={item.imageRef} alt="" className="size-10 rounded border object-cover" />}
                 <span className="flex min-w-0 flex-1 flex-col gap-0.5">
                   <span className="truncate font-medium">{item.label}</span>
                   <span className="truncate text-xs text-muted-foreground">{item.detail}</span>

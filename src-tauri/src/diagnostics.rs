@@ -1,8 +1,7 @@
 use std::{
     fs::{self, OpenOptions},
     io::Write,
-    path::Path,
-    time::{SystemTime, UNIX_EPOCH},
+    path::{Path, PathBuf},
 };
 
 use tauri::AppHandle;
@@ -25,10 +24,22 @@ pub fn install_panic_hook() {
 }
 
 pub fn app_log(app: &AppHandle, message: impl AsRef<str>) {
-    match paths::app_data_dir(app) {
-        Ok(dir) => write_file(&dir.join("cairn-startup.log"), message.as_ref()),
+    match log_path(app) {
+        Ok(path) => write_file(&path, message.as_ref()),
         Err(_) => write_temp(message.as_ref()),
     }
+}
+
+pub fn log_path(app: &AppHandle) -> Result<PathBuf, String> {
+    Ok(paths::app_data_dir(app)?.join("cairn.log"))
+}
+
+pub fn read_log(app: &AppHandle) -> Result<String, String> {
+    let path = log_path(app)?;
+    if !path.exists() {
+        return Ok(String::new());
+    }
+    fs::read_to_string(path).map_err(|err| err.to_string())
 }
 
 pub fn write_temp(message: impl AsRef<str>) {
@@ -39,10 +50,7 @@ fn write_file(path: &Path, message: &str) {
     if let Some(parent) = path.parent() {
         let _ = fs::create_dir_all(parent);
     }
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_secs())
-        .unwrap_or(0);
+    let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f %:z");
     if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
         let _ = writeln!(file, "[{timestamp}] {message}");
     }

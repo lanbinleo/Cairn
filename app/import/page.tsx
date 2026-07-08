@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import {
   Check,
@@ -33,9 +33,11 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { useCairn } from '@/lib/store'
 import { groupRows, parseChartBars, parseChartEvents, parseTradingViewRows, readFileAsDataUrl, type ParsedChartEvent, type ProposedTrade } from '@/lib/tradingview-import'
 import { CHART_TIMEFRAMES, chartTimeframeLabel } from '@/lib/chart-timeframes'
+import { getPossibleDuplicateTrade } from '@/lib/trade-duplicates'
 import type { ChartBar, ChartTimeframe, Execution, ImportBatch, OrderType, Trade, TradeDirection, TradeEvent } from '@/lib/types'
 import { cn } from '@/lib/utils'
 
@@ -99,6 +101,41 @@ function chartEventsForExecutions(chartEvents: ParsedChartEvent[], executions: E
     }))
 }
 
+function proposedTradeCandidate(
+  trade: ProposedTrade,
+  input: { accountId: string; periodId: string; symbolId: string; seq: number },
+): Trade {
+  const tradeId = `candidate-${trade.id}`
+  const executions: Execution[] = trade.executions.map((execution, index) => ({
+    id: `candidate-exec-${trade.id}-${index}`,
+    tradeId,
+    action: execution.action,
+    orderType: execution.orderType ?? 'market',
+    time: execution.time,
+    price: execution.price,
+    quantity: execution.quantity,
+    signal: execution.signal,
+    sourceRef: execution.sourceTradeNo
+      ? `tv:trade:${execution.sourceTradeNo}:${execution.sourceRef.replace('tv:', '')}`
+      : execution.sourceRef,
+  }))
+  return {
+    id: tradeId,
+    seq: input.seq,
+    accountId: input.accountId,
+    periodId: input.periodId,
+    symbolId: input.symbolId,
+    direction: trade.direction,
+    status: executions[executions.length - 1]?.action === 'exit' ? 'closed' : 'open',
+    sourceRef: trade.executions[0]?.sourceTradeNo ? `tv:trade:${trade.executions[0].sourceTradeNo}` : undefined,
+    executions,
+    events: [],
+    referenceImages: [],
+    tags: [],
+    createdAt: Date.now(),
+  }
+}
+
 export default function ImportPage() {
   const navigate = useNavigate()
   const { accounts, periods, symbols, trades, getPeriod, updatePeriod, createTrades, createImportBatch, rollbackImportBatch } = useCairn()
@@ -110,6 +147,7 @@ export default function ImportPage() {
   const [files, setFiles] = useState<Partial<Record<SlotKey, File>>>({})
   const [chartTimeframe, setChartTimeframe] = useState<ChartTimeframe>('5m')
   const [proposedTrades, setProposedTrades] = useState<ProposedTrade[]>([])
+  const [selectedTradeIds, setSelectedTradeIds] = useState<string[]>([])
   const [chartBars, setChartBars] = useState<ChartBar[]>([])
   const [chartEvents, setChartEvents] = useState<ParsedChartEvent[]>([])
   const [referenceImage, setReferenceImage] = useState('')
@@ -118,7 +156,22 @@ export default function ImportPage() {
 
   const periodOptions = periods.filter((p) => p.accountId === accountId)
   const canNext =
-    step === 0 ? periodId !== '' && symbolId !== '' : step === 1 ? Boolean(files.trades) : true
+    step === 0 ? periodId !== '' && symbolId !== '' : step === 1 ? Boolean(files.trades) : step === 2 ? selectedTradeIds.length > 0 : true
+  const duplicateTradeMatches = useMemo(() => {
+    const matches = new Map<string, ReturnType<typeof getPossibleDuplicateTrade>>()
+    const maxSeq = trades.reduce((max, trade) => Math.max(max, trade.seq), 0)
+    proposedTrades.forEach((trade, index) => {
+      const candidate = proposedTradeCandidate(trade, { accountId, periodId, symbolId, seq: maxSeq + index + 1 })
+      const match = getPossibleDuplicateTrade(candidate, trades)
+      if (match) matches.set(trade.id, match)
+    })
+    return matches
+  }, [accountId, periodId, proposedTrades, symbolId, trades])
+  const duplicateTradeIds = useMemo(() => new Set(duplicateTradeMatches.keys()), [duplicateTradeMatches])
+
+  function toggleProposedTrade(id: string, checked: boolean) {
+    setSelectedTradeIds((prev) => checked ? [...new Set([...prev, id])] : prev.filter((item) => item !== id))
+  }
 
   useEffect(() => {
     if (!accountId && accounts[0]) setAccountId(accounts[0].id)
@@ -136,6 +189,15 @@ export default function ImportPage() {
         const rows = await parseTradingViewRows(files.trades as File)
         const grouped = groupRows(rows)
         setProposedTrades(grouped)
+        const maxSeq = trades.reduce((max, trade) => Math.max(max, trade.seq), 0)
+        setSelectedTradeIds(
+          grouped
+            .filter((trade, index) => {
+              const candidate = proposedTradeCandidate(trade, { accountId, periodId, symbolId, seq: maxSeq + index + 1 })
+              return !trade.warning && !getPossibleDuplicateTrade(candidate, trades)
+            })
+            .map((trade) => trade.id),
+        )
         setChartBars(files.chart ? await parseChartBars(files.chart) : [])
         setChartEvents(files.chart ? await parseChartEvents(files.chart) : [])
         setReferenceImage(files.reference ? await readFileAsDataUrl(files.reference) : '')
@@ -155,8 +217,9 @@ export default function ImportPage() {
     const now = Date.now()
     const maxSeq = trades.reduce((max, trade) => Math.max(max, trade.seq), 0)
     const batchId = `imp-${now}`
+    const selected = proposedTrades.filter((trade) => selectedTradeIds.includes(trade.id))
     const created: Trade[] = proposedTrades
-      .filter((trade) => trade.executions.length > 0 && !trade.warning)
+      .filter((trade) => selected.includes(trade) && trade.executions.length > 0)
       .map((trade, index) => {
         const tradeId = `tr-import-${now}-${index + 1}`
         const executions = trade.executions.map((execution, execIndex) => ({
@@ -468,7 +531,9 @@ export default function ImportPage() {
             <Table>
               <TableHeader>
                 <TableRow>
+                  <TableHead className="w-16">导入</TableHead>
                   <TableHead>归组</TableHead>
+                  <TableHead>提示</TableHead>
                   <TableHead>TV 编号</TableHead>
                   <TableHead>方向</TableHead>
                   <TableHead>Execution</TableHead>
@@ -482,18 +547,46 @@ export default function ImportPage() {
               </TableHeader>
               <TableBody>
                 {proposedTrades.flatMap((trade, tradeIndex) =>
-                  trade.executions.map((row, rowIndex) => (
-                    <TableRow key={`${trade.id}-${rowIndex}`}>
+                  trade.executions.map((row, rowIndex) => {
+                    const duplicateMatch = duplicateTradeMatches.get(trade.id)
+                    const duplicate = Boolean(duplicateMatch)
+                    const selected = selectedTradeIds.includes(trade.id)
+                    return (
+                    <TableRow key={`${trade.id}-${rowIndex}`} className={duplicate ? 'bg-warning/8' : undefined}>
+                      <TableCell>
+                        <input
+                          type="checkbox"
+                          className="size-4 accent-current"
+                          checked={selected}
+                          onChange={(event) => toggleProposedTrade(trade.id, event.target.checked)}
+                          aria-label={`导入 Trade ${tradeIndex + 1}`}
+                        />
+                      </TableCell>
                       <TableCell>
                         <Badge
                           variant="outline"
                           className={cn(
                             'font-mono',
-                            trade.warning ? 'border-loss/40 text-loss' : 'border-profit/40 text-profit',
+                            trade.warning ? 'border-loss/40 text-loss' : duplicate ? 'border-warning/60 text-warning-foreground' : 'border-profit/40 text-profit',
                           )}
                         >
                           Trade {tradeIndex + 1}
                         </Badge>
+                      </TableCell>
+                      <TableCell className="max-w-56 truncate text-xs text-muted-foreground">
+                        {trade.warning ?? (duplicateMatch ? (
+                          <Tooltip>
+                            <TooltipTrigger render={<span>疑似重复：Trade #{String(duplicateMatch.trade.seq).padStart(3, '0')}</span>} />
+                            <TooltipContent className="max-w-sm">
+                              <span className="flex flex-col gap-1 py-1">
+                                <span className="font-mono font-medium">Trade #{String(duplicateMatch.trade.seq).padStart(3, '0')}</span>
+                                {duplicateMatch.reasons.map((reason) => (
+                                  <span key={reason}>{reason}</span>
+                                ))}
+                              </span>
+                            </TooltipContent>
+                          </Tooltip>
+                        ) : '—')}
                       </TableCell>
                       <TableCell className="font-mono text-muted-foreground">
                         {row.sourceTradeNo ?? row.sourceRef.replace('tv:row:', '')}
@@ -574,7 +667,8 @@ export default function ImportPage() {
                       <TableCell className="text-right font-mono">{row.price}</TableCell>
                       <TableCell className="text-right font-mono">{row.quantity}</TableCell>
                     </TableRow>
-                  )),
+                    )
+                  }),
                 )}
               </TableBody>
             </Table>
@@ -595,7 +689,7 @@ export default function ImportPage() {
             <div className="flex flex-col gap-1">
               <h2 className="text-lg font-semibold">导入完成</h2>
               <p className="text-sm text-muted-foreground text-pretty">
-                {proposedTrades.filter((trade) => !trade.warning).length} 个 Trade 已归入所选 Period。
+                {selectedTradeIds.length} 个 Trade 已归入所选 Period。
               </p>
             </div>
             <div className="flex items-center gap-2">
@@ -609,6 +703,7 @@ export default function ImportPage() {
                   setFiles({})
                   setChartTimeframe('5m')
                   setProposedTrades([])
+                  setSelectedTradeIds([])
                   setChartBars([])
                   setChartEvents([])
                   setReferenceImage('')
