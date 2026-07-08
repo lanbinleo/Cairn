@@ -10,3 +10,5 @@
 - Aggregate same-bar, same-price exit executions in trade detail displays while preserving raw execution records.
 - Refine page transition motion and make secondary buttons visually distinct from the page background.
 - Replace separate trade-detail copy actions with a compact copy button and dropdown.
+- Fix trade reference image uploads by passing Tauri attachment command arguments with the expected camelCase names.
+- Show an inline error when a trade reference image cannot be saved.

@@ -71,12 +71,12 @@ export async function saveAttachmentFile(input: {
     }
   }
   return invoke<{ file_name: string; relative_path: string; mime_type: string }>('save_attachment_file', {
-    owner_type: input.ownerType,
-    owner_id: input.ownerId,
+    ownerType: input.ownerType,
+    ownerId: input.ownerId,
     kind: input.kind,
-    attachment_id: input.attachmentId,
-    file_name: input.fileName,
-    content_data_url: input.contentDataUrl,
+    attachmentId: input.attachmentId,
+    fileName: input.fileName,
+    contentDataUrl: input.contentDataUrl,
   }).then((saved) => ({
     fileName: saved.file_name,
     relativePath: saved.relative_path,
@@ -89,7 +89,7 @@ export async function readAttachmentFile(relativePath: string): Promise<string> 
     return relativePath
   }
   if (!isTauriRuntime()) return relativePath
-  return invoke<string>('read_attachment_file', { relative_path: relativePath })
+  return invoke<string>('read_attachment_file', { relativePath })
 }
 
 export async function saveChartSourceFile(input: {

@@ -29,6 +29,7 @@ import { timeToBarIndex } from '@/lib/bar-time'
 import { readFileAsDataUrl } from '@/lib/tradingview-import'
 import { createTradeTransferPayload, stringifyTradeTransfer } from '@/lib/trade-transfer'
 import { CHART_TIMEFRAMES, chartTimeframeLabel, chartTimeframeMinutes } from '@/lib/chart-timeframes'
+import { logFrontendError } from '@/lib/frontend-log'
 import type { ChartTimeframe } from '@/lib/types'
 
 const eventLabel: Record<string, string> = {
@@ -44,6 +45,8 @@ export default function TradeDetailPage() {
   const { tradeId = '' } = useParams()
   const imageInputRef = useRef<HTMLInputElement | null>(null)
   const [imageEditIndex, setImageEditIndex] = useState<number | null>(null)
+  const [isImageUploading, setIsImageUploading] = useState(false)
+  const [imageUploadError, setImageUploadError] = useState('')
   const [chartTimeframe, setChartTimeframe] = useState<ChartTimeframe>('5m')
   const [showTrailLines, setShowTrailLines] = useState(true)
   const [showEntryLine, setShowEntryLine] = useState(true)
@@ -85,26 +88,36 @@ export default function TradeDetailPage() {
 
   async function handleImageSelected(file?: File) {
     if (!file) return
-    const dataUrl = await readFileAsDataUrl(file)
-    const attachment = await createImageAttachment({
-      ownerType: 'trade',
-      ownerId: activeTrade.id,
-      kind: 'reference-image',
-      fileName: file.name,
-      contentDataUrl: dataUrl,
-    })
-    const next = [...activeTrade.referenceImages]
-    if (imageEditIndex == null) {
-      next.push(attachment.id)
-    } else {
-      const previous = next[imageEditIndex]
-      next[imageEditIndex] = attachment.id
-      if (previous && !previous.startsWith('data:') && !previous.startsWith('http://') && !previous.startsWith('https://')) {
-        deleteAttachment(previous)
+    setIsImageUploading(true)
+    setImageUploadError('')
+    try {
+      const dataUrl = await readFileAsDataUrl(file)
+      const attachment = await createImageAttachment({
+        ownerType: 'trade',
+        ownerId: activeTrade.id,
+        kind: 'reference-image',
+        fileName: file.name,
+        contentDataUrl: dataUrl,
+      })
+      const next = [...activeTrade.referenceImages]
+      if (imageEditIndex == null) {
+        next.push(attachment.id)
+      } else {
+        const previous = next[imageEditIndex]
+        next[imageEditIndex] = attachment.id
+        if (previous && !previous.startsWith('data:') && !previous.startsWith('http://') && !previous.startsWith('https://')) {
+          deleteAttachment(previous)
+        }
       }
+      updateTrade(activeTrade.id, { referenceImages: next })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      setImageUploadError(`添加图片失败：${message}`)
+      void logFrontendError(`image attachment save failed: ${message}`)
+    } finally {
+      setIsImageUploading(false)
+      setImageEditIndex(null)
     }
-    updateTrade(activeTrade.id, { referenceImages: next })
-    setImageEditIndex(null)
   }
 
   function stopLabelForExecutionIndex(index: number) {
@@ -300,17 +313,23 @@ export default function TradeDetailPage() {
                 <Button
                   variant="outline"
                   size="sm"
+                  disabled={isImageUploading}
                   onClick={() => {
                     setImageEditIndex(null)
                     imageInputRef.current?.click()
                   }}
                 >
                   <ImagePlus data-icon="inline-start" />
-                  添加图片
+                  {isImageUploading ? '添加中...' : '添加图片'}
                 </Button>
               </div>
             </CardHeader>
             <CardContent>
+              {imageUploadError && (
+                <p className="mb-3 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive" role="alert">
+                  {imageUploadError}
+                </p>
+              )}
               {trade.referenceImages.length === 0 ? (
                 <div className="flex min-h-36 items-center justify-center rounded-lg border border-dashed text-sm text-muted-foreground">
                   暂无配图
@@ -333,6 +352,7 @@ export default function TradeDetailPage() {
                           <Button
                             variant="ghost"
                             size="sm"
+                            disabled={isImageUploading}
                             onClick={() => {
                               setImageEditIndex(i)
                               imageInputRef.current?.click()
@@ -364,6 +384,7 @@ export default function TradeDetailPage() {
                 type="file"
                 accept="image/*"
                 className="hidden"
+                disabled={isImageUploading}
                 onChange={(event) => {
                   void handleImageSelected(event.target.files?.[0])
                   event.target.value = ''

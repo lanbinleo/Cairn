@@ -188,8 +188,8 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
       mimeType: saved.mimeType,
       createdAt: Date.now(),
     }
+    await saveLocalRecord('attachments', created)
     setAttachments((prev) => [...prev.filter((item) => item.id !== id), created])
-    void saveLocalRecord('attachments', created)
     return created
   }, [makeId])
 
