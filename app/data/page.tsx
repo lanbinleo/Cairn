@@ -1,503 +1,427 @@
 'use client'
 
-import { useMemo, useRef, useState } from 'react'
-import { Database, Download, Upload } from 'lucide-react'
+import { useMemo, useState } from 'react'
+import { Database, Download, FileWarning, Trash2 } from 'lucide-react'
 
+import { CoverageTimeline, TimelineLegend, type TimelineRow } from '@/components/coverage-timeline'
+import { ImportDatasetDialog } from '@/components/import-dataset-dialog'
 import { PageHeader } from '@/components/page-header'
+import { StatCard } from '@/components/stat-card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { Field, FieldLabel } from '@/components/ui/field'
-import { Input } from '@/components/ui/input'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { CHART_TIMEFRAMES, chartTimeframeMinutes, chartTimeframeLabel } from '@/lib/chart-timeframes'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import {
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@/components/ui/table'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
+import {
+  buildWindowOptions,
+  clipRanges,
+  computeCanonical,
+  deriveDatasets,
+  fmtTimeframe,
+  interiorGaps,
+  isCovered,
+} from '@/lib/chart-datasets'
 import { fmtUtcDateTime } from '@/lib/format'
-import { saveChartSourceFile } from '@/lib/local-db'
 import { useCairn } from '@/lib/store'
-import { parseChartBars } from '@/lib/tradingview-import'
-import type { ChartBar, ChartCandle, ChartImport, ChartTimeframe } from '@/lib/types'
+import type { ChartCandle, TimeRange, Trade } from '@/lib/types'
 import { cn } from '@/lib/utils'
 
-function monthValue(date = new Date()) {
-  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`
+const ALL = 'all'
+
+function firstExecution(trade: Trade) {
+  return [...trade.executions].sort((a, b) => a.time - b.time)[0]
 }
 
-function monthValueFromTime(time: number) {
-  return monthValue(new Date(time))
-}
+function exportCanonicalCsv(label: string, candles: ChartCandle[], merged: TimeRange[]) {
+  const rows = ['time,open,high,low,close,ema20']
+  const included = candles
+    .filter((candle) => isCovered(candle.time, merged))
+    .sort((a, b) => a.time - b.time)
 
-function monthRange(value: string) {
-  const [year, month] = value.split('-').map(Number)
-  const start = Date.UTC(year, month - 1, 1)
-  const end = Date.UTC(year, month, 1) - 1
-  return { start, end }
-}
-
-function utcDate(value: number) {
-  return new Date(value).toISOString().slice(0, 10)
-}
-
-function utcStamp(value?: number) {
-  return value == null ? 'unknown' : new Date(value).toISOString().replace(/[:.]/g, '-')
-}
-
-function sameCandle(a: ChartCandle, b: ChartBar) {
-  return a.open === b.open && a.high === b.high && a.low === b.low && a.close === b.close && (a.ema20 ?? null) === (b.ema20 ?? null)
-}
-
-function detectIntervalMs(bars: ChartBar[]) {
-  const diffs = bars.slice(1).map((bar, index) => bar.time - bars[index].time).filter((diff) => diff > 0)
-  if (diffs.length === 0) return undefined
-  diffs.sort((a, b) => a - b)
-  return diffs[Math.floor(diffs.length / 2)]
-}
-
-function toBase64(file: File) {
-  return new Promise<string>((resolve, reject) => {
-    const reader = new FileReader()
-    reader.onload = () => {
-      const result = String(reader.result ?? '')
-      resolve(result.includes(',') ? result.split(',')[1] : result)
-    }
-    reader.onerror = () => reject(reader.error)
-    reader.readAsDataURL(file)
-  })
-}
-
-function coverageSegments(candles: ChartCandle[], intervalMs: number) {
-  if (candles.length === 0) return []
-  const sorted = [...candles].sort((a, b) => a.time - b.time)
-  const segments: Array<{ start: number; end: number; count: number }> = []
-  let current = { start: sorted[0].time, end: sorted[0].time, count: 1 }
-  for (const candle of sorted.slice(1)) {
-    if (candle.time - current.end <= intervalMs * 1.5) {
-      current.end = candle.time
-      current.count += 1
-    } else {
-      segments.push(current)
-      current = { start: candle.time, end: candle.time, count: 1 }
-    }
+  for (const candle of included) {
+    rows.push([
+      Math.floor(candle.time / 1000),
+      candle.open,
+      candle.high,
+      candle.low,
+      candle.close,
+      candle.ema20 ?? '',
+    ].join(','))
   }
-  segments.push(current)
-  return segments
-}
 
-function missingSegments(candles: ChartCandle[], start: number, end: number, intervalMs: number) {
-  const times = new Set(candles.map((item) => item.time))
-  const missing: Array<{ start: number; end: number; count: number }> = []
-  let current: { start: number; end: number; count: number } | null = null
-  const alignedStart = Math.ceil(start / intervalMs) * intervalMs
-  for (let time = alignedStart; time <= end; time += intervalMs) {
-    if (times.has(time)) {
-      if (current) missing.push(current)
-      current = null
-      continue
-    }
-    if (!current) current = { start: time, end: time, count: 1 }
-    else {
-      current.end = time
-      current.count += 1
-    }
-  }
-  if (current) missing.push(current)
-  return missing
+  const blob = new Blob([rows.join('\n')], { type: 'text/csv;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const anchor = document.createElement('a')
+  anchor.href = url
+  anchor.download = `${label}_canonical.csv`
+  anchor.click()
+  URL.revokeObjectURL(url)
 }
 
 export default function DataPage() {
-  const fileInputRef = useRef<HTMLInputElement | null>(null)
-  const { symbols, trades, chartImports, chartCandles, createChartImport, symbolLabel } = useCairn()
-  const [symbolId, setSymbolId] = useState(symbols[0]?.id ?? '')
-  const [timeframe, setTimeframe] = useState<ChartTimeframe>('5m')
-  const [month, setMonth] = useState(monthValue())
-  const [message, setMessage] = useState('')
-  const [busy, setBusy] = useState(false)
+  const { chartImports, chartCandles, trades, symbols, deleteChartImport } = useCairn()
+  const [windowId, setWindowId] = useState(ALL)
+  const [tfFilter, setTfFilter] = useState(ALL)
+  const [selectedId, setSelectedId] = useState<string | null>(null)
 
-  const range = monthRange(month)
-  const intervalMs = chartTimeframeMinutes(timeframe) * 60_000
-  const selectedCandles = chartCandles.filter((item) => item.symbolId === symbolId && item.timeframe === timeframe)
-  const monthCandles = selectedCandles.filter((item) => item.time >= range.start && item.time <= range.end)
-  const segments = coverageSegments(monthCandles, intervalMs)
-  const gaps = missingSegments(monthCandles, range.start, range.end, intervalMs)
-  const selectedSymbol = symbols.find((item) => item.id === symbolId)
-  const monthDays = useMemo(() => {
-    const days: Array<{ date: string; pct: number; count: number }> = []
-    const byDay = new Map<string, number>()
-    for (const candle of monthCandles) {
-      const key = utcDate(candle.time)
-      byDay.set(key, (byDay.get(key) ?? 0) + 1)
-    }
-    for (let day = range.start; day <= range.end; day += 24 * 60 * 60_000) {
-      const date = utcDate(day)
-      const expected = Math.round((24 * 60) / chartTimeframeMinutes(timeframe))
-      const count = byDay.get(date) ?? 0
-      days.push({ date, count, pct: Math.min(1, count / expected) })
-    }
-    return days
-  }, [monthCandles, range.start, range.end, timeframe])
+  const datasets = useMemo(() => deriveDatasets(chartImports, chartCandles), [chartImports, chartCandles])
+  const canonical = useMemo(() => computeCanonical(datasets), [datasets])
+  const windowOptions = useMemo(() => buildWindowOptions(datasets, trades), [datasets, trades])
+  const windowOption = windowOptions.find((option) => option.id === windowId) ?? windowOptions[0]
+  const window = windowOption.range
 
-  const tradeCoverage = trades
-    .filter((trade) => trade.symbolId === symbolId)
-    .map((trade) => {
-      const times = trade.executions.map((execution) => execution.time)
-      const start = Math.min(...times)
-      const end = Math.max(...times)
-      const padding = intervalMs * 80
-      const covered = selectedCandles.some((candle) => candle.time >= start - padding && candle.time <= end + padding)
-      return { trade, start, end, covered }
-    })
-    .filter((item) => item.start <= range.end && item.end >= range.start)
+  const symbolOf = (id: string) => symbols.find((symbol) => symbol.id === id)
 
-  const coverageBacklog = useMemo(() => {
-    const monthsBySymbol = new Map<string, Set<string>>()
-    for (const symbol of symbols) monthsBySymbol.set(symbol.id, new Set())
-    for (const trade of trades) {
-      const set = monthsBySymbol.get(trade.symbolId)
-      if (!set) continue
-      trade.executions.forEach((execution) => set.add(monthValueFromTime(execution.time)))
-    }
-    for (const candle of chartCandles) {
-      if (candle.timeframe !== timeframe) continue
-      const set = monthsBySymbol.get(candle.symbolId)
-      if (!set) continue
-      set.add(monthValueFromTime(candle.time))
-    }
+  const rows = useMemo<TimelineRow[]>(() => {
+    const selected = datasets.find((dataset) => dataset.id === selectedId)
+    const out: TimelineRow[] = []
 
-    return [...monthsBySymbol.entries()]
-      .flatMap(([candidateSymbolId, months]) =>
-        [...months].map((candidateMonth) => {
-          const candidateRange = monthRange(candidateMonth)
-          const expected = Math.floor((candidateRange.end - candidateRange.start + 1) / intervalMs)
-          const count = chartCandles.filter((item) =>
-            item.symbolId === candidateSymbolId &&
-            item.timeframe === timeframe &&
-            item.time >= candidateRange.start &&
-            item.time <= candidateRange.end
-          ).length
-          const missing = Math.max(0, expected - count)
-          return {
-            symbolId: candidateSymbolId,
-            month: candidateMonth,
-            count,
-            expected,
-            missing,
-            pct: expected > 0 ? count / expected : 0,
-          }
-        }),
-      )
-      .filter((item) => item.expected > 0 && item.missing > 0)
-      .sort((a, b) => a.pct - b.pct || b.missing - a.missing || a.month.localeCompare(b.month))
-      .slice(0, 12)
-  }, [chartCandles, intervalMs, symbols, timeframe, trades])
+    for (const summary of canonical) {
+      if (tfFilter !== ALL && String(summary.timeframeMin) !== tfFilter) continue
 
-  async function handleImport(file?: File) {
-    if (!file || !symbolId) return
-    setBusy(true)
-    setMessage('')
-    const importId = `chart-import-${Date.now().toString(36)}`
-    try {
-      const bars = await parseChartBars(file)
-      if (bars.length === 0) throw new Error('未解析到 OHLC 数据')
-      const detectedIntervalMs = detectIntervalMs(bars)
-      const startTime = bars[0].time
-      const endTime = bars[bars.length - 1].time
-      const existingById = new Map(chartCandles.map((item) => [item.id, item]))
-      let duplicateCount = 0
-      let conflictCount = 0
-      const inserted: ChartCandle[] = []
+      const coveredInWindow = clipRanges(summary.merged, window)
+      const symbolTrades = trades
+        .map((trade) => ({ trade, execution: firstExecution(trade) }))
+        .filter(
+          ({ trade, execution }) =>
+            trade.symbolId === summary.symbolId &&
+            execution &&
+            execution.time >= window.start &&
+            execution.time < window.end,
+        )
 
-      for (const bar of bars) {
-        const id = `${symbolId}:${timeframe}:${bar.time}`
-        const existing = existingById.get(id)
-        if (existing) {
-          if (sameCandle(existing, bar)) duplicateCount += 1
-          else conflictCount += 1
-          continue
-        }
-        inserted.push({ ...bar, id, symbolId, timeframe, importIds: [importId] })
-      }
+      if (coveredInWindow.length === 0 && symbolTrades.length === 0) continue
 
-      const sourcePath = await saveChartSourceFile({
-        fileName: file.name,
-        contentBase64: await toBase64(file),
-        symbolLabel: selectedSymbol ? `${selectedSymbol.exchange}-${selectedSymbol.code}` : symbolId,
-        timeframe,
-        startUtc: utcStamp(startTime),
-        endUtc: utcStamp(endTime),
+      const symbol = symbolOf(summary.symbolId)
+      out.push({
+        key: `${summary.symbolId}-${summary.timeframeMin}`,
+        label: symbol?.code ?? summary.symbolId,
+        sublabel: `${fmtTimeframe(summary.timeframeMin)} · ${summary.datasetCount} 个文件`,
+        covered: coveredInWindow,
+        gaps: interiorGaps(summary.merged, window),
+        markers: symbolTrades.map(({ trade, execution }) => ({
+          tradeId: trade.id,
+          seq: trade.seq,
+          time: execution!.time,
+          covered: isCovered(execution!.time, summary.merged),
+        })),
+        highlight:
+          selected &&
+          selected.symbolId === summary.symbolId &&
+          selected.timeframe === summary.timeframe &&
+          selected.startTime != null &&
+          selected.endTime != null
+            ? {
+                start: Math.max(selected.startTime, window.start),
+                end: Math.min(selected.endTime, window.end),
+              }
+            : null,
       })
-
-      const record: ChartImport = {
-        id: importId,
-        symbolId,
-        timeframe,
-        fileName: file.name,
-        sourcePath,
-        status: 'parsed',
-        rowCount: bars.length,
-        insertedCount: inserted.length,
-        duplicateCount,
-        conflictCount,
-        startTime,
-        endTime,
-        detectedIntervalMs,
-        createdAt: Date.now(),
-      }
-      createChartImport(record, inserted)
-      setMessage(`已导入 ${inserted.length} 根，重复 ${duplicateCount} 根，冲突 ${conflictCount} 根。`)
-    } catch (error) {
-      const record: ChartImport = {
-        id: importId,
-        symbolId,
-        timeframe,
-        fileName: file.name,
-        status: 'failed',
-        rowCount: 0,
-        insertedCount: 0,
-        duplicateCount: 0,
-        conflictCount: 0,
-        error: error instanceof Error ? error.message : String(error),
-        createdAt: Date.now(),
-      }
-      createChartImport(record, [])
-      setMessage(record.error ?? '导入失败')
-    } finally {
-      setBusy(false)
     }
-  }
 
-  function exportCsv() {
-    const rows = ['time,open,high,low,close,EMA']
-    for (const candle of selectedCandles) {
-      rows.push([Math.floor(candle.time / 1000), candle.open, candle.high, candle.low, candle.close, candle.ema20 ?? ''].join(','))
+    const canonicalKeys = new Set(canonical.map((summary) => `${summary.symbolId}|${summary.timeframeMin}`))
+    const orphanSymbols = new Set(
+      trades
+        .map((trade) => ({ trade, execution: firstExecution(trade) }))
+        .filter(
+          ({ trade, execution }) =>
+            execution &&
+            execution.time >= window.start &&
+            execution.time < window.end &&
+            ![...canonicalKeys].some((key) => key.startsWith(`${trade.symbolId}|`)),
+        )
+        .map(({ trade }) => trade.symbolId),
+    )
+
+    if (tfFilter === ALL) {
+      for (const symbolId of orphanSymbols) {
+        const symbol = symbolOf(symbolId)
+        const symbolTrades = trades
+          .map((trade) => ({ trade, execution: firstExecution(trade) }))
+          .filter(
+            ({ trade, execution }) =>
+              trade.symbolId === symbolId &&
+              execution &&
+              execution.time >= window.start &&
+              execution.time < window.end,
+          )
+        out.push({
+          key: `${symbolId}-none`,
+          label: symbol?.code ?? symbolId,
+          sublabel: '未导入任何数据',
+          covered: [],
+          gaps: [],
+          noData: true,
+          markers: symbolTrades.map(({ trade, execution }) => ({
+            tradeId: trade.id,
+            seq: trade.seq,
+            time: execution!.time,
+            covered: false,
+          })),
+        })
+      }
     }
-    const blob = new Blob([rows.join('\n')], { type: 'text/csv;charset=utf-8' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `${symbolLabel(symbolId).replace(/[:/\\]/g, '-')}-${timeframe}.csv`
-    a.click()
-    URL.revokeObjectURL(url)
-  }
+
+    return out
+  }, [canonical, datasets, selectedId, tfFilter, trades, window])
+
+  const parsedCount = datasets.filter((dataset) => dataset.status === 'parsed').length
+  const errorCount = datasets.length - parsedCount
+  const totalCanonicalBars = canonical.reduce((sum, summary) => sum + summary.canonicalBars, 0)
+  const totalGaps = canonical.reduce((sum, summary) => sum + summary.gapCount, 0)
+  const uncoveredTrades = useMemo(() => {
+    let count = 0
+    for (const trade of trades) {
+      const execution = firstExecution(trade)
+      if (!execution) continue
+      const summaries = canonical.filter((summary) => summary.symbolId === trade.symbolId)
+      if (!summaries.some((summary) => isCovered(execution.time, summary.merged))) count += 1
+    }
+    return count
+  }, [canonical, trades])
+
+  const timeframes = [...new Set(canonical.map((summary) => summary.timeframeMin))].sort((a, b) => a - b)
+  const sortedDatasets = [...datasets].sort((a, b) => b.importedAt - a.importedAt)
 
   return (
-    <div className="flex flex-col gap-6 p-6 lg:p-8">
+    <div className="flex flex-col gap-6">
       <PageHeader
         title="数据"
-        description="管理独立导入的图表数据、覆盖范围和缺口"
-        actions={
-          <div className="flex items-center gap-2">
-            <Button variant="outline" onClick={exportCsv} disabled={selectedCandles.length === 0}>
-              <Download data-icon="inline-start" />
-              导出
-            </Button>
-            <Button onClick={() => fileInputRef.current?.click()} disabled={!symbolId || busy}>
-              <Upload data-icon="inline-start" />
-              导入图表数据
-            </Button>
-          </div>
-        }
+        description="图表数据的导入、覆盖度检查与规范化管理"
+        actions={<ImportDatasetDialog />}
       />
 
-      <Card>
-        <CardContent className="grid grid-cols-1 gap-4 py-4 md:grid-cols-3">
-          <Field>
-            <FieldLabel>Symbol</FieldLabel>
-            <Select value={symbolId} onValueChange={(value) => { if (value) setSymbolId(value) }}>
-              <SelectTrigger className="w-full">
-                <SelectValue placeholder="选择品种" />
-              </SelectTrigger>
-              <SelectContent>
-                {symbols.map((symbol) => (
-                  <SelectItem key={symbol.id} value={symbol.id}>
-                    {symbol.exchange}:{symbol.code}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </Field>
-          <Field>
-            <FieldLabel>周期</FieldLabel>
-            <Select value={timeframe} onValueChange={(value) => setTimeframe(value as ChartTimeframe)}>
-              <SelectTrigger className="w-full">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {CHART_TIMEFRAMES.map((item) => (
-                  <SelectItem key={item.value} value={item.value}>
-                    {item.label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </Field>
-          <Field>
-            <FieldLabel>月份</FieldLabel>
-            <Input type="month" value={month} onChange={(event) => setMonth(event.target.value)} />
-          </Field>
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept=".csv,.xlsx,.xls"
-            className="hidden"
-            onChange={(event) => {
-              void handleImport(event.target.files?.[0])
-              event.target.value = ''
-            }}
-          />
-        </CardContent>
-      </Card>
-
-      {message && <p className="text-sm text-muted-foreground">{message}</p>}
+      <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+        <StatCard label="数据文件" value={`${datasets.length}`} sub={errorCount > 0 ? `${errorCount} 个解析失败` : '全部解析成功'} />
+        <StatCard label="规范数据集" value={`${canonical.length}`} sub="品种 × 周期" />
+        <StatCard label="规范 K 线" value={totalCanonicalBars.toLocaleString()} sub="去重合并后" />
+        <StatCard
+          label="缺口 / 缺数据交易"
+          value={`${totalGaps} / ${uncoveredTrades}`}
+          sub={uncoveredTrades > 0 ? '有交易缺少图表数据' : '交易均有数据支撑'}
+        />
+      </div>
 
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">待补数据</CardTitle>
+          <CardTitle>覆盖度</CardTitle>
+          <CardDescription>各品种×周期的数据覆盖情况；圆点为交易入场点，红点表示该时段缺少图表数据</CardDescription>
+          <div className="flex flex-wrap items-center gap-2 pt-2">
+            <Select value={windowOption.id} onValueChange={(value) => value && setWindowId(value)}>
+              <SelectTrigger className="w-36" aria-label="时间窗口">
+                <SelectValue>{windowOption.label}</SelectValue>
+              </SelectTrigger>
+              <SelectContent>
+                <SelectGroup>
+                  {windowOptions.map((option) => (
+                    <SelectItem key={option.id} value={option.id}>
+                      {option.label}
+                    </SelectItem>
+                  ))}
+                </SelectGroup>
+              </SelectContent>
+            </Select>
+            <Select value={tfFilter} onValueChange={(value) => value && setTfFilter(value)}>
+              <SelectTrigger className="w-28" aria-label="周期筛选">
+                <SelectValue>{tfFilter === ALL ? '全部周期' : fmtTimeframe(Number(tfFilter))}</SelectValue>
+              </SelectTrigger>
+              <SelectContent>
+                <SelectGroup>
+                  <SelectItem value={ALL}>全部周期</SelectItem>
+                  {timeframes.map((timeframe) => (
+                    <SelectItem key={timeframe} value={String(timeframe)}>
+                      {fmtTimeframe(timeframe)}
+                    </SelectItem>
+                  ))}
+                </SelectGroup>
+              </SelectContent>
+            </Select>
+          </div>
         </CardHeader>
-        <CardContent className="flex flex-col gap-2">
-          {coverageBacklog.length === 0 ? (
-            <p className="text-sm text-muted-foreground">当前周期下，没有发现需要优先补齐的月份。</p>
+        <CardContent className="flex flex-col gap-4">
+          {rows.length === 0 ? (
+            <p className="py-8 text-center text-sm text-muted-foreground">该窗口内没有数据或交易</p>
           ) : (
-            coverageBacklog.map((item) => (
-              <button
-                key={`${item.symbolId}-${item.month}`}
-                type="button"
-                onClick={() => {
-                  setSymbolId(item.symbolId)
-                  setMonth(item.month)
-                }}
-                className={cn(
-                  'grid grid-cols-1 gap-2 rounded-md border px-3 py-2 text-left transition-colors hover:bg-muted/50 md:grid-cols-[1fr_auto]',
-                  item.symbolId === symbolId && item.month === month && 'border-ring bg-muted/40',
-                )}
-              >
-                <span className="flex min-w-0 flex-col gap-1">
-                  <span className="font-medium">{symbolLabel(item.symbolId)} · {item.month}</span>
-                  <span className="text-xs text-muted-foreground">
-                    {chartTimeframeLabel(timeframe)} · 已有 {item.count} / {item.expected} 根
-                  </span>
-                </span>
-                <span className="flex items-center gap-2 text-sm">
-                  <Badge variant="destructive">缺 {item.missing} 根</Badge>
-                  <span className="font-mono text-xs text-muted-foreground">{Math.round(item.pct * 100)}%</span>
-                </span>
-              </button>
-            ))
+            <CoverageTimeline rows={rows} window={window} />
           )}
+          <TimelineLegend />
         </CardContent>
       </Card>
 
-      <div className="grid grid-cols-1 gap-6 xl:grid-cols-3">
-        <Card className="xl:col-span-2">
-          <CardHeader>
-            <CardTitle className="text-base">覆盖日历</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="grid grid-cols-7 gap-1">
-              {monthDays.map((day) => (
+      <Card>
+        <CardHeader>
+          <CardTitle>数据文件</CardTitle>
+          <CardDescription>每次导入的原始文件（已归档重命名）；点击行可在覆盖度图上定位其范围</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>归档文件</TableHead>
+                <TableHead>品种</TableHead>
+                <TableHead>周期</TableHead>
+                <TableHead>时间范围（UTC）</TableHead>
+                <TableHead className="text-right">行数</TableHead>
+                <TableHead>EMA20</TableHead>
+                <TableHead>状态</TableHead>
+                <TableHead className="w-10" aria-label="操作" />
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {sortedDatasets.length === 0 ? (
+                <TableRow>
+                  <TableCell colSpan={8} className="py-8 text-center text-sm text-muted-foreground">
+                    暂无导入记录
+                  </TableCell>
+                </TableRow>
+              ) : (
+                sortedDatasets.map((dataset) => {
+                  const symbol = symbolOf(dataset.symbolId)
+                  const selected = selectedId === dataset.id
+                  return (
+                    <TableRow
+                      key={dataset.id}
+                      data-state={selected ? 'selected' : undefined}
+                      className={cn('cursor-pointer', selected && 'bg-accent/50')}
+                      onClick={() => setSelectedId(selected ? null : dataset.id)}
+                    >
+                      <TableCell className="max-w-64">
+                        <Tooltip>
+                          <TooltipTrigger render={<span className="block truncate font-mono text-xs">{dataset.archivedFile}</span>} />
+                          <TooltipContent>原始文件：{dataset.originalFile}</TooltipContent>
+                        </Tooltip>
+                      </TableCell>
+                      <TableCell className="font-mono text-xs">{symbol?.code ?? '-'}</TableCell>
+                      <TableCell className="font-mono text-xs">{fmtTimeframe(dataset.timeframeMin)}</TableCell>
+                      <TableCell className="font-mono text-xs text-muted-foreground">
+                        {dataset.startTime != null && dataset.endTime != null
+                          ? `${fmtUtcDateTime(dataset.startTime, false)} - ${fmtUtcDateTime(dataset.endTime, false)}`
+                          : '-'}
+                      </TableCell>
+                      <TableCell className="text-right font-mono text-xs tabular-nums">
+                        {dataset.rowCount > 0 ? dataset.rowCount.toLocaleString() : '-'}
+                      </TableCell>
+                      <TableCell>
+                        {dataset.hasEma20 ? <Badge variant="secondary">有</Badge> : <span className="text-xs text-muted-foreground">无</span>}
+                      </TableCell>
+                      <TableCell>
+                        {dataset.status === 'parsed' ? (
+                          <Badge className="border-transparent bg-profit/12 text-profit">已解析</Badge>
+                        ) : (
+                          <Tooltip>
+                            <TooltipTrigger
+                              render={
+                                <Badge className="cursor-help border-transparent bg-loss/12 text-loss">
+                                  <FileWarning className="size-3" aria-hidden="true" />
+                                  解析失败
+                                </Badge>
+                              }
+                            />
+                            <TooltipContent className="max-w-64">{dataset.error}</TooltipContent>
+                          </Tooltip>
+                        )}
+                      </TableCell>
+                      <TableCell>
+                        <Button
+                          variant="ghost"
+                          size="icon-sm"
+                          aria-label={`删除 ${dataset.archivedFile}`}
+                          onClick={(event) => {
+                            event.stopPropagation()
+                            if (selectedId === dataset.id) setSelectedId(null)
+                            deleteChartImport(dataset.id)
+                          }}
+                        >
+                          <Trash2 />
+                        </Button>
+                      </TableCell>
+                    </TableRow>
+                  )
+                })
+              )}
+            </TableBody>
+          </Table>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>规范数据</CardTitle>
+          <CardDescription>同一品种×周期的所有文件合并去重后的完整数据，可导出为单个 CSV</CardDescription>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-3">
+          {canonical.length === 0 ? (
+            <p className="py-4 text-sm text-muted-foreground">暂无规范数据。导入图表数据后会在这里汇总。</p>
+          ) : (
+            canonical.map((summary) => {
+              const symbol = symbolOf(summary.symbolId)
+              const label = `${symbol?.exchange ?? ''}_${symbol?.code.replace(/[^A-Za-z0-9]/g, '') ?? summary.symbolId}_${fmtTimeframe(summary.timeframeMin)}`
+              const candles = chartCandles.filter(
+                (candle) => candle.symbolId === summary.symbolId && candle.timeframe === summary.timeframe,
+              )
+              return (
                 <div
-                  key={day.date}
-                  title={`${day.date} · ${day.count} 根`}
-                  className={cn(
-                    'flex h-12 flex-col justify-between rounded-md border p-1 text-[10px]',
-                    day.pct >= 0.98 ? 'border-profit/30 bg-profit/15' : day.pct > 0 ? 'border-amber-500/40 bg-amber-500/10' : 'border-loss/30 bg-loss/10',
-                  )}
+                  key={`${summary.symbolId}-${summary.timeframeMin}`}
+                  className="flex flex-col gap-3 rounded-lg border p-4 sm:flex-row sm:items-center"
                 >
-                  <span>{day.date.slice(8)}</span>
-                  <span className="font-mono">{Math.round(day.pct * 100)}%</span>
+                  <div className="flex min-w-0 flex-1 flex-col gap-1">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Database className="size-4 text-muted-foreground" aria-hidden="true" />
+                      <span className="font-mono text-sm font-medium">
+                        {symbol?.code ?? summary.symbolId} · {fmtTimeframe(summary.timeframeMin)}
+                      </span>
+                      {summary.gapCount > 0 ? (
+                        <Badge className="border-transparent bg-warning/15 text-warning-foreground">
+                          {summary.gapCount} 个缺口
+                        </Badge>
+                      ) : (
+                        <Badge className="border-transparent bg-profit/12 text-profit">连续完整</Badge>
+                      )}
+                    </div>
+                    <div className="flex flex-col gap-0.5 font-mono text-xs text-muted-foreground">
+                      {summary.merged.map((range, index) => (
+                        <span key={index}>
+                          {fmtUtcDateTime(range.start, false)} - {fmtUtcDateTime(range.end, false)}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-6">
+                    <div className="flex flex-col items-end gap-0.5">
+                      <span className="font-mono text-sm tabular-nums">{summary.canonicalBars.toLocaleString()}</span>
+                      <span className="text-xs text-muted-foreground">规范 K 线</span>
+                    </div>
+                    <div className="flex flex-col items-end gap-0.5">
+                      <span className="font-mono text-sm tabular-nums">{summary.duplicateRows.toLocaleString()}</span>
+                      <span className="text-xs text-muted-foreground">重复 / 冲突</span>
+                    </div>
+                    <Button variant="outline" size="sm" onClick={() => exportCanonicalCsv(label, candles, summary.merged)}>
+                      <Download data-icon="inline-start" />
+                      导出
+                    </Button>
+                  </div>
                 </div>
-              ))}
-            </div>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base">摘要</CardTitle>
-          </CardHeader>
-          <CardContent className="flex flex-col gap-3 text-sm">
-            <div className="flex justify-between"><span className="text-muted-foreground">总 K 线</span><span className="font-mono">{selectedCandles.length}</span></div>
-            <div className="flex justify-between"><span className="text-muted-foreground">本月 K 线</span><span className="font-mono">{monthCandles.length}</span></div>
-            <div className="flex justify-between"><span className="text-muted-foreground">已有区间</span><span className="font-mono">{segments.length}</span></div>
-            <div className="flex justify-between"><span className="text-muted-foreground">缺失区间</span><span className="font-mono">{gaps.length}</span></div>
-          </CardContent>
-        </Card>
-      </div>
-
-      <div className="grid grid-cols-1 gap-6 xl:grid-cols-2">
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base">已有区间</CardTitle>
-          </CardHeader>
-          <CardContent className="flex flex-col gap-2">
-            {segments.length === 0 ? <p className="text-sm text-muted-foreground">暂无数据</p> : segments.slice(0, 12).map((segment, index) => (
-              <div key={index} className="rounded-md border bg-profit/10 px-3 py-2 text-sm">
-                {fmtUtcDateTime(segment.start, false)} - {fmtUtcDateTime(segment.end, false)}
-                <span className="ml-2 text-xs text-muted-foreground">{segment.count} 根</span>
-              </div>
-            ))}
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base">缺失区间</CardTitle>
-          </CardHeader>
-          <CardContent className="flex flex-col gap-2">
-            {gaps.length === 0 ? <p className="text-sm text-muted-foreground">当前月份没有缺口</p> : gaps.slice(0, 12).map((gap, index) => (
-              <div key={index} className="rounded-md border bg-loss/10 px-3 py-2 text-sm">
-                {fmtUtcDateTime(gap.start, false)} - {fmtUtcDateTime(gap.end, false)}
-                <span className="ml-2 text-xs text-muted-foreground">缺 {gap.count} 根</span>
-              </div>
-            ))}
-          </CardContent>
-        </Card>
-      </div>
-
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">交易覆盖检查</CardTitle>
-        </CardHeader>
-        <CardContent className="flex flex-col gap-2">
-          {tradeCoverage.length === 0 ? <p className="text-sm text-muted-foreground">当前月份没有相关交易</p> : tradeCoverage.map(({ trade, start, end, covered }) => (
-            <div key={trade.id} className="flex items-center justify-between rounded-md border px-3 py-2 text-sm">
-              <div className="flex flex-col">
-                <span className="font-medium">Trade #{String(trade.seq).padStart(3, '0')}</span>
-                <span className="text-xs text-muted-foreground">{fmtUtcDateTime(start, false)} - {fmtUtcDateTime(end, false)}</span>
-              </div>
-              <Badge variant={covered ? 'secondary' : 'destructive'}>{covered ? '有数据' : '缺数据'}</Badge>
-            </div>
-          ))}
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">导入记录</CardTitle>
-        </CardHeader>
-        <CardContent className="flex flex-col gap-2">
-          {chartImports.length === 0 ? <p className="text-sm text-muted-foreground">暂无导入记录</p> : chartImports.map((record) => (
-            <div key={record.id} className="grid grid-cols-1 gap-2 rounded-md border px-3 py-2 text-sm md:grid-cols-[1fr_auto]">
-              <div className="flex flex-col gap-1">
-                <div className="flex flex-wrap items-center gap-2">
-                  <span className="font-medium">{record.fileName}</span>
-                  <Badge variant={record.status === 'parsed' ? 'secondary' : 'destructive'}>{record.status}</Badge>
-                  <span className="text-xs text-muted-foreground">{chartTimeframeLabel(record.timeframe)}</span>
-                </div>
-                <span className="text-xs text-muted-foreground">
-                  {record.startTime ? fmtUtcDateTime(record.startTime, false) : 'unknown'} - {record.endTime ? fmtUtcDateTime(record.endTime, false) : 'unknown'}
-                </span>
-                {record.sourcePath && <span className="font-mono text-xs text-muted-foreground">{record.sourcePath}</span>}
-                {record.error && <span className="text-xs text-loss">{record.error}</span>}
-              </div>
-              <div className="flex items-center gap-3 font-mono text-xs text-muted-foreground">
-                <span>rows {record.rowCount}</span>
-                <span>new {record.insertedCount}</span>
-                <span>dup {record.duplicateCount}</span>
-                <span>conflict {record.conflictCount}</span>
-              </div>
-            </div>
-          ))}
+              )
+            })
+          )}
         </CardContent>
       </Card>
     </div>
   )
 }
+

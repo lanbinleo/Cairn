@@ -18,6 +18,7 @@ import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { insertAtCursor, readPastedImage } from '@/lib/clipboard-images'
 import { useCairn } from '@/lib/store'
+import { uniqueTagNames } from '@/lib/tags'
 
 export function CreateNoteDialog() {
   const { createNote } = useCairn()
@@ -36,10 +37,7 @@ export function CreateNoteDialog() {
     createNote({
       title: title.trim() || '新建笔记',
       content: content.trim() || '### 新建笔记',
-      tags: tags
-        .split(',')
-        .map((tag) => tag.trim())
-        .filter(Boolean),
+      tags: uniqueTagNames(tags.split(',')),
       mentions: [],
     })
     setOpen(false)

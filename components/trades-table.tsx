@@ -9,6 +9,7 @@ import { TagBadge } from '@/components/tag-badge'
 import { computeTradeMetrics } from '@/lib/metrics'
 import { fmtUtcDateTime, fmtDuration } from '@/lib/format'
 import { useCairn } from '@/lib/store'
+import { uniqueTagNames } from '@/lib/tags'
 import type { Trade } from '@/lib/types'
 import { cn } from '@/lib/utils'
 
@@ -70,6 +71,7 @@ export function TradesTable({
           const m = computeTradeMetrics(trade)
           const account = getAccount(trade.accountId)
           const period = getPeriod(trade.periodId)
+          const tags = uniqueTagNames(trade.tags)
           return (
             <TableRow key={trade.id} className="group">
               <TableCell>
@@ -90,11 +92,11 @@ export function TradesTable({
               )}
               <TableCell>
                 <div className="flex max-w-44 flex-wrap gap-1">
-                  {trade.tags.slice(0, 2).map((tag) => (
+                  {tags.slice(0, 2).map((tag) => (
                     <TagBadge key={tag} name={tag} className="text-[10px]" />
                   ))}
-                  {trade.tags.length > 2 && (
-                    <span className="self-center text-[10px] text-muted-foreground">+{trade.tags.length - 2}</span>
+                  {tags.length > 2 && (
+                    <span className="self-center text-[10px] text-muted-foreground">+{tags.length - 2}</span>
                   )}
                 </div>
               </TableCell>

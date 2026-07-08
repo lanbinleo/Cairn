@@ -11,6 +11,7 @@ import { Field, FieldGroup, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import { MentionTextarea } from '@/components/mention-textarea'
 import { useCairn } from '@/lib/store'
+import { uniqueTagNames } from '@/lib/tags'
 
 export default function NoteEditPage() {
   const navigate = useNavigate()
@@ -35,10 +36,7 @@ export default function NoteEditPage() {
   function handleSave() {
     updateNote(activeNote.id, {
       title: title.trim() || activeNote.title,
-      tags: tags
-        .split(',')
-        .map((tag) => tag.trim())
-        .filter(Boolean),
+      tags: uniqueTagNames(tags.split(',')),
       content,
     })
     navigate(`/notes?note=${activeNote.id}`)

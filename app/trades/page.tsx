@@ -1,6 +1,6 @@
 'use client'
 
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Plus, X } from 'lucide-react'
 
 import { PageHeader } from '@/components/page-header'
@@ -18,6 +18,7 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { useCairn } from '@/lib/store'
+import { findTagByName, tagNameKey, tagNamesEqual, uniqueTagNames } from '@/lib/tags'
 import { cn } from '@/lib/utils'
 
 const ALL = 'all'
@@ -36,8 +37,21 @@ export default function TradesPage() {
   )
 
   function toggleTag(name: string) {
-    setActiveTags((prev) => (prev.includes(name) ? prev.filter((n) => n !== name) : [...prev, name]))
+    setActiveTags((prev) => {
+      const active = prev.some((tag) => tagNamesEqual(tag, name))
+      return active ? prev.filter((tag) => !tagNamesEqual(tag, name)) : uniqueTagNames([...prev, name])
+    })
   }
+
+  useEffect(() => {
+    const availableKeys = new Set(tagDefs.map((tag) => tagNameKey(tag.name)))
+    setActiveTags((prev) => {
+      const next = uniqueTagNames(prev)
+        .filter((tag) => availableKeys.has(tagNameKey(tag)))
+        .map((tag) => findTagByName(tagDefs, tag)?.name ?? tag)
+      return next.length === prev.length && next.every((tag, index) => tag === prev[index]) ? prev : next
+    })
+  }, [tagDefs])
 
   const filtered = useMemo(
     () =>
@@ -47,7 +61,7 @@ export default function TradesPage() {
           (periodId === ALL || t.periodId === periodId) &&
           (symbolId === ALL || t.symbolId === symbolId) &&
           (direction === ALL || t.direction === direction) &&
-          (activeTags.length === 0 || activeTags.every((tag) => t.tags.includes(tag))),
+          (activeTags.length === 0 || activeTags.every((tag) => t.tags.some((tradeTag) => tagNamesEqual(tradeTag, tag)))),
       ),
     [trades, accountId, periodId, symbolId, direction, activeTags],
   )
