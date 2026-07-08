@@ -19,7 +19,7 @@ import { Field, FieldDescription, FieldGroup, FieldLabel } from '@/components/ui
 import { Input } from '@/components/ui/input'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Textarea } from '@/components/ui/textarea'
-import { barIndexToTime, barsPerDay, isValidBarIndex, timeToBarIndex, utcDayStart } from '@/lib/bar-time'
+import { barIndexToTime, barNumberToTime, barsPerDay, isValidBarNumber, timeToBarIndex, timeToBarNumber, utcDayStart } from '@/lib/bar-time'
 import {
   EXECUTION_ACTION_OPTIONS,
   ORDER_TYPE_OPTIONS,
@@ -233,9 +233,9 @@ export function EditTradeDialog({ trade }: { trade: Trade }) {
   function updateExecutionBar(index: number, value: string) {
     const execution = executionRows[index]
     if (!execution) return
-    const barIndex = Number(value)
-    if (!isValidBarIndex(barIndex, EXECUTION_TIMEFRAME_MINUTES)) return
-    updateExecution(index, { time: barIndexToTime(utcDayStart(execution.time), barIndex, EXECUTION_TIMEFRAME_MINUTES) })
+    const barNumber = Number(value)
+    if (!isValidBarNumber(barNumber, EXECUTION_TIMEFRAME_MINUTES)) return
+    updateExecution(index, { time: barNumberToTime(utcDayStart(execution.time), barNumber, EXECUTION_TIMEFRAME_MINUTES) })
   }
 
   function updateExecutionClock(index: number, value: string) {
@@ -416,7 +416,7 @@ export function EditTradeDialog({ trade }: { trade: Trade }) {
               <div className="flex items-center justify-between gap-3">
                 <div>
                   <FieldLabel>Executions</FieldLabel>
-                  <FieldDescription>日期、5m bar 和时间会互相换算；保存时仍写入 UTC 时间。</FieldDescription>
+                  <FieldDescription>日期、5m bar（从 1 开始）和时间会互相换算；保存时仍写入 UTC 时间。</FieldDescription>
                 </div>
                 <Button type="button" variant="secondary" size="sm" onClick={addExecution}>
                   <Plus data-icon="inline-start" />
@@ -502,9 +502,9 @@ export function EditTradeDialog({ trade }: { trade: Trade }) {
                                 id={`execution-bar-${execution.id}`}
                                 type="number"
                                 inputMode="numeric"
-                                min={0}
-                                max={barsPerDay(EXECUTION_TIMEFRAME_MINUTES) - 1}
-                                value={timeToBarIndex(execution.time, EXECUTION_TIMEFRAME_MINUTES)}
+                                min={1}
+                                max={barsPerDay(EXECUTION_TIMEFRAME_MINUTES)}
+                                value={timeToBarNumber(execution.time, EXECUTION_TIMEFRAME_MINUTES)}
                                 onChange={(event) => updateExecutionBar(index, event.target.value)}
                               />
                             </Field>

@@ -12,3 +12,5 @@
 - Replace separate trade-detail copy actions with a compact copy button and dropdown.
 - Fix trade reference image uploads by passing Tauri attachment command arguments with the expected camelCase names.
 - Show an inline error when a trade reference image cannot be saved.
+- Add a click-to-open image lightbox with explicit close control and in-place zoom masking.
+- Treat execution Bar inputs and displays as 1-based numbers while keeping stored execution times unchanged.

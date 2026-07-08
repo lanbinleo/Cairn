@@ -25,7 +25,7 @@ import { aggregateDisplayExecutions } from '@/lib/execution-display'
 import { computeTradeMetrics } from '@/lib/metrics'
 import { fmtPrice, fmtDuration, fmtUtcDateTime, fmtUtcDate } from '@/lib/format'
 import { uniqueTagNames } from '@/lib/tags'
-import { timeToBarIndex } from '@/lib/bar-time'
+import { timeToBarNumber } from '@/lib/bar-time'
 import { readFileAsDataUrl } from '@/lib/tradingview-import'
 import { createTradeTransferPayload, stringifyTradeTransfer } from '@/lib/trade-transfer'
 import { CHART_TIMEFRAMES, chartTimeframeLabel, chartTimeframeMinutes } from '@/lib/chart-timeframes'
@@ -296,7 +296,7 @@ export default function TradeDetailPage() {
                           {fmtUtcDateTime(item.time, false)}
                         </span>
                         <span className="font-mono text-xs text-muted-foreground/70">
-                          Bar #{timeToBarIndex(item.time, 5)}
+                          Bar #{timeToBarNumber(item.time, 5)}
                         </span>
                       </div>
                     </div>
