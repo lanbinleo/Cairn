@@ -68,6 +68,55 @@ export interface TagDef {
   createdAt: number
 }
 
+export type CaseStatus = 'active' | 'closed' | 'archived'
+export type CaseProvenance = 'forward' | 'retrospective'
+export type CaseCardPhase = 'pre-entry' | 'entry' | 'intermediate' | 'closing' | 'reflection'
+export type CaseEntryDecision = 'pending' | 'executed' | 'continue-observing'
+export type CaseBindingSource = 'manual' | 'import' | 'api'
+
+export interface CaseTagDef {
+  id: string
+  name: string
+  color: TagColor
+  createdAt: number
+}
+
+/** 一段围绕潜在或已完成 Trade 的连续决策记录。 */
+export interface TradeCase {
+  id: string
+  accountId: string
+  periodId: string
+  title: string
+  status: CaseStatus
+  provenance: CaseProvenance
+  tagIds: string[]
+  createdAt: number
+  updatedAt: number
+}
+
+/** Case 内的一条原始记录。rawText 提交后不可改写。 */
+export interface CaseCard {
+  id: string
+  caseId: string
+  phase: CaseCardPhase
+  rawText: string
+  entryDecision?: CaseEntryDecision
+  /** Card 对应的唯一 BAR。新 Card 必须明确填写。 */
+  barRef?: number
+  /** 0.2.0 早期数据兼容字段；读取时只采用第一项。 */
+  barRefs?: number[]
+  createdAt: number
+}
+
+/** Case 与 Trade 的有效关系为一对一。 */
+export interface CaseTradeBinding {
+  id: string
+  caseId: string
+  tradeId: string
+  source: CaseBindingSource
+  boundAt: number
+}
+
 export type ExecutionAction =
   | 'undecided'
   | 'entry'
@@ -197,9 +246,9 @@ export interface Note {
 
 export interface Attachment {
   id: string
-  ownerType: 'trade' | 'note' | 'import-batch'
+  ownerType: 'trade' | 'note' | 'import-batch' | 'case' | 'case-card'
   ownerId: string
-  kind: 'reference-image' | 'raw-export' | 'note-image'
+  kind: 'reference-image' | 'raw-export' | 'note-image' | 'case-image'
   fileName: string
   relativePath: string
   mimeType?: string

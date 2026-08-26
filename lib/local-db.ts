@@ -3,7 +3,21 @@ import { invoke } from '@tauri-apps/api/core'
 import type { CairnStateSnapshot } from './seed'
 import { seedState } from './seed'
 
-type CollectionName = 'accounts' | 'periods' | 'trades' | 'symbols' | 'notes' | 'tagDefs' | 'importBatches' | 'attachments' | 'chartImports' | 'chartCandles'
+type CollectionName =
+  | 'accounts'
+  | 'periods'
+  | 'trades'
+  | 'symbols'
+  | 'notes'
+  | 'tagDefs'
+  | 'cases'
+  | 'caseCards'
+  | 'caseBindings'
+  | 'caseTagDefs'
+  | 'importBatches'
+  | 'attachments'
+  | 'chartImports'
+  | 'chartCandles'
 
 declare global {
   interface Window {

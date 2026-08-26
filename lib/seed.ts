@@ -1,4 +1,4 @@
-import type { Account, Attachment, ChartCandle, ChartImport, ImportBatch, Period, Trade, TagDef, TagColor } from './types'
+import type { Account, Attachment, CaseCard, CaseTagDef, CaseTradeBinding, ChartCandle, ChartImport, ImportBatch, Period, Trade, TradeCase, TagDef, TagColor } from './types'
 
 const T0 = Date.parse('2026-01-01T00:00:00Z')
 
@@ -27,6 +27,10 @@ export interface CairnStateSnapshot {
   symbols: import('./types').TradingSymbol[]
   notes: import('./types').Note[]
   tagDefs: TagDef[]
+  cases: TradeCase[]
+  caseCards: CaseCard[]
+  caseBindings: CaseTradeBinding[]
+  caseTagDefs: CaseTagDef[]
   importBatches: ImportBatch[]
   attachments: Attachment[]
   chartImports: ChartImport[]
@@ -40,6 +44,10 @@ export const seedState: CairnStateSnapshot = {
   symbols: [],
   notes: [],
   tagDefs: [],
+  cases: [],
+  caseCards: [],
+  caseBindings: [],
+  caseTagDefs: [],
   importBatches: [],
   attachments: [],
   chartImports: [],

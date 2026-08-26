@@ -1,0 +1,58 @@
+import type { CaseCard, CaseCardPhase, CaseEntryDecision, CaseProvenance, CaseStatus } from './types'
+
+export const CASE_PHASE_OPTIONS: Array<{ value: CaseCardPhase; label: string; description: string }> = [
+  { value: 'pre-entry', label: 'Pre-entry', description: '市场环境、观察重点和继续等待的条件' },
+  { value: 'entry', label: 'Entry', description: '信号 BAR、入场理由、失效条件和计划' },
+  { value: 'intermediate', label: 'Intermediate', description: '持仓期间看到的新结构、推断和计划变化' },
+  { value: 'closing', label: 'Closing', description: '减仓或离场时看到的变化和执行理由' },
+  { value: 'reflection', label: 'Reflection', description: '交易结束后的过程复盘' },
+]
+
+export const CASE_STATUS_OPTIONS: Array<{ value: CaseStatus; label: string }> = [
+  { value: 'active', label: '记录中' },
+  { value: 'closed', label: '已完成' },
+  { value: 'archived', label: '已归档' },
+]
+
+export const CASE_PROVENANCE_OPTIONS: Array<{ value: CaseProvenance; label: string }> = [
+  { value: 'forward', label: 'Forward · 当时记录' },
+  { value: 'retrospective', label: 'Retrospective · 事后记录' },
+]
+
+export const CASE_ENTRY_DECISION_OPTIONS: Array<{ value: CaseEntryDecision; label: string }> = [
+  { value: 'pending', label: '待确认' },
+  { value: 'executed', label: '已执行' },
+  { value: 'continue-observing', label: '未执行，继续观察' },
+]
+
+export const casePhaseLabel = Object.fromEntries(CASE_PHASE_OPTIONS.map((option) => [option.value, option.label])) as Record<CaseCardPhase, string>
+export const caseStatusLabel = Object.fromEntries(CASE_STATUS_OPTIONS.map((option) => [option.value, option.label])) as Record<CaseStatus, string>
+export const caseProvenanceLabel = Object.fromEntries(CASE_PROVENANCE_OPTIONS.map((option) => [option.value, option.label])) as Record<CaseProvenance, string>
+export const caseEntryDecisionLabel = Object.fromEntries(CASE_ENTRY_DECISION_OPTIONS.map((option) => [option.value, option.label])) as Record<CaseEntryDecision, string>
+
+export const CASE_PHASE_PROMPTS: Record<CaseCardPhase, string[]> = {
+  'pre-entry': ['现在是什么市场状态？', '哪些位置或结构值得观察？', '出现什么条件才会考虑入场？'],
+  entry: ['是哪一根 BAR 触发了想法？', '方向、入场计划、止损和目标是什么？', '什么情况会让这个想法失效？'],
+  intermediate: ['现在是哪一根 BAR？', '新出现了什么结构？', '它会如何改变原来的持仓计划？'],
+  closing: ['是哪一根 BAR 触发了离场想法？', '市场发生了什么变化？', '这次离场符合之前的计划吗？'],
+  reflection: ['实际发生了什么？', '哪些判断有依据，哪些推断没有依据？', '哪些动作符合计划，哪些是临时决定？'],
+}
+
+export function displayPhaseForCaseCard(card: CaseCard): CaseCardPhase {
+  return card.phase === 'entry' && card.entryDecision === 'continue-observing' ? 'pre-entry' : card.phase
+}
+
+export function extractExplicitBarRef(rawText: string): number | undefined {
+  const refs: Array<{ index: number; value: number }> = []
+  const patterns = [
+    /\bbar\s*#?\s*(\d+)\b/gi,
+    /第\s*(\d+)\s*根\s*(?:k\s*线|蜡烛|bar)/gi,
+  ]
+  for (const pattern of patterns) {
+    for (const match of rawText.matchAll(pattern)) {
+      const value = Number(match[1])
+      if (Number.isInteger(value) && value > 0) refs.push({ index: match.index ?? Number.MAX_SAFE_INTEGER, value })
+    }
+  }
+  return refs.sort((a, b) => a.index - b.index)[0]?.value
+}

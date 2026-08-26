@@ -16,7 +16,7 @@ use crate::paths;
 const AUTO_BACKUP_RETENTION_DAYS: i64 = 7;
 const AUTO_BACKUP_PREFIX: &str = "cairn-auto-backup-";
 const AUTO_BACKUP_SUFFIX: &str = ".json";
-const CURRENT_SCHEMA_VERSION: i64 = 2;
+const CURRENT_SCHEMA_VERSION: i64 = 3;
 
 pub struct Db {
     conn: Mutex<Connection>,
@@ -31,6 +31,14 @@ pub struct AppState {
     pub symbols: Vec<Value>,
     pub notes: Vec<Value>,
     pub tag_defs: Vec<Value>,
+    #[serde(default)]
+    pub cases: Vec<Value>,
+    #[serde(default)]
+    pub case_cards: Vec<Value>,
+    #[serde(default)]
+    pub case_bindings: Vec<Value>,
+    #[serde(default)]
+    pub case_tag_defs: Vec<Value>,
     pub import_batches: Vec<Value>,
     pub attachments: Vec<Value>,
     pub chart_imports: Vec<Value>,
@@ -170,6 +178,56 @@ fn migrate(conn: &Connection) -> Result<(), String> {
           deleted_at INTEGER
         );
 
+        CREATE TABLE IF NOT EXISTS cases (
+          id TEXT PRIMARY KEY,
+          account_id TEXT,
+          period_id TEXT,
+          status TEXT,
+          provenance TEXT,
+          title TEXT,
+          data TEXT NOT NULL,
+          updated_at INTEGER NOT NULL,
+          deleted_at INTEGER
+        );
+
+        CREATE TABLE IF NOT EXISTS case_cards (
+          id TEXT PRIMARY KEY,
+          case_id TEXT NOT NULL,
+          phase TEXT,
+          raw_text TEXT NOT NULL,
+          data TEXT NOT NULL,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          deleted_at INTEGER
+        );
+
+        CREATE TABLE IF NOT EXISTS case_trade_bindings (
+          id TEXT PRIMARY KEY,
+          case_id TEXT NOT NULL,
+          trade_id TEXT NOT NULL,
+          source TEXT,
+          data TEXT NOT NULL,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          deleted_at INTEGER
+        );
+
+        CREATE TABLE IF NOT EXISTS case_tag_defs (
+          id TEXT PRIMARY KEY,
+          name TEXT,
+          data TEXT NOT NULL,
+          updated_at INTEGER NOT NULL,
+          deleted_at INTEGER
+        );
+
+        CREATE TABLE IF NOT EXISTS case_tag_links (
+          id TEXT PRIMARY KEY,
+          case_id TEXT NOT NULL,
+          tag_id TEXT NOT NULL,
+          created_at INTEGER NOT NULL,
+          deleted_at INTEGER
+        );
+
         CREATE TABLE IF NOT EXISTS attachments (
           id TEXT PRIMARY KEY,
           owner_type TEXT,
@@ -198,19 +256,32 @@ fn migrate(conn: &Connection) -> Result<(), String> {
         CREATE INDEX IF NOT EXISTS idx_chart_imports_symbol_timeframe ON chart_imports(symbol_id, timeframe) WHERE deleted_at IS NULL;
         CREATE INDEX IF NOT EXISTS idx_chart_candles_symbol_timeframe_time ON chart_candles(symbol_id, timeframe, time) WHERE deleted_at IS NULL;
         CREATE INDEX IF NOT EXISTS idx_attachments_owner ON attachments(owner_type, owner_id) WHERE deleted_at IS NULL;
+        CREATE INDEX IF NOT EXISTS idx_cases_period ON cases(period_id) WHERE deleted_at IS NULL;
+        CREATE INDEX IF NOT EXISTS idx_case_cards_case ON case_cards(case_id) WHERE deleted_at IS NULL;
+        CREATE INDEX IF NOT EXISTS idx_case_tag_links_case ON case_tag_links(case_id) WHERE deleted_at IS NULL;
+        CREATE INDEX IF NOT EXISTS idx_case_tag_links_tag ON case_tag_links(tag_id) WHERE deleted_at IS NULL;
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_case_tag_links_active_unique ON case_tag_links(case_id, tag_id) WHERE deleted_at IS NULL;
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_case_bindings_active_case ON case_trade_bindings(case_id) WHERE deleted_at IS NULL;
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_case_bindings_active_trade ON case_trade_bindings(trade_id) WHERE deleted_at IS NULL;
 
         INSERT OR IGNORE INTO schema_migrations(version, name, applied_at)
           VALUES (1, 'entity_tables', unixepoch() * 1000);
 
         INSERT OR IGNORE INTO schema_migrations(version, name, applied_at)
           VALUES (2, 'attachment_file_references', unixepoch() * 1000);
+
+        INSERT OR IGNORE INTO schema_migrations(version, name, applied_at)
+          VALUES (3, 'case_records', unixepoch() * 1000);
         "#,
     )
     .map_err(|err| err.to_string())?;
     Ok(())
 }
 
-fn backup_before_migration_if_needed(app: &AppHandle, conn: &Connection) -> Result<Option<PathBuf>, String> {
+fn backup_before_migration_if_needed(
+    app: &AppHandle,
+    conn: &Connection,
+) -> Result<Option<PathBuf>, String> {
     if !table_exists(conn, "schema_migrations")? {
         return Ok(None);
     }
@@ -259,6 +330,10 @@ pub fn load_or_seed(db: &Db, seed: AppState) -> Result<AppState, String> {
         seed_collection(&tx, "symbols", &seed.symbols)?;
         seed_collection(&tx, "notes", &seed.notes)?;
         seed_collection(&tx, "tagDefs", &seed.tag_defs)?;
+        seed_collection(&tx, "caseTagDefs", &seed.case_tag_defs)?;
+        seed_collection(&tx, "cases", &seed.cases)?;
+        seed_collection(&tx, "caseCards", &seed.case_cards)?;
+        seed_collection(&tx, "caseBindings", &seed.case_bindings)?;
         seed_collection(&tx, "importBatches", &seed.import_batches)?;
         seed_collection(&tx, "attachments", &seed.attachments)?;
         seed_collection(&tx, "chartImports", &seed.chart_imports)?;
@@ -294,6 +369,30 @@ pub fn delete_record(db: &Db, collection: &str, id: &str) -> Result<(), String> 
         soft_delete_trade(&conn, id)?;
         return Ok(());
     }
+    if collection == "cases" {
+        soft_delete_case(&conn, id)?;
+        return Ok(());
+    }
+    if collection == "caseCards" {
+        conn.execute(
+            "UPDATE case_cards SET deleted_at = unixepoch() * 1000 WHERE id = ?1",
+            params![id],
+        )
+        .map_err(|err| err.to_string())?;
+        conn.execute(
+            "UPDATE attachments SET deleted_at = unixepoch() * 1000 WHERE owner_type = 'case-card' AND owner_id = ?1",
+            params![id],
+        )
+        .map_err(|err| err.to_string())?;
+        return Ok(());
+    }
+    if collection == "caseTagDefs" {
+        conn.execute(
+            "UPDATE case_tag_links SET deleted_at = unixepoch() * 1000 WHERE tag_id = ?1 AND deleted_at IS NULL",
+            params![id],
+        )
+        .map_err(|err| err.to_string())?;
+    }
     let table = table_for_collection(collection)?;
     conn.execute(
         &format!("UPDATE {table} SET deleted_at = unixepoch() * 1000 WHERE id = ?1"),
@@ -328,6 +427,10 @@ pub fn restore_state(db: &Db, state: AppState) -> Result<AppState, String> {
     seed_collection(&tx, "symbols", &state.symbols)?;
     seed_collection(&tx, "notes", &state.notes)?;
     seed_collection(&tx, "tagDefs", &state.tag_defs)?;
+    seed_collection(&tx, "caseTagDefs", &state.case_tag_defs)?;
+    seed_collection(&tx, "cases", &state.cases)?;
+    seed_collection(&tx, "caseCards", &state.case_cards)?;
+    seed_collection(&tx, "caseBindings", &state.case_bindings)?;
     seed_collection(&tx, "importBatches", &state.import_batches)?;
     seed_collection(&tx, "attachments", &state.attachments)?;
     seed_collection(&tx, "chartImports", &state.chart_imports)?;
@@ -367,7 +470,7 @@ fn write_backup_file(conn: &Connection, path: PathBuf, backup_kind: &str) -> Res
     let state = read_state(conn)?;
     let now = now_ms();
     let backup = serde_json::json!({
-        "version": 2,
+        "version": 3,
         "backupKind": backup_kind,
         "exportedAt": now,
         "state": state,
@@ -433,30 +536,49 @@ fn seed_collection(conn: &Connection, collection: &str, records: &[Value]) -> Re
     Ok(())
 }
 
-fn save_record_in_tx(conn: &Connection, collection: &str, id: &str, data: Value) -> Result<(), String> {
+fn save_record_in_tx(
+    conn: &Connection,
+    collection: &str,
+    id: &str,
+    data: Value,
+) -> Result<(), String> {
     match collection {
         "trades" => save_trade(conn, id, data),
-        "accounts" | "periods" | "symbols" | "notes" | "tagDefs" | "importBatches" | "attachments" | "chartImports" | "chartCandles" => {
+        "cases" => save_case(conn, id, data),
+        "caseCards" => save_case_card(conn, id, data),
+        "caseBindings" => save_case_binding(conn, id, data),
+        "accounts" | "periods" | "symbols" | "notes" | "tagDefs" | "caseTagDefs"
+        | "importBatches" | "attachments" | "chartImports" | "chartCandles" => {
             save_simple_record(conn, collection, id, data)
         }
         other => Err(format!("unknown collection: {other}")),
     }
 }
 
-fn save_simple_record(conn: &Connection, collection: &str, id: &str, data: Value) -> Result<(), String> {
+fn save_simple_record(
+    conn: &Connection,
+    collection: &str,
+    id: &str,
+    data: Value,
+) -> Result<(), String> {
     let table = table_for_collection(collection)?;
     let json = serde_json::to_string(&data).map_err(|err| err.to_string())?;
     let (col_a, val_a) = match collection {
         "periods" => ("account_id", data.get("accountId").and_then(Value::as_str)),
         "tagDefs" => ("name", data.get("name").and_then(Value::as_str)),
+        "caseTagDefs" => ("name", data.get("name").and_then(Value::as_str)),
         "attachments" => ("owner_type", data.get("ownerType").and_then(Value::as_str)),
-        "chartImports" | "chartCandles" => ("symbol_id", data.get("symbolId").and_then(Value::as_str)),
+        "chartImports" | "chartCandles" => {
+            ("symbol_id", data.get("symbolId").and_then(Value::as_str))
+        }
         "importBatches" => ("status", data.get("status").and_then(Value::as_str)),
         _ => ("id", None),
     };
     let (col_b, val_b) = match collection {
         "attachments" => ("owner_id", data.get("ownerId").and_then(Value::as_str)),
-        "chartImports" | "chartCandles" => ("timeframe", data.get("timeframe").and_then(Value::as_str)),
+        "chartImports" | "chartCandles" => {
+            ("timeframe", data.get("timeframe").and_then(Value::as_str))
+        }
         _ => ("id", None),
     };
     let (col_c, val_c) = match collection {
@@ -465,12 +587,15 @@ fn save_simple_record(conn: &Connection, collection: &str, id: &str, data: Value
         _ => ("id", None),
     };
     let (col_d, val_d) = match collection {
-        "attachments" => ("relative_path", data.get("relativePath").and_then(Value::as_str)),
+        "attachments" => (
+            "relative_path",
+            data.get("relativePath").and_then(Value::as_str),
+        ),
         _ => ("id", None),
     };
 
     match collection {
-        "periods" | "tagDefs" | "importBatches" => conn.execute(
+        "periods" | "tagDefs" | "caseTagDefs" | "importBatches" => conn.execute(
             &format!(
                 "INSERT INTO {table}(id, {col_a}, data, updated_at, deleted_at)
                  VALUES (?1, ?2, ?3, unixepoch() * 1000, NULL)
@@ -515,12 +640,171 @@ fn save_simple_record(conn: &Connection, collection: &str, id: &str, data: Value
     Ok(())
 }
 
+fn save_case(conn: &Connection, id: &str, data: Value) -> Result<(), String> {
+    let json = serde_json::to_string(&data).map_err(|err| err.to_string())?;
+    conn.execute(
+        r#"
+        INSERT INTO cases(id, account_id, period_id, status, provenance, title, data, updated_at, deleted_at)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, unixepoch() * 1000, NULL)
+        ON CONFLICT(id) DO UPDATE SET
+          account_id=excluded.account_id,
+          period_id=excluded.period_id,
+          status=excluded.status,
+          provenance=excluded.provenance,
+          title=excluded.title,
+          data=excluded.data,
+          updated_at=excluded.updated_at,
+          deleted_at=NULL
+        "#,
+        params![
+            id,
+            data.get("accountId").and_then(Value::as_str),
+            data.get("periodId").and_then(Value::as_str),
+            data.get("status").and_then(Value::as_str),
+            data.get("provenance").and_then(Value::as_str),
+            data.get("title").and_then(Value::as_str),
+            json,
+        ],
+    )
+    .map_err(|err| err.to_string())?;
+
+    conn.execute(
+        "UPDATE case_tag_links SET deleted_at = unixepoch() * 1000 WHERE case_id = ?1 AND deleted_at IS NULL",
+        params![id],
+    )
+    .map_err(|err| err.to_string())?;
+    if let Some(tag_ids) = data.get("tagIds").and_then(Value::as_array) {
+        for tag_id in tag_ids.iter().filter_map(Value::as_str) {
+            let link_id = format!("{id}:{tag_id}");
+            conn.execute(
+                r#"
+                INSERT INTO case_tag_links(id, case_id, tag_id, created_at, deleted_at)
+                VALUES (?1, ?2, ?3, unixepoch() * 1000, NULL)
+                ON CONFLICT(id) DO UPDATE SET case_id=excluded.case_id, tag_id=excluded.tag_id, deleted_at=NULL
+                "#,
+                params![link_id, id, tag_id],
+            )
+            .map_err(|err| err.to_string())?;
+        }
+    }
+    Ok(())
+}
+
+fn save_case_card(conn: &Connection, id: &str, data: Value) -> Result<(), String> {
+    let raw_text = data
+        .get("rawText")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "case card is missing rawText".to_string())?;
+    if raw_text.trim().is_empty() {
+        return Err("case card rawText cannot be empty".to_string());
+    }
+    let existing_raw: Option<String> = conn
+        .query_row(
+            "SELECT raw_text FROM case_cards WHERE id = ?1",
+            params![id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|err| err.to_string())?;
+    if existing_raw
+        .as_deref()
+        .is_some_and(|existing| existing != raw_text)
+    {
+        return Err("case card rawText is immutable".to_string());
+    }
+
+    let case_id = data
+        .get("caseId")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "case card is missing caseId".to_string())?;
+    let phase = data
+        .get("phase")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "case card is missing phase".to_string())?;
+    let created_at = data
+        .get("createdAt")
+        .and_then(Value::as_i64)
+        .ok_or_else(|| "case card is missing createdAt".to_string())?;
+    let json = serde_json::to_string(&data).map_err(|err| err.to_string())?;
+    conn.execute(
+        r#"
+        INSERT INTO case_cards(id, case_id, phase, raw_text, data, created_at, updated_at, deleted_at)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, unixepoch() * 1000, NULL)
+        ON CONFLICT(id) DO UPDATE SET
+          case_id=excluded.case_id,
+          phase=excluded.phase,
+          data=excluded.data,
+          updated_at=excluded.updated_at,
+          deleted_at=NULL
+        "#,
+        params![id, case_id, phase, raw_text, json, created_at],
+    )
+    .map_err(|err| err.to_string())?;
+    Ok(())
+}
+
+fn save_case_binding(conn: &Connection, id: &str, data: Value) -> Result<(), String> {
+    let case_id = data
+        .get("caseId")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "case binding is missing caseId".to_string())?;
+    let trade_id = data
+        .get("tradeId")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "case binding is missing tradeId".to_string())?;
+    let source = data.get("source").and_then(Value::as_str);
+    let bound_at = data
+        .get("boundAt")
+        .and_then(Value::as_i64)
+        .ok_or_else(|| "case binding is missing boundAt".to_string())?;
+    let existing_pair: Option<(String, String)> = conn
+        .query_row(
+            "SELECT case_id, trade_id FROM case_trade_bindings WHERE id = ?1",
+            params![id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+        .map_err(|err| err.to_string())?;
+    if existing_pair
+        .as_ref()
+        .is_some_and(|(existing_case, existing_trade)| {
+            existing_case != case_id || existing_trade != trade_id
+        })
+    {
+        return Err(
+            "case binding endpoints are immutable; create a new binding after unbinding"
+                .to_string(),
+        );
+    }
+    let json = serde_json::to_string(&data).map_err(|err| err.to_string())?;
+    conn.execute(
+        r#"
+        INSERT INTO case_trade_bindings(id, case_id, trade_id, source, data, created_at, updated_at, deleted_at)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, unixepoch() * 1000, NULL)
+        ON CONFLICT(id) DO UPDATE SET
+          source=excluded.source,
+          data=excluded.data,
+          updated_at=excluded.updated_at,
+          deleted_at=NULL
+        "#,
+        params![id, case_id, trade_id, source, json, bound_at],
+    )
+    .map_err(|err| err.to_string())?;
+    Ok(())
+}
+
 fn save_trade(conn: &Connection, id: &str, data: Value) -> Result<(), String> {
     soft_delete_trade_data_children(conn, id)?;
 
     let mut trade_data = data.clone();
-    let executions = trade_data.get_mut("executions").map(Value::take).unwrap_or(Value::Array(vec![]));
-    let events = trade_data.get_mut("events").map(Value::take).unwrap_or(Value::Array(vec![]));
+    let executions = trade_data
+        .get_mut("executions")
+        .map(Value::take)
+        .unwrap_or(Value::Array(vec![]));
+    let events = trade_data
+        .get_mut("events")
+        .map(Value::take)
+        .unwrap_or(Value::Array(vec![]));
     let chart_bars = trade_data.get_mut("chartBars").map(Value::take);
 
     if let Value::Object(map) = &mut trade_data {
@@ -597,7 +881,8 @@ fn save_trade(conn: &Connection, id: &str, data: Value) -> Result<(), String> {
 
     if let Some(Value::Array(bars)) = chart_bars {
         if !bars.is_empty() {
-            let dataset = serde_json::json!({ "id": format!("chart-{id}"), "tradeId": id, "bars": bars });
+            let dataset =
+                serde_json::json!({ "id": format!("chart-{id}"), "tradeId": id, "bars": bars });
             let json = serde_json::to_string(&dataset).map_err(|err| err.to_string())?;
             conn.execute(
                 r#"
@@ -616,23 +901,56 @@ fn save_trade(conn: &Connection, id: &str, data: Value) -> Result<(), String> {
 
 fn read_state(conn: &Connection) -> Result<AppState, String> {
     Ok(AppState {
-        accounts: read_simple_collection(conn, "accounts")?,
-        periods: read_simple_collection(conn, "periods")?,
-        trades: read_trades(conn)?,
-        symbols: read_simple_collection(conn, "symbols")?,
-        notes: read_simple_collection(conn, "notes")?,
-        tag_defs: read_simple_collection(conn, "tagDefs")?,
-        import_batches: read_simple_collection(conn, "importBatches")?,
-        attachments: read_simple_collection(conn, "attachments")?,
-        chart_imports: read_simple_collection(conn, "chartImports")?,
-        chart_candles: read_simple_collection(conn, "chartCandles")?,
+        accounts: read_simple_collection_if_exists(conn, "accounts")?,
+        periods: read_simple_collection_if_exists(conn, "periods")?,
+        trades: if table_exists(conn, "trades")? {
+            read_trades(conn)?
+        } else {
+            vec![]
+        },
+        symbols: read_simple_collection_if_exists(conn, "symbols")?,
+        notes: read_simple_collection_if_exists(conn, "notes")?,
+        tag_defs: read_simple_collection_if_exists(conn, "tagDefs")?,
+        cases: read_simple_collection_if_exists(conn, "cases")?,
+        case_cards: read_case_cards_if_exists(conn)?,
+        case_bindings: read_simple_collection_if_exists(conn, "caseBindings")?,
+        case_tag_defs: read_simple_collection_if_exists(conn, "caseTagDefs")?,
+        import_batches: read_simple_collection_if_exists(conn, "importBatches")?,
+        attachments: read_simple_collection_if_exists(conn, "attachments")?,
+        chart_imports: read_simple_collection_if_exists(conn, "chartImports")?,
+        chart_candles: read_simple_collection_if_exists(conn, "chartCandles")?,
     })
+}
+
+fn read_simple_collection_if_exists(
+    conn: &Connection,
+    collection: &str,
+) -> Result<Vec<Value>, String> {
+    let table = table_for_collection(collection)?;
+    if !table_exists(conn, table)? {
+        return Ok(vec![]);
+    }
+    read_simple_collection(conn, collection)
 }
 
 fn read_simple_collection(conn: &Connection, collection: &str) -> Result<Vec<Value>, String> {
     let table = table_for_collection(collection)?;
     let mut stmt = conn
-        .prepare(&format!("SELECT data FROM {table} WHERE deleted_at IS NULL ORDER BY id ASC"))
+        .prepare(&format!(
+            "SELECT data FROM {table} WHERE deleted_at IS NULL ORDER BY id ASC"
+        ))
+        .map_err(|err| err.to_string())?;
+    read_json_rows(&mut stmt, [])
+}
+
+fn read_case_cards_if_exists(conn: &Connection) -> Result<Vec<Value>, String> {
+    if !table_exists(conn, "case_cards")? {
+        return Ok(vec![]);
+    }
+    let mut stmt = conn
+        .prepare(
+            "SELECT data FROM case_cards WHERE deleted_at IS NULL ORDER BY created_at ASC, id ASC",
+        )
         .map_err(|err| err.to_string())?;
     read_json_rows(&mut stmt, [])
 }
@@ -642,7 +960,9 @@ fn read_trades(conn: &Connection) -> Result<Vec<Value>, String> {
         .prepare("SELECT id, data FROM trades WHERE deleted_at IS NULL ORDER BY seq ASC, id ASC")
         .map_err(|err| err.to_string())?;
     let rows = stmt
-        .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
         .map_err(|err| err.to_string())?;
 
     let mut trades = Vec::new();
@@ -661,7 +981,10 @@ fn read_trades(conn: &Connection) -> Result<Vec<Value>, String> {
             map.insert("executions".to_string(), Value::Array(executions));
             map.insert("events".to_string(), Value::Array(events));
             if !has_reference_images {
-                map.insert("referenceImages".to_string(), Value::Array(legacy_reference_images));
+                map.insert(
+                    "referenceImages".to_string(),
+                    Value::Array(legacy_reference_images),
+                );
             }
             if let Some(bars) = chart_bars {
                 map.insert("chartBars".to_string(), Value::Array(bars));
@@ -672,7 +995,12 @@ fn read_trades(conn: &Connection) -> Result<Vec<Value>, String> {
     Ok(trades)
 }
 
-fn read_child_rows(conn: &Connection, table: &str, trade_id: &str, order: &str) -> Result<Vec<Value>, String> {
+fn read_child_rows(
+    conn: &Connection,
+    table: &str,
+    trade_id: &str,
+    order: &str,
+) -> Result<Vec<Value>, String> {
     let mut stmt = conn
         .prepare(&format!(
             "SELECT data FROM {table} WHERE trade_id = ?1 AND deleted_at IS NULL ORDER BY json_extract(data, '$.{order_key}') ASC, id ASC",
@@ -726,7 +1054,10 @@ fn read_trade_reference_images(conn: &Connection, trade_id: &str) -> Result<Vec<
     Ok(out)
 }
 
-fn read_json_rows(stmt: &mut rusqlite::Statement<'_>, params: impl rusqlite::Params) -> Result<Vec<Value>, String> {
+fn read_json_rows(
+    stmt: &mut rusqlite::Statement<'_>,
+    params: impl rusqlite::Params,
+) -> Result<Vec<Value>, String> {
     let rows = stmt
         .query_map(params, |row| row.get::<_, String>(0))
         .map_err(|err| err.to_string())?;
@@ -746,6 +1077,10 @@ fn active_entity_count(conn: &Connection) -> Result<i64, String> {
         "trades",
         "notes",
         "tag_defs",
+        "cases",
+        "case_cards",
+        "case_trade_bindings",
+        "case_tag_defs",
         "import_batches",
         "attachments",
         "chart_imports",
@@ -753,6 +1088,9 @@ fn active_entity_count(conn: &Connection) -> Result<i64, String> {
     ];
     let mut total = 0;
     for table in tables {
+        if !table_exists(conn, table)? {
+            continue;
+        }
         let count: i64 = conn
             .query_row(
                 &format!("SELECT COUNT(*) FROM {table} WHERE deleted_at IS NULL"),
@@ -763,6 +1101,35 @@ fn active_entity_count(conn: &Connection) -> Result<i64, String> {
         total += count;
     }
     Ok(total)
+}
+
+fn soft_delete_case(conn: &Connection, id: &str) -> Result<(), String> {
+    conn.execute(
+        "UPDATE cases SET deleted_at = unixepoch() * 1000 WHERE id = ?1",
+        params![id],
+    )
+    .map_err(|err| err.to_string())?;
+    conn.execute(
+        "UPDATE case_cards SET deleted_at = unixepoch() * 1000 WHERE case_id = ?1",
+        params![id],
+    )
+    .map_err(|err| err.to_string())?;
+    conn.execute(
+        "UPDATE case_trade_bindings SET deleted_at = unixepoch() * 1000 WHERE case_id = ?1",
+        params![id],
+    )
+    .map_err(|err| err.to_string())?;
+    conn.execute(
+        "UPDATE case_tag_links SET deleted_at = unixepoch() * 1000 WHERE case_id = ?1",
+        params![id],
+    )
+    .map_err(|err| err.to_string())?;
+    conn.execute(
+        "UPDATE attachments SET deleted_at = unixepoch() * 1000 WHERE (owner_type = 'case' AND owner_id = ?1) OR (owner_type = 'case-card' AND owner_id IN (SELECT id FROM case_cards WHERE case_id = ?1))",
+        params![id],
+    )
+    .map_err(|err| err.to_string())?;
+    Ok(())
 }
 
 fn soft_delete_trade(conn: &Connection, id: &str) -> Result<(), String> {
@@ -788,6 +1155,11 @@ fn soft_delete_trade_data_children(conn: &Connection, id: &str) -> Result<(), St
 fn soft_delete_trade_children(conn: &Connection, id: &str) -> Result<(), String> {
     soft_delete_trade_data_children(conn, id)?;
     conn.execute(
+        "UPDATE case_trade_bindings SET deleted_at = unixepoch() * 1000 WHERE trade_id = ?1 AND deleted_at IS NULL",
+        params![id],
+    )
+    .map_err(|err| err.to_string())?;
+    conn.execute(
         "UPDATE attachments SET deleted_at = unixepoch() * 1000 WHERE owner_type = 'trade' AND owner_id = ?1",
         params![id],
     )
@@ -796,6 +1168,8 @@ fn soft_delete_trade_children(conn: &Connection, id: &str) -> Result<(), String>
 }
 
 fn clear_trade_tables(conn: &Connection) -> Result<(), String> {
+    conn.execute("DELETE FROM case_trade_bindings", [])
+        .map_err(|err| err.to_string())?;
     for table in ["trades", "executions", "trade_events", "chart_data"] {
         conn.execute(&format!("DELETE FROM {table}"), [])
             .map_err(|err| err.to_string())?;
@@ -807,6 +1181,11 @@ fn clear_trade_tables(conn: &Connection) -> Result<(), String> {
 
 fn clear_all_tables(conn: &Connection) -> Result<(), String> {
     for table in [
+        "case_tag_links",
+        "case_trade_bindings",
+        "case_cards",
+        "cases",
+        "case_tag_defs",
         "accounts",
         "periods",
         "symbols",
@@ -835,6 +1214,10 @@ fn table_for_collection(collection: &str) -> Result<&'static str, String> {
         "symbols" => Ok("symbols"),
         "notes" => Ok("notes"),
         "tagDefs" => Ok("tag_defs"),
+        "cases" => Ok("cases"),
+        "caseCards" => Ok("case_cards"),
+        "caseBindings" => Ok("case_trade_bindings"),
+        "caseTagDefs" => Ok("case_tag_defs"),
         "importBatches" => Ok("import_batches"),
         "attachments" => Ok("attachments"),
         "chartImports" => Ok("chart_imports"),
@@ -878,5 +1261,62 @@ mod tests {
             auto_backup_file_name(date),
             "cairn-auto-backup-2026-07-07.json"
         );
+    }
+
+    #[test]
+    fn case_card_raw_text_cannot_be_rewritten() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        let original = serde_json::json!({
+            "id": "card-1",
+            "caseId": "case-1",
+            "phase": "entry",
+            "rawText": "BAR38 出现二次入场做多信号",
+            "barRef": 38,
+            "createdAt": 1
+        });
+        save_record_in_tx(&conn, "caseCards", "card-1", original).unwrap();
+
+        let rewritten = serde_json::json!({
+            "id": "card-1",
+            "caseId": "case-1",
+            "phase": "entry",
+            "rawText": "事后改写的内容",
+            "barRef": 38,
+            "createdAt": 1
+        });
+        assert!(save_record_in_tx(&conn, "caseCards", "card-1", rewritten).is_err());
+    }
+
+    #[test]
+    fn active_case_trade_binding_is_one_to_one() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        let first = serde_json::json!({
+            "id": "binding-1",
+            "caseId": "case-1",
+            "tradeId": "trade-1",
+            "source": "manual",
+            "boundAt": 1
+        });
+        save_record_in_tx(&conn, "caseBindings", "binding-1", first).unwrap();
+
+        let same_trade = serde_json::json!({
+            "id": "binding-2",
+            "caseId": "case-2",
+            "tradeId": "trade-1",
+            "source": "manual",
+            "boundAt": 2
+        });
+        assert!(save_record_in_tx(&conn, "caseBindings", "binding-2", same_trade).is_err());
+
+        let same_case = serde_json::json!({
+            "id": "binding-3",
+            "caseId": "case-1",
+            "tradeId": "trade-2",
+            "source": "manual",
+            "boundAt": 3
+        });
+        assert!(save_record_in_tx(&conn, "caseBindings", "binding-3", same_case).is_err());
     }
 }
