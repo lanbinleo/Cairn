@@ -22,6 +22,14 @@ pub struct Db {
     conn: Mutex<Connection>,
 }
 
+impl Db {
+    pub(crate) fn conn(
+        &self,
+    ) -> Result<std::sync::MutexGuard<'_, Connection>, String> {
+        self.conn.lock().map_err(|err| err.to_string())
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppState {
@@ -69,7 +77,7 @@ fn database_path(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(dir.join("cairn.sqlite3"))
 }
 
-fn migrate(conn: &Connection) -> Result<(), String> {
+pub(crate) fn migrate(conn: &Connection) -> Result<(), String> {
     conn.execute_batch(
         r#"
         PRAGMA foreign_keys = ON;
@@ -536,7 +544,7 @@ fn seed_collection(conn: &Connection, collection: &str, records: &[Value]) -> Re
     Ok(())
 }
 
-fn save_record_in_tx(
+pub(crate) fn save_record_in_tx(
     conn: &Connection,
     collection: &str,
     id: &str,
@@ -933,7 +941,10 @@ fn read_simple_collection_if_exists(
     read_simple_collection(conn, collection)
 }
 
-fn read_simple_collection(conn: &Connection, collection: &str) -> Result<Vec<Value>, String> {
+pub(crate) fn read_simple_collection(
+    conn: &Connection,
+    collection: &str,
+) -> Result<Vec<Value>, String> {
     let table = table_for_collection(collection)?;
     let mut stmt = conn
         .prepare(&format!(
@@ -953,6 +964,41 @@ fn read_case_cards_if_exists(conn: &Connection) -> Result<Vec<Value>, String> {
         )
         .map_err(|err| err.to_string())?;
     read_json_rows(&mut stmt, [])
+}
+
+pub(crate) fn read_case_cards_for_case(
+    conn: &Connection,
+    case_id: &str,
+) -> Result<Vec<Value>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT data FROM case_cards WHERE case_id = ?1 AND deleted_at IS NULL ORDER BY created_at ASC, id ASC",
+        )
+        .map_err(|err| err.to_string())?;
+    read_json_rows(&mut stmt, params![case_id])
+}
+
+pub(crate) fn read_record_by_id(
+    conn: &Connection,
+    collection: &str,
+    id: &str,
+) -> Result<Option<Value>, String> {
+    let table = table_for_collection(collection)?;
+    let mut stmt = conn
+        .prepare(&format!(
+            "SELECT data FROM {table} WHERE id = ?1 AND deleted_at IS NULL"
+        ))
+        .map_err(|err| err.to_string())?;
+    let mut rows = stmt.query(params![id]).map_err(|err| err.to_string())?;
+    match rows.next().map_err(|err| err.to_string())? {
+        Some(row) => {
+            let data: String = row.get(0).map_err(|err| err.to_string())?;
+            Ok(Some(
+                serde_json::from_str(&data).map_err(|err| err.to_string())?,
+            ))
+        }
+        None => Ok(None),
+    }
 }
 
 fn read_trades(conn: &Connection) -> Result<Vec<Value>, String> {

@@ -1,3 +1,4 @@
+mod api;
 mod db;
 mod diagnostics;
 mod paths;
@@ -100,6 +101,21 @@ fn read_logs(app: AppHandle) -> Result<String, String> {
 #[tauri::command]
 fn get_log_path(app: AppHandle) -> Result<String, String> {
     diagnostics::log_path(&app).map(|path| path.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+fn get_api_status(app: AppHandle) -> Result<api::ApiStatus, String> {
+    api::status(&app)
+}
+
+#[tauri::command]
+fn regenerate_api_token(app: AppHandle) -> Result<api::ApiStatus, String> {
+    api::regenerate_token(&app)
+}
+
+#[tauri::command]
+fn set_api_config(app: AppHandle, enabled: bool, port: u16) -> Result<api::ApiStatus, String> {
+    api::set_config(&app, enabled, port)
 }
 
 #[derive(Serialize)]
@@ -226,6 +242,9 @@ pub fn run() {
                 err
             })?;
             diagnostics::app_log(app.handle(), "tray setup ok");
+            app.manage(api::init_state(app.handle()));
+            api::start_server(app.handle().clone());
+            diagnostics::app_log(app.handle(), "local api server thread spawned");
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -250,6 +269,9 @@ pub fn run() {
             frontend_log,
             read_logs,
             get_log_path,
+            get_api_status,
+            regenerate_api_token,
+            set_api_config,
             save_attachment_file,
             read_attachment_file,
             save_chart_source_file
