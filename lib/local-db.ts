@@ -25,7 +25,7 @@ declare global {
   }
 }
 
-function isTauriRuntime() {
+export function isTauriRuntime() {
   return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
 }
 
@@ -130,4 +130,39 @@ export async function saveLocalRecords<T extends { id: string }>(
 ): Promise<void> {
   if (!isTauriRuntime() || records.length === 0) return
   await invoke('save_records', { collection, records })
+}
+
+/* ---------- 本地 REST API 管理 ---------- */
+
+export interface ApiStatus {
+  enabled: boolean
+  port: number
+  running: boolean
+  boundPort: number
+  token: string
+  createdAt: number
+}
+
+const offlineApiStatus: ApiStatus = {
+  enabled: false,
+  port: 0,
+  running: false,
+  boundPort: 0,
+  token: '',
+  createdAt: 0,
+}
+
+export async function getApiStatus(): Promise<ApiStatus> {
+  if (!isTauriRuntime()) return offlineApiStatus
+  return invoke<ApiStatus>('get_api_status')
+}
+
+export async function regenerateApiToken(): Promise<ApiStatus> {
+  if (!isTauriRuntime()) return offlineApiStatus
+  return invoke<ApiStatus>('regenerate_api_token')
+}
+
+export async function setApiConfig(enabled: boolean, port: number): Promise<ApiStatus> {
+  if (!isTauriRuntime()) return offlineApiStatus
+  return invoke<ApiStatus>('set_api_config', { enabled, port })
 }

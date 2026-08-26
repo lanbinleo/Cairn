@@ -6,7 +6,8 @@
  */
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react'
-import { loadLocalState, saveLocalRecord, saveLocalRecords, deleteLocalRecord, restoreLocalState, exportLocalBackup, saveAttachmentFile } from './local-db'
+import { listen } from '@tauri-apps/api/event'
+import { loadLocalState, saveLocalRecord, saveLocalRecords, deleteLocalRecord, restoreLocalState, exportLocalBackup, saveAttachmentFile, isTauriRuntime } from './local-db'
 import type { CairnStateSnapshot } from './seed'
 import { seedState } from './seed'
 import { logFrontendError, logFrontendMessage } from './frontend-log'
@@ -486,23 +487,46 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     let cancelled = false
-    loadLocalState()
-      .then((snapshot) => {
-        if (cancelled) return
-        const normalized = normalizeSnapshot(snapshot)
-        void logFrontendMessage(`local state loaded: accounts=${normalized.snapshot.accounts.length}, periods=${normalized.snapshot.periods.length}, trades=${normalized.snapshot.trades.length}, cases=${normalized.snapshot.cases.length}`)
-        applySnapshot(normalized.snapshot)
-        normalized.migratedTrades.forEach((trade) => void saveLocalRecord('trades', trade))
-        normalized.migratedNotes.forEach((note) => void saveLocalRecord('notes', note))
-        normalized.migratedTagDefs.forEach((tag) => void saveLocalRecord('tagDefs', tag))
-        normalized.removedTagDefIds.forEach((id) => void deleteLocalRecord('tagDefs', id))
+    let refreshTimer: number | undefined
+    let disposeListener: (() => void) | undefined
+
+    const hydrate = () => {
+      loadLocalState()
+        .then((snapshot) => {
+          if (cancelled) return
+          const normalized = normalizeSnapshot(snapshot)
+          void logFrontendMessage(`local state loaded: accounts=${normalized.snapshot.accounts.length}, periods=${normalized.snapshot.periods.length}, trades=${normalized.snapshot.trades.length}, cases=${normalized.snapshot.cases.length}`)
+          applySnapshot(normalized.snapshot)
+          normalized.migratedTrades.forEach((trade) => void saveLocalRecord('trades', trade))
+          normalized.migratedNotes.forEach((note) => void saveLocalRecord('notes', note))
+          normalized.migratedTagDefs.forEach((tag) => void saveLocalRecord('tagDefs', tag))
+          normalized.removedTagDefIds.forEach((id) => void deleteLocalRecord('tagDefs', id))
+        })
+        .catch((err) => {
+          console.error('Failed to load local CAIRN state', err)
+          void logFrontendError(`local state load failed: ${err instanceof Error ? err.stack : String(err)}`)
+        })
+    }
+
+    hydrate()
+
+    // 本地 REST API 写入 SQLite 后由 Rust 侧广播；防抖合并短时间内的多次刷新。
+    if (isTauriRuntime()) {
+      void listen('cairn://data-changed', () => {
+        window.clearTimeout(refreshTimer)
+        refreshTimer = window.setTimeout(() => hydrate(), 500)
       })
-      .catch((err) => {
-        console.error('Failed to load local CAIRN state', err)
-        void logFrontendError(`local state load failed: ${err instanceof Error ? err.stack : String(err)}`)
-      })
+        .then((unlisten) => {
+          if (cancelled) unlisten()
+          else disposeListener = unlisten
+        })
+        .catch((err) => console.error('Failed to listen for local api data changes', err))
+    }
+
     return () => {
       cancelled = true
+      disposeListener?.()
+      window.clearTimeout(refreshTimer)
     }
   }, [applySnapshot])
 
