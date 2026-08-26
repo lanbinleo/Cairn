@@ -1,0 +1,806 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Cairn 浮窗 Mock — 做单记录原型 v2</title>
+<style>
+  :root {
+    --bg: #131722;
+    --panel: #1e222d;
+    --panel-2: #2a2e39;
+    --border: #363a45;
+    --text: #d1d4dc;
+    --text-dim: #787b86;
+    --accent: #2962ff;
+    --green: #26a69a;
+    --red: #ef5350;
+    --warn: #ffb648;
+    --bar-num: #ff9800;
+    --radius: 12px;
+    font-size: 14px;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; scrollbar-width: thin; scrollbar-color: #363a45 transparent; }
+  *::-webkit-scrollbar { width: 8px; height: 8px; }
+  *::-webkit-scrollbar-track { background: transparent; }
+  *::-webkit-scrollbar-thumb { background: #363a45; border-radius: 4px; }
+  *::-webkit-scrollbar-thumb:hover { background: #4a4f5c; }
+  *::-webkit-scrollbar-corner { background: transparent; }
+  html, body { height: 100%; overflow: hidden; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, "Segoe UI", "Microsoft YaHei", "PingFang SC", sans-serif;
+    user-select: none;
+  }
+
+  /* ---------- 假 TradingView 顶栏 ---------- */
+  #tv-topbar {
+    height: 44px;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 0 16px;
+    background: var(--panel);
+    border-bottom: 1px solid var(--border);
+    font-size: 13px;
+  }
+  #tv-topbar .symbol { font-weight: 600; letter-spacing: 0.02em; }
+  #tv-topbar .tf {
+    background: var(--panel-2); border-radius: 4px; padding: 3px 8px;
+    color: var(--text-dim); font-size: 12px;
+  }
+  #tv-topbar .utc { color: var(--text-dim); margin-left: auto; font-size: 12px; }
+
+  #chart-area { position: relative; height: calc(100% - 44px); cursor: crosshair; }
+  #chart { width: 100%; height: 100%; display: block; }
+
+  /* ---------- 顶部说明条 ---------- */
+  #hint {
+    position: fixed; top: 56px; left: 50%; transform: translateX(-50%);
+    background: rgba(41, 98, 255, 0.12);
+    border: 1px solid rgba(41, 98, 255, 0.45);
+    color: var(--text);
+    border-radius: 999px;
+    padding: 6px 16px;
+    font-size: 12px;
+    z-index: 400;
+    display: flex; align-items: center; gap: 10px;
+    box-shadow: 0 4px 16px rgba(0,0,0,.35);
+    max-width: 92vw;
+  }
+  #hint button {
+    background: none; border: none; color: var(--text-dim);
+    font-size: 14px; cursor: pointer; line-height: 1;
+  }
+  #hint button:hover { color: var(--text); }
+
+  /* ---------- Dock：悬浮球 + 面板一体化 ---------- */
+  #dock {
+    position: fixed;
+    right: 28px; bottom: 96px;
+    z-index: 600;
+    touch-action: none;
+  }
+
+  #float-ball {
+    width: 52px; height: 52px;
+    border-radius: 50%;
+    background: var(--accent);
+    color: #fff;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 1px;
+    cursor: grab;
+    box-shadow: 0 6px 20px rgba(41, 98, 255, 0.45);
+    transition: transform .12s ease, background .15s ease;
+  }
+  #float-ball:hover { transform: scale(1.07); }
+  #float-ball:active { cursor: grabbing; }
+  #float-ball .fb-icon { font-size: 17px; line-height: 1; }
+  #float-ball .fb-label { font-size: 10px; line-height: 1; opacity: .9; }
+  #float-ball .fb-dot {
+    position: absolute; top: 2px; right: 2px;
+    width: 11px; height: 11px; border-radius: 50%;
+    background: var(--green); border: 2px solid var(--bg);
+    display: none;
+  }
+  #dock.unread #float-ball .fb-dot { display: block; }
+
+  /* 展开时：球常驻，变为可折叠按钮 */
+  #dock.open #float-ball {
+    background: var(--panel-2);
+    box-shadow: 0 4px 14px rgba(0,0,0,.45);
+    border: 1px solid var(--border);
+    color: var(--text);
+  }
+
+  /* ---------- 悬浮窗面板（挂在 dock 内、球上方） ---------- */
+  #widget {
+    position: absolute;
+    bottom: 64px; right: 0;
+    width: 340px;
+    max-height: calc(100vh - 180px);
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    box-shadow: 0 16px 48px rgba(0, 0, 0, 0.55);
+    display: none;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  #dock.open #widget { display: flex; animation: pop .16s ease; }
+  @keyframes pop { from { opacity: 0; transform: translateY(8px) scale(.97); } }
+
+  #widget-header {
+    display: flex; align-items: center; gap: 8px;
+    padding: 10px 12px 8px;
+    cursor: grab;
+    border-bottom: 1px solid var(--border);
+  }
+  #widget-header:active { cursor: grabbing; }
+  #widget-header .grip { color: var(--text-dim); font-size: 14px; letter-spacing: -1px; }
+  #case-select {
+    flex: 1; min-width: 0;
+    background: var(--panel-2);
+    color: var(--text);
+    border: 1px solid transparent;
+    border-radius: 8px;
+    padding: 5px 8px;
+    font-size: 13px;
+    cursor: pointer;
+  }
+  #case-select:hover, #case-select:focus { border-color: var(--border); outline: none; }
+  .icon-btn {
+    background: var(--panel-2); border: none; color: var(--text-dim);
+    width: 26px; height: 26px; border-radius: 7px;
+    cursor: pointer; font-size: 13px;
+    display: inline-flex; align-items: center; justify-content: center;
+    flex-shrink: 0;
+  }
+  .icon-btn:hover { color: var(--text); }
+
+  #widget-context {
+    padding: 6px 12px;
+    font-size: 11px;
+    color: var(--text-dim);
+    border-bottom: 1px solid var(--border);
+    display: flex; gap: 6px; align-items: center;
+    white-space: nowrap; overflow: hidden;
+  }
+  #widget-context .live { color: var(--green); }
+
+  #widget-body { padding: 10px 12px 12px; display: flex; flex-direction: column; gap: 10px; overflow-y: auto; }
+
+  /* Phase pills */
+  .phase-row { display: flex; gap: 4px; }
+  .phase-pill {
+    flex: 1;
+    background: var(--panel-2);
+    border: 1px solid transparent;
+    color: var(--text-dim);
+    border-radius: 999px;
+    padding: 4px 0;
+    font-size: 12px;
+    cursor: pointer;
+    text-align: center;
+    transition: all .1s ease;
+  }
+  .phase-pill:hover { color: var(--text); }
+  .phase-pill.active { background: rgba(41,98,255,.18); border-color: var(--accent); color: #fff; }
+
+  /* Entry 决策 */
+  #entry-decision { display: none; flex-direction: column; gap: 6px; }
+  #entry-decision.show { display: flex; }
+  #entry-decision .ed-title { font-size: 11px; color: var(--text-dim); }
+  .ed-row { display: flex; gap: 4px; }
+  .ed-btn {
+    flex: 1;
+    background: var(--panel-2);
+    border: 1px solid transparent;
+    color: var(--text-dim);
+    border-radius: 8px;
+    padding: 5px 4px;
+    font-size: 11.5px;
+    cursor: pointer;
+  }
+  .ed-btn:hover { color: var(--text); }
+  .ed-btn.active[data-v="executed"] { background: rgba(38,166,154,.16); border-color: var(--green); color: var(--green); }
+  .ed-btn.active[data-v="continue-observing"] { background: rgba(255,152,0,.14); border-color: var(--bar-num); color: var(--bar-num); }
+  .ed-btn.active[data-v="pending"] { background: rgba(41,98,255,.16); border-color: var(--accent); color: #fff; }
+
+  /* 输入区 */
+  #card-input {
+    width: 100%;
+    min-height: 96px;
+    resize: vertical;
+    background: var(--bg);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 10px 12px;
+    font-size: 13.5px;
+    line-height: 1.55;
+    font-family: inherit;
+    user-select: text;
+  }
+  #card-input:focus { outline: none; border-color: var(--accent); }
+  #card-input::placeholder { color: var(--text-dim); }
+
+  #input-row { display: flex; gap: 6px; align-items: center; }
+  #bar-input {
+    width: 82px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--bar-num);
+    font-family: Consolas, monospace;
+    font-size: 13px;
+    border-radius: 8px;
+    padding: 7px 9px;
+    text-align: center;
+  }
+  #bar-input:focus { outline: none; border-color: var(--bar-num); }
+  #bar-input::placeholder { color: var(--text-dim); opacity: .7; }
+  .bar-label { font-size: 11px; color: var(--text-dim); white-space: nowrap; }
+  #mic-btn {
+    margin-left: auto;
+    background: var(--panel-2); border: none; color: var(--text-dim);
+    width: 32px; height: 32px; border-radius: 8px; cursor: pointer; font-size: 15px;
+  }
+  #mic-btn:hover { color: var(--text); }
+  #submit-btn {
+    background: var(--accent); color: #fff; border: none;
+    border-radius: 8px; padding: 7px 14px;
+    font-size: 12.5px; cursor: pointer; white-space: nowrap;
+  }
+  #submit-btn:hover { filter: brightness(1.12); }
+
+  #mic-tip {
+    display: none;
+    background: var(--panel-2);
+    border-radius: 8px;
+    padding: 8px 10px;
+    font-size: 11.5px;
+    color: var(--text-dim);
+    line-height: 1.5;
+  }
+  #mic-tip.show { display: block; }
+
+  /* 完整性提示（AI 检查单雏形） */
+  #completeness-tip {
+    display: none;
+    background: rgba(255,182,72,.1);
+    border: 1px solid rgba(255,182,72,.4);
+    border-radius: 10px;
+    padding: 9px 11px;
+    font-size: 11.5px;
+    line-height: 1.6;
+    color: var(--warn);
+  }
+  #completeness-tip.show { display: block; animation: pop .2s ease; }
+  #completeness-tip .ct-title { font-weight: 600; margin-bottom: 2px; }
+  #completeness-tip .ct-note { color: var(--text-dim); }
+  #completeness-tip button {
+    background: none; border: none; color: var(--text-dim);
+    cursor: pointer; font-size: 12px; padding: 0; float: right;
+  }
+  #completeness-tip button:hover { color: var(--text); }
+
+  /* 时间线 */
+  #cards-section { border-top: 1px solid var(--border); padding: 10px 12px 12px; }
+  #cards-section .cs-head {
+    display: flex; align-items: center; justify-content: space-between;
+    font-size: 11px; color: var(--text-dim); margin-bottom: 8px;
+  }
+  #cards-section .cs-head button {
+    background: none; border: none; color: var(--text-dim);
+    font-size: 11px; cursor: pointer; padding: 0;
+  }
+  #cards-section .cs-head button:hover { color: var(--text); }
+  #card-list { display: flex; flex-direction: column; gap: 6px; overflow-y: auto; max-height: 168px; }
+  .mock-card {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--pc, var(--text-dim));
+    border-radius: 8px;
+    padding: 7px 10px;
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--text);
+    user-select: text;
+  }
+  .mock-card .mc-meta { display: flex; gap: 8px; margin-bottom: 3px; align-items: baseline; }
+  .mock-card .mc-phase { color: var(--pc, var(--text-dim)); font-size: 11px; }
+  .mock-card .mc-bar { font-family: Consolas, monospace; color: var(--bar-num); font-size: 11px; }
+  .mock-card .mc-bar.none { color: var(--text-dim); opacity: .7; }
+  .mock-card .mc-time { color: var(--text-dim); font-size: 10.5px; margin-left: auto; }
+  .mock-card .mc-text {
+    color: var(--text);
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  #card-list.expanded .mock-card .mc-text { -webkit-line-clamp: unset; }
+  .mock-card.fresh { animation: fresh .5s ease; }
+  @keyframes fresh { from { background: rgba(38,166,154,.14); } }
+
+  /* Toast */
+  #toast {
+    position: fixed;
+    left: 50%; bottom: 36px;
+    transform: translateX(-50%) translateY(16px);
+    background: var(--green);
+    color: #06251f;
+    font-size: 13px;
+    font-weight: 600;
+    padding: 9px 18px;
+    border-radius: 999px;
+    box-shadow: 0 8px 24px rgba(0,0,0,.4);
+    opacity: 0;
+    pointer-events: none;
+    transition: all .22s ease;
+    z-index: 700;
+  }
+  #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+  /* 新建 Case 行内表单 */
+  #new-case-form {
+    display: none;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--border);
+    flex-direction: column; gap: 8px;
+  }
+  #new-case-form.show { display: flex; }
+  #new-case-form input {
+    background: var(--bg); border: 1px solid var(--border); color: var(--text);
+    border-radius: 8px; padding: 7px 10px; font-size: 13px; font-family: inherit;
+  }
+  #new-case-form input:focus { outline: none; border-color: var(--accent); }
+  #new-case-form .nc-row { display: flex; gap: 6px; justify-content: flex-end; }
+  #new-case-form .nc-hint { font-size: 11px; color: var(--text-dim); }
+</style>
+</head>
+<body>
+
+<div id="tv-topbar">
+  <span class="symbol">BINANCE:BTCUSDT</span>
+  <span class="tf">5m</span>
+  <span class="tf">Bar Count</span>
+  <span class="utc">图表时区 UTC · 底部橙色数字 = 当前 BAR 序号（PineScript Bar Count 效果）</span>
+</div>
+
+<div id="chart-area">
+  <canvas id="chart"></canvas>
+</div>
+
+<div id="hint">
+  <span>Mock v2：✎ 记一笔展开 / ⌄ 收起，球常驻不消失；拖球或标题栏移动（松手不会误触）；文字里提到 BAR 号自动提取；entry 卡提交后有完整性检查雏形；点击图表空白收起面板</span>
+  <button id="hint-close" aria-label="关闭说明">✕</button>
+</div>
+
+<!-- Dock：定位容器，球与面板一体 -->
+<div id="dock">
+  <div id="widget">
+    <div id="widget-header">
+      <span class="grip">⠿</span>
+      <select id="case-select">
+        <option value="c1">BTC 区间突破观察 #2</option>
+        <option value="c2">ETH 假突破复盘</option>
+      </select>
+      <button class="icon-btn" id="new-case-btn" title="新建 Case">＋</button>
+    </div>
+
+    <div id="new-case-form">
+      <input id="new-case-title" placeholder="新 Case 标题（一句话，可留空）">
+      <div class="nc-hint">归属：加密 5 万回测 · 26 年 1 月（记住上次选择）</div>
+      <div class="nc-row">
+        <button class="icon-btn" id="nc-cancel" title="取消">✕</button>
+        <button id="nc-create" style="background:var(--accent);border:none;color:#fff;border-radius:7px;padding:5px 12px;font-size:12px;cursor:pointer">创建并切换</button>
+      </div>
+    </div>
+
+    <div id="widget-context">
+      <span>加密 5 万回测 · 26 年 1 月</span>
+      <span class="live">● forward（盘中）</span>
+    </div>
+
+    <div id="widget-body">
+      <div class="phase-row" id="phase-row">
+        <button class="phase-pill" data-phase="pre-entry">观察</button>
+        <button class="phase-pill" data-phase="entry">入场</button>
+        <button class="phase-pill active" data-phase="intermediate">过程</button>
+        <button class="phase-pill" data-phase="closing">离场</button>
+        <button class="phase-pill" data-phase="reflection">复盘</button>
+      </div>
+
+      <div id="entry-decision">
+        <div class="ed-title">这张入场卡的实际执行情况：</div>
+        <div class="ed-row">
+          <button class="ed-btn active" data-v="pending">待确认</button>
+          <button class="ed-btn" data-v="executed">已执行</button>
+          <button class="ed-btn" data-v="continue-observing">未执行·继续观察</button>
+        </div>
+      </div>
+
+      <textarea id="card-input" placeholder="想到什么说什么，思想交给你，填表交给 AI……&#10;例：BAR41 出现明显顶部结构，如果下一根走弱我就离场" spellcheck="false"></textarea>
+
+      <div id="input-row">
+        <input id="bar-input" inputmode="numeric" placeholder="BAR № 选填">
+        <span class="bar-label">在文字里提到 BAR41 会自动提取</span>
+        <button id="mic-btn" title="语音输入提示">🎤</button>
+        <button id="submit-btn">提交 ⌘↵</button>
+      </div>
+
+      <div id="completeness-tip">
+        <button id="ct-close" title="知道了">✕</button>
+        <div class="ct-title">📋 完整性提示（将来由 AI 检查）</div>
+        <div id="ct-body"></div>
+        <div class="ct-note">原文提交后不可改写；要补充就再记一张卡。</div>
+      </div>
+
+      <div id="mic-tip">
+        🎤 请使用<b>系统语音输入</b>直接对本输入框说话：<br>
+        Windows 按 <b>Win + H</b>；macOS 连按两次 <b>Fn</b>（听写）。<br>
+        本 mock 不内置录音；Cairn 0.2.0 只保存提交后的文字。
+      </div>
+    </div>
+
+    <div id="cards-section">
+      <div class="cs-head">
+        <span id="cs-count">本次 Case 已有 3 张卡</span>
+        <button id="cards-expand">展开全部</button>
+      </div>
+      <div id="card-list"></div>
+    </div>
+  </div>
+
+  <div id="float-ball">
+    <span class="fb-dot"></span>
+    <span class="fb-icon">✎</span>
+    <span class="fb-label">记一笔</span>
+  </div>
+</div>
+
+<div id="toast">✓ 已保存（mock）</div>
+
+<script>
+/* ================= 假图表 ================= */
+const canvas = document.getElementById('chart');
+const ctx = canvas.getContext('2d');
+let bars = [];
+
+function genBars() {
+  bars = [];
+  let price = 118;
+  for (let i = 0; i < 160; i++) {
+    const o = price;
+    const drift = (Math.random() - 0.485) * 1.6;
+    const c = o + drift;
+    const h = Math.max(o, c) + Math.random() * 0.7;
+    const l = Math.min(o, c) - Math.random() * 0.7;
+    bars.push({ o, h, l, c });
+    price = c;
+  }
+}
+
+function drawChart() {
+  const w = canvas.width = canvas.parentElement.clientWidth;
+  const h = canvas.height = canvas.parentElement.clientHeight;
+  ctx.clearRect(0, 0, w, h);
+  const padding = { top: 24, bottom: 30 };
+  const chartH = h - padding.top - padding.bottom;
+  const min = Math.min(...bars.map(b => b.l));
+  const max = Math.max(...bars.map(b => b.h));
+  const y = v => padding.top + (max - v) / (max - min) * chartH;
+  const bw = w / bars.length;
+
+  bars.forEach((b, i) => {
+    const x = i * bw + bw / 2;
+    const up = b.c >= b.o;
+    ctx.strokeStyle = ctx.fillStyle = up ? '#26a69a' : '#ef5350';
+    ctx.beginPath();
+    ctx.moveTo(x, y(b.h));
+    ctx.lineTo(x, y(b.l));
+    ctx.stroke();
+    const top = y(Math.max(b.o, b.c));
+    const bot = y(Math.min(b.o, b.c));
+    ctx.fillRect(x - bw * 0.32, top, bw * 0.64, Math.max(bot - top, 1));
+  });
+
+  // PineScript Bar Count：每 2 根在底部标橙色序号（1 开始）
+  ctx.fillStyle = '#ff9800';
+  ctx.font = '11px Consolas, monospace';
+  ctx.textAlign = 'center';
+  for (let i = 0; i < bars.length; i += 2) {
+    ctx.fillText(String(i + 1), i * bw + bw / 2, h - 10);
+  }
+  ctx.textAlign = 'left';
+  ctx.fillStyle = '#787b86';
+  ctx.font = '11px sans-serif';
+  ctx.fillText('← BAR 序号由配套 PineScript 显示，供参考；记录时不填表，提到即可 →', 12, h - 10);
+}
+
+genBars();
+drawChart();
+window.addEventListener('resize', drawChart);
+
+/* ================= 机械提取（与 lib/cases.ts 同规则） ================= */
+function extractBar(rawText) {
+  const refs = [];
+  const patterns = [
+    /\bbar\s*#?\s*(\d+)\b/gi,
+    /第\s*(\d+)\s*根\s*(?:k\s*线|蜡烛|bar)/gi,
+  ];
+  for (const pattern of patterns) {
+    for (const match of rawText.matchAll(pattern)) {
+      const value = parseInt(match[1], 10);
+      if (Number.isInteger(value) && value > 0) refs.push({ index: match.index ?? Infinity, value });
+    }
+  }
+  refs.sort((a, b) => a.index - b.index);
+  return refs[0]?.value ?? null;
+}
+
+/* ================= 完整性检查雏形（Stage 5 AI 的占位） ================= */
+function checkCompleteness(phase, text) {
+  if (phase !== 'entry') return [];
+  const hints = [];
+  if (!/止损|失效|放弃|走弱|跌破|如果/.test(text)) hints.push('失效条件（什么情况下认错）');
+  if (!/目标|看到|预期|到.*位置/.test(text)) hints.push('目标位或预期路径');
+  if (!/方向|做多|做空|多|空/.test(text)) hints.push('方向');
+  return hints;
+}
+
+/* ================= 悬浮窗逻辑 ================= */
+const dock = document.getElementById('dock');
+const ball = document.getElementById('float-ball');
+const ta = document.getElementById('card-input');
+const barInput = document.getElementById('bar-input');
+const submitBtn = document.getElementById('submit-btn');
+const cardList = document.getElementById('card-list');
+const csCount = document.getElementById('cs-count');
+const toastEl = document.getElementById('toast');
+const ctTip = document.getElementById('completeness-tip');
+const ctBody = document.getElementById('ct-body');
+
+const PHASE_META = {
+  'pre-entry': { label: '观察', color: '#787b86' },
+  'entry': { label: '入场', color: '#2962ff' },
+  'intermediate': { label: '过程', color: '#26a69a' },
+  'closing': { label: '离场', color: '#ff9800' },
+  'reflection': { label: '复盘', color: '#ab47bc' },
+};
+
+let cards = [
+  { phase: 'pre-entry', bar: 28, text: 'BAR28 区间上沿第三次测试，量能萎缩，注意可能的假突破', time: '14:02' },
+  { phase: 'entry', bar: 35, text: 'BAR35 收回区间内部，做空，止损区间上沿上方，目标区间中轨', time: '14:37' },
+  { phase: 'intermediate', bar: 41, text: 'BAR41 出现明显顶部结构，如果下一根走弱我就离场', time: '15:11' },
+];
+
+function renderCards() {
+  cardList.innerHTML = '';
+  cards.forEach(card => {
+    const meta = PHASE_META[card.phase];
+    const el = document.createElement('div');
+    el.className = 'mock-card';
+    el.style.setProperty('--pc', meta.color);
+    const barHtml = card.bar
+      ? `<span class="mc-bar">BAR ${card.bar}${card.extracted ? ' ·自动' : ''}</span>`
+      : `<span class="mc-bar none">无 BAR 锚点</span>`;
+    el.innerHTML = `
+      <div class="mc-meta">
+        <span class="mc-phase">${meta.label}</span>
+        ${barHtml}
+        <span class="mc-time">${card.time}</span>
+      </div>
+      <div class="mc-text"></div>`;
+    el.querySelector('.mc-text').textContent = card.text;
+    cardList.appendChild(el);
+  });
+  csCount.textContent = `本次 Case 已有 ${cards.length} 张卡`;
+}
+renderCards();
+
+/* ---- 展开 / 收起：球常驻，图标切换 ---- */
+function setBallMode(open) {
+  ball.querySelector('.fb-icon').textContent = open ? '⌄' : '✎';
+  ball.querySelector('.fb-label').textContent = open ? '收起' : '记一笔';
+}
+function openWidget() {
+  dock.classList.add('open');
+  dock.classList.remove('unread');
+  setBallMode(true);
+  setTimeout(() => ta.focus(), 30);
+}
+function collapseWidget() {
+  dock.classList.remove('open');
+  dock.classList.add('unread');
+  setBallMode(false);
+}
+
+// 点击图表空白 → 收起面板（球常驻）
+document.getElementById('chart-area').addEventListener('pointerdown', () => {
+  if (dock.classList.contains('open')) collapseWidget();
+});
+
+/* ---- Phase 切换 ---- */
+let currentPhase = 'intermediate';
+document.getElementById('phase-row').addEventListener('click', e => {
+  const pill = e.target.closest('.phase-pill');
+  if (!pill) return;
+  document.querySelectorAll('.phase-pill').forEach(p => p.classList.remove('active'));
+  pill.classList.add('active');
+  currentPhase = pill.dataset.phase;
+  document.getElementById('entry-decision').classList.toggle('show', currentPhase === 'entry');
+  ta.focus();
+});
+
+/* ---- Entry 决策 ---- */
+document.querySelector('.ed-row').addEventListener('click', e => {
+  const b = e.target.closest('.ed-btn');
+  if (!b) return;
+  document.querySelectorAll('.ed-btn').forEach(x => x.classList.remove('active'));
+  b.classList.add('active');
+});
+
+/* ---- 语音提示 ---- */
+document.getElementById('mic-btn').addEventListener('click', () => {
+  document.getElementById('mic-tip').classList.toggle('show');
+});
+
+/* ---- 提交：BAR 选填，自动提取 ---- */
+function submitCard() {
+  const text = ta.value.trim();
+  if (!text) { ta.focus(); return; }
+  const manualBar = parseInt(barInput.value, 10);
+  const extracted = extractBar(text);
+  const bar = (Number.isInteger(manualBar) && manualBar > 0) ? manualBar : extracted;
+  const now = new Date();
+  const card = {
+    phase: currentPhase,
+    bar,
+    extracted: !Number.isInteger(manualBar) && extracted != null,
+    text,
+    time: `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`,
+  };
+  cards.unshift(card);
+  renderCards();
+  const first = cardList.firstElementChild;
+  if (first) first.classList.add('fresh');
+  ta.value = '';
+  barInput.value = '';
+
+  const hints = checkCompleteness(card.phase, text);
+  if (hints.length > 0) {
+    ctBody.innerHTML = `这条还没有提到：${hints.map(h => `<b>${h}</b>`).join('、')}。`;
+    ctTip.classList.add('show');
+    showToast(bar ? `✓ 已保存（mock）· 提取到 BAR ${bar}` : '✓ 已保存（mock）· 未发现 BAR 引用');
+  } else {
+    ctTip.classList.remove('show');
+    showToast(bar ? `✓ 已保存（mock）· 提取到 BAR ${bar}` : '✓ 已保存（mock）· 未发现 BAR 引用');
+  }
+  ta.focus();
+}
+submitBtn.addEventListener('click', submitCard);
+ta.addEventListener('keydown', e => {
+  if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); submitCard(); }
+});
+barInput.addEventListener('keydown', e => {
+  if (e.key === 'Enter') { e.preventDefault(); submitCard(); }
+});
+document.getElementById('ct-close').addEventListener('click', () => ctTip.classList.remove('show'));
+
+let toastTimer;
+function showToast(msg) {
+  toastEl.textContent = msg;
+  toastEl.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => toastEl.classList.remove('show'), 2200);
+}
+
+/* ---- 卡片列表展开/收起 ---- */
+document.getElementById('cards-expand').addEventListener('click', function () {
+  const expanded = cardList.classList.toggle('expanded');
+  this.textContent = expanded ? '收起' : '展开全部';
+});
+
+/* ---- Case 切换（mock） ---- */
+document.getElementById('case-select').addEventListener('change', e => {
+  cards = e.target.value === 'c2'
+    ? [{ phase: 'reflection', bar: 52, text: '这单假突破追多被打回来，入场前没有等二次确认，复盘记录', time: '昨日 16:20' }]
+    : [
+        { phase: 'pre-entry', bar: 28, text: 'BAR28 区间上沿第三次测试，量能萎缩，注意可能的假突破', time: '14:02' },
+        { phase: 'entry', bar: 35, text: 'BAR35 收回区间内部，做空，止损区间上沿上方，目标区间中轨', time: '14:37' },
+        { phase: 'intermediate', bar: 41, text: 'BAR41 出现明显顶部结构，如果下一根走弱我就离场', time: '15:11' },
+      ];
+  renderCards();
+});
+
+/* ---- 新建 Case（mock） ---- */
+document.getElementById('new-case-btn').addEventListener('click', () => {
+  document.getElementById('new-case-form').classList.toggle('show');
+  document.getElementById('new-case-title').focus();
+});
+document.getElementById('nc-cancel').addEventListener('click', () => {
+  document.getElementById('new-case-form').classList.remove('show');
+});
+document.getElementById('nc-create').addEventListener('click', () => {
+  const title = document.getElementById('new-case-title').value.trim() || `新观察 ${new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}`;
+  const sel = document.getElementById('case-select');
+  const opt = document.createElement('option');
+  opt.value = 'c' + Date.now();
+  opt.textContent = title;
+  sel.appendChild(opt);
+  sel.value = opt.value;
+  cards = [];
+  renderCards();
+  document.getElementById('new-case-title').value = '';
+  document.getElementById('new-case-form').classList.remove('show');
+  showToast('✓ 已创建 Case（mock）');
+  ta.focus();
+});
+
+/* ---- 说明条 ---- */
+document.getElementById('hint-close').addEventListener('click', () => {
+  document.getElementById('hint').style.display = 'none';
+});
+
+/* ================= 拖动（单一 dock 定位，误触与位置冲突已修） ================= */
+const DRAG_THRESHOLD = 4;
+
+function makeDraggable(handle, opts = {}) {
+  let sx = 0, sy = 0, ox = 0, oy = 0, moved = false, dragging = false;
+  handle.addEventListener('pointerdown', e => {
+    if (e.target.closest('select, button, input, textarea')) return;
+    dragging = true;
+    moved = false;
+    handle.setPointerCapture(e.pointerId);
+    sx = e.clientX; sy = e.clientY;
+    const r = dock.getBoundingClientRect();
+    ox = r.left; oy = r.top;
+    // 先锁定 left/top 再清 right/bottom，避免首帧跳位/消失
+    dock.style.left = ox + 'px';
+    dock.style.top = oy + 'px';
+    dock.style.right = 'auto';
+    dock.style.bottom = 'auto';
+  });
+  handle.addEventListener('pointermove', e => {
+    if (!dragging) return;
+    const dx = e.clientX - sx, dy = e.clientY - sy;
+    if (!moved && Math.hypot(dx, dy) > DRAG_THRESHOLD) moved = true;
+    if (!moved) return;
+    const nx = Math.min(Math.max(8, ox + dx), window.innerWidth - 60);
+    const ny = Math.min(Math.max(8, oy + dy), window.innerHeight - 60);
+    dock.style.left = nx + 'px';
+    dock.style.top = ny + 'px';
+  });
+  handle.addEventListener('pointerup', () => {
+    const wasDrag = moved;
+    dragging = false;
+    if (wasDrag) {
+      localStorage.setItem('cairn-mock-dock', JSON.stringify({
+        left: dock.style.left, top: dock.style.top,
+      }));
+    } else if (opts.onClick) {
+      opts.onClick();
+    }
+  });
+  handle.addEventListener('pointercancel', () => { dragging = false; });
+}
+
+// 拖球 = 移动 dock；点球（未拖动）= 展开/收起
+makeDraggable(ball, {
+  onClick: () => dock.classList.contains('open') ? collapseWidget() : openWidget(),
+});
+// 拖面板标题栏 = 同样移动整个 dock
+makeDraggable(document.getElementById('widget-header'));
+
+const savedDock = localStorage.getItem('cairn-mock-dock');
+if (savedDock) {
+  try {
+    const { left, top } = JSON.parse(savedDock);
+    dock.style.left = left; dock.style.top = top;
+    dock.style.right = 'auto'; dock.style.bottom = 'auto';
+  } catch { /* 忽略坏数据 */ }
+}
+</script>
+</body>
+</html>
