@@ -5,13 +5,15 @@ import { Link, Navigate, useNavigate, useParams } from 'react-router-dom'
 import { CheckCircle2, ChevronDown, ChevronRight, Clipboard, Copy, ImagePlus, NotebookPen, Trash2 } from 'lucide-react'
 
 import { AttachmentImage } from '@/components/attachment-image'
-import { TradeChart } from '@/components/trade-chart'
+import { TradeChart, type TradeChartCaseMarker } from '@/components/trade-chart'
+import { TradeCasePanel, TradeCaseSummaryCard } from '@/components/trade-case-panel'
 import { PnlText, RText } from '@/components/pnl-text'
 import { DirectionBadge, StatusBadge } from '@/components/trades-table'
 import { EditTradeDialog } from '@/components/edit-trade-dialog'
 import { TagBadge } from '@/components/tag-badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -24,13 +26,24 @@ import { executionActionLabel, isPositionExecutionAction, orderTypeLabel } from 
 import { aggregateDisplayExecutions } from '@/lib/execution-display'
 import { computeTradeMetrics } from '@/lib/metrics'
 import { fmtPrice, fmtDuration, fmtUtcDateTime, fmtUtcDate } from '@/lib/format'
-import { uniqueTagNames } from '@/lib/tags'
-import { timeToBarNumber } from '@/lib/bar-time'
+import { sortTagNamesByColor } from '@/lib/tags'
+import { barNumberToTime, timeToBarNumber, utcDayStart } from '@/lib/bar-time'
 import { readFileAsDataUrl } from '@/lib/tradingview-import'
 import { createTradeTransferPayload, stringifyTradeTransfer } from '@/lib/trade-transfer'
 import { CHART_TIMEFRAMES, chartTimeframeLabel, chartTimeframeMinutes } from '@/lib/chart-timeframes'
 import { logFrontendError } from '@/lib/frontend-log'
-import type { ChartTimeframe } from '@/lib/types'
+import { casePhaseLabel } from '@/lib/cases'
+import type { CaseCardPhase, ChartTimeframe } from '@/lib/types'
+
+type TradeDetailTab = 'overview' | 'case' | 'trade'
+
+const CASE_TIMELINE_DOT: Record<CaseCardPhase, string> = {
+  'pre-entry': 'border-blue-500',
+  entry: 'border-emerald-500',
+  intermediate: 'border-amber-500',
+  closing: 'border-rose-500',
+  reflection: 'border-violet-500',
+}
 
 const eventLabel: Record<string, string> = {
   'sl-set': '设置止损',
@@ -50,7 +63,9 @@ export default function TradeDetailPage() {
   const [chartTimeframe, setChartTimeframe] = useState<ChartTimeframe>('5m')
   const [showTrailLines, setShowTrailLines] = useState(true)
   const [showEntryLine, setShowEntryLine] = useState(true)
-  const { getTrade, getAccount, getPeriod, getSymbol, getNotesMentioningTrade, symbolLabel, setTradeStatus, updateTrade, createNote, createImageAttachment, deleteAttachment, getChartCandles } = useCairn()
+  const [activeTab, setActiveTab] = useState<TradeDetailTab>('overview')
+  const [targetCaseCardId, setTargetCaseCardId] = useState<string>()
+  const { getTrade, getAccount, getPeriod, getSymbol, getNotesMentioningTrade, symbolLabel, setTradeStatus, updateTrade, createNote, createImageAttachment, deleteAttachment, getChartCandles, tagDefs, cases, caseCards, caseBindings } = useCairn()
   const trade = getTrade(tradeId)
   if (!trade) return <Navigate to="/trades" replace />
   const activeTrade = trade
@@ -59,7 +74,7 @@ export default function TradeDetailPage() {
   const period = getPeriod(trade.periodId)
   const symbol = getSymbol(trade.symbolId)
   const m = computeTradeMetrics(trade)
-  const tags = uniqueTagNames(trade.tags)
+  const tags = sortTagNamesByColor(trade.tags, tagDefs)
   const executionTimes = trade.executions.map((execution) => execution.time)
   const chartPadding = chartTimeframeMinutes(chartTimeframe) * 60_000 * 80
   const chartStart = executionTimes.length ? Math.min(...executionTimes) - chartPadding : undefined
@@ -67,6 +82,17 @@ export default function TradeDetailPage() {
   const libraryBars = getChartCandles(trade.symbolId, chartTimeframe, chartStart, chartEnd)
   const bars = libraryBars.length ? libraryBars : trade.chartData?.[chartTimeframe] ?? (chartTimeframe === '5m' ? trade.chartBars : undefined) ?? []
   const mentioningNotes = getNotesMentioningTrade(trade.id)
+  const tradeBinding = caseBindings.find((binding) => binding.tradeId === trade.id)
+  const boundCase = tradeBinding ? cases.find((caseRecord) => caseRecord.id === tradeBinding.caseId) : undefined
+  const boundCaseCards = boundCase ? caseCards.filter((card) => card.caseId === boundCase.id) : []
+  const caseMarkers: TradeChartCaseMarker[] = boundCaseCards.flatMap((card) => card.barRef == null ? [] : [{
+    cardId: card.id,
+    barNumber: card.barRef,
+    time: barNumberToTime(utcDayStart(m.entryTime), card.barRef, chartTimeframeMinutes(chartTimeframe)),
+    phase: card.phase,
+    label: casePhaseLabel[card.phase],
+    detail: card.rawText,
+  }])
 
   function createLinkedNote() {
     const note = createNote({
@@ -141,6 +167,7 @@ export default function TradeDetailPage() {
         title: isPositionAction ? `${label} ${e.quantity ?? '—'} @ ${priceText || '—'}` : `${label}${priceText ? ` -> ${priceText}` : ''}`,
         detail: `${orderTypeLabel[e.orderType] ?? e.orderType}${e.anchorPrice == null ? '' : ` · anchor ${fmtPrice(e.anchorPrice, symbol?.pricePrecision)}`}${e.signal ? ` · 信号 ${e.signal}` : ''}${aggregateText}`,
         tone: e.action === 'entry' || e.action === 'scale-in' || e.action.startsWith('target') ? 'entry' : 'exit',
+        barNumber: timeToBarNumber(e.time, 5),
       }
     }),
     ...trade.events.map((ev) => ({
@@ -149,6 +176,17 @@ export default function TradeDetailPage() {
       title: ev.price == null ? eventLabel[ev.type] : `${eventLabel[ev.type]} -> ${fmtPrice(ev.price, symbol?.pricePrecision)}`,
       detail: ev.note ?? '',
       tone: ev.type.startsWith('sl') ? 'sl' : 'tp',
+      barNumber: timeToBarNumber(ev.time, 5),
+    })),
+    ...boundCaseCards.map((card) => ({
+      kind: 'case' as const,
+      time: card.barRef ? barNumberToTime(utcDayStart(m.entryTime), card.barRef, 5) : card.createdAt,
+      title: casePhaseLabel[card.phase],
+      detail: card.rawText,
+      tone: 'case' as const,
+      cardId: card.id,
+      barNumber: card.barRef,
+      phase: card.phase,
     })),
   ].sort((a, b) => a.time - b.time)
 
@@ -171,13 +209,6 @@ export default function TradeDetailPage() {
             <DirectionBadge direction={trade.direction} />
             <StatusBadge status={trade.status} />
           </div>
-          {tags.length > 0 && (
-            <div className="flex flex-wrap items-center gap-1.5">
-              {tags.map((tag) => (
-                <TagBadge key={tag} name={tag} />
-              ))}
-            </div>
-          )}
           <p className="text-sm text-muted-foreground">
             {account?.name} · {period?.name} · {fmtUtcDate(m.entryTime)}
           </p>
@@ -222,8 +253,16 @@ export default function TradeDetailPage() {
         </div>
       </header>
 
-      <div className="grid grid-cols-1 gap-6 xl:grid-cols-4">
-        {/* 主区：K 线图 + 时间线 */}
+      <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as TradeDetailTab)} className="gap-6">
+        <TabsList className="h-10">
+          <TabsTrigger value="overview" className="px-4">Overview</TabsTrigger>
+          <TabsTrigger value="case" className="px-4">Case</TabsTrigger>
+          <TabsTrigger value="trade" className="px-4">Trade</TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="overview">
+          <div className="grid grid-cols-1 gap-6 xl:grid-cols-4">
+        {/* 主区：K 线图 + 配图 */}
         <div className="flex flex-col gap-6 xl:col-span-3">
           <Card>
             <CardHeader>
@@ -258,51 +297,66 @@ export default function TradeDetailPage() {
               </div>
             </CardHeader>
             <CardContent>
-              <TradeChart bars={bars} trade={trade} showTrailLines={showTrailLines} showEntryLine={showEntryLine} />
+              <TradeChart
+                bars={bars}
+                trade={trade}
+                showTrailLines={showTrailLines}
+                showEntryLine={showEntryLine}
+                caseMarkers={caseMarkers}
+                onCaseMarkerClick={(cardId) => {
+                  setTargetCaseCardId(cardId)
+                  setActiveTab('case')
+                }}
+              />
+              {caseMarkers.length > 0 && (
+                <div className="mt-3 flex flex-wrap items-center gap-1.5" aria-label="Case Card BAR 标记">
+                  <span className="mr-1 text-xs text-muted-foreground">Case Cards</span>
+                  {caseMarkers.map((marker) => (
+                    <Button
+                      key={`${marker.cardId}-${marker.barNumber}`}
+                      variant="outline"
+                      size="sm"
+                      onClick={() => {
+                        setTargetCaseCardId(marker.cardId)
+                        setActiveTab('case')
+                      }}
+                    >
+                      BAR {marker.barNumber}
+                    </Button>
+                  ))}
+                </div>
+              )}
               <p className="mt-2 text-xs text-muted-foreground">
-                {chartTimeframeLabel(chartTimeframe)} · UTC · EMA · 箭头为仓位 Execution，圆点为管理 Execution，Trail line 显示止损/止盈轨迹
+                {chartTimeframeLabel(chartTimeframe)} · UTC · EMA · 箭头为仓位 Execution，圆点为管理 Execution，方块为 Case Card，Trail line 显示止损/止盈轨迹
               </p>
             </CardContent>
           </Card>
 
           <Card>
             <CardHeader>
-              <CardTitle className="text-base">操作时间线</CardTitle>
+              <CardTitle className="text-base">Timeline</CardTitle>
+              <p className="text-sm text-muted-foreground">Execution、TradeEvent 和 Case Card 按时间合并展示。</p>
             </CardHeader>
             <CardContent>
-              <ol className="flex flex-col">
-                {timeline.map((item, i) => (
-                  <li key={i} className="flex gap-4">
-                    <div className="flex flex-col items-center">
-                      <span
-                        className={
-                          item.kind === 'exec'
-                            ? item.tone === 'entry'
-                              ? 'mt-1.5 size-2.5 shrink-0 rounded-full bg-profit'
-                              : 'mt-1.5 size-2.5 shrink-0 rounded-full bg-loss'
-                            : 'mt-1.5 size-2.5 shrink-0 rounded-full border-2 border-muted-foreground bg-background'
-                        }
-                        aria-hidden="true"
-                      />
-                      {i < timeline.length - 1 && <span className="w-px flex-1 bg-border" aria-hidden="true" />}
-                    </div>
-                    <div className="flex flex-1 flex-wrap items-baseline justify-between gap-x-4 pb-5">
-                      <div className="flex flex-col gap-0.5">
-                        <span className="text-sm font-medium">{item.title}</span>
-                        {item.detail && <span className="text-xs text-muted-foreground">{item.detail}</span>}
+              {timeline.length === 0 ? <p className="text-sm text-muted-foreground">暂无时间线记录。</p> : (
+                <ol className="flex flex-col">
+                  {timeline.map((item, i) => (
+                    <li key={`${item.kind}-${item.time}-${i}`} className="flex min-w-0 gap-4">
+                      <div className="flex flex-col items-center">
+                        <span className={item.kind === 'case' ? `mt-1.5 size-2.5 shrink-0 rounded-full border-2 bg-background ${CASE_TIMELINE_DOT[item.phase]}` : item.kind === 'exec' ? (item.tone === 'entry' ? 'mt-1.5 size-2.5 shrink-0 rounded-full bg-profit' : 'mt-1.5 size-2.5 shrink-0 rounded-full bg-loss') : 'mt-1.5 size-2.5 shrink-0 rounded-full border-2 border-muted-foreground bg-background'} aria-hidden="true" />
+                        {i < timeline.length - 1 && <span className="w-px flex-1 bg-border" aria-hidden="true" />}
                       </div>
-                      <div className="flex flex-col items-end gap-0.5">
-                        <span className="font-mono text-xs text-muted-foreground">
-                          {fmtUtcDateTime(item.time, false)}
-                        </span>
-                        <span className="font-mono text-xs text-muted-foreground/70">
-                          Bar #{timeToBarNumber(item.time, 5)}
-                        </span>
+                      <div className="grid min-w-0 flex-1 grid-cols-[minmax(0,1fr)_auto] items-start gap-x-4 pb-5">
+                        <div className="min-w-0 flex flex-col gap-0.5">
+                          <span className="text-sm font-medium">{item.title}</span>
+                          {item.detail && (item.kind === 'case' ? <button type="button" className="max-w-2xl truncate text-left text-xs text-muted-foreground hover:text-foreground" onClick={() => { setTargetCaseCardId(item.cardId); setActiveTab('case') }}>{item.detail}</button> : <span className="text-xs text-muted-foreground">{item.detail}</span>)}
+                        </div>
+                        <div className="flex shrink-0 flex-col items-end gap-0.5 text-right"><span className="whitespace-nowrap font-mono text-xs text-muted-foreground">{fmtUtcDateTime(item.time, false)}</span><span className="whitespace-nowrap font-mono text-xs text-muted-foreground/70">{item.barNumber == null ? '未标注 BAR' : `Bar #${item.barNumber}`}</span></div>
                       </div>
-                    </div>
-                  </li>
-                ))}
-              </ol>
+                    </li>
+                  ))}
+                </ol>
+              )}
             </CardContent>
           </Card>
 
@@ -396,6 +450,21 @@ export default function TradeDetailPage() {
 
         {/* 侧栏：概要信息 */}
         <div className="flex flex-col gap-6">
+          {tags.length > 0 && (
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base">标签</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="flex flex-wrap gap-1.5">
+                  {tags.map((tag) => (
+                    <TagBadge key={tag} name={tag} />
+                  ))}
+                </div>
+              </CardContent>
+            </Card>
+          )}
+
           <Card>
             <CardHeader>
               <CardTitle className="text-base">结果</CardTitle>
@@ -527,8 +596,31 @@ export default function TradeDetailPage() {
               </div>
             </CardContent>
           </Card>
+
+          <TradeCaseSummaryCard trade={trade} onOpenCaseTab={() => setActiveTab('case')} />
         </div>
-      </div>
+          </div>
+        </TabsContent>
+
+        <TabsContent value="case">
+          <TradeCasePanel trade={trade} targetCardId={targetCaseCardId} />
+        </TabsContent>
+
+        <TabsContent value="trade">
+          <Card>
+            <CardHeader><CardTitle className="text-base">Trade 分析</CardTitle><p className="text-sm text-muted-foreground">这里集中放交易结果、Execution 分析，以及后续的过程评分和 AI 建议。</p></CardHeader>
+            <CardContent>
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                <div className="rounded-lg border p-4"><p className="text-xs text-muted-foreground">PnL</p>{trade.status === 'closed' ? <PnlText value={m.pnl} currency={account?.currency} className="mt-1 text-lg font-semibold" /> : <p className="mt-1 text-lg font-semibold text-muted-foreground">持仓中</p>}</div>
+                <div className="rounded-lg border p-4"><p className="text-xs text-muted-foreground">R 倍数</p><RText value={m.rMultiple} className="mt-1 text-lg font-semibold" /></div>
+                <div className="rounded-lg border p-4"><p className="text-xs text-muted-foreground">Execution</p><p className="mt-1 font-mono text-lg font-semibold">{trade.executions.length}</p></div>
+                <div className="rounded-lg border p-4"><p className="text-xs text-muted-foreground">持仓时长</p><p className="mt-1 font-mono text-lg font-semibold">{fmtDuration(m.durationMs)}</p></div>
+              </div>
+              <p className="mt-6 rounded-lg bg-muted px-4 py-3 text-sm text-muted-foreground">过程评分和 AI 建议将在后续 Stage 加入。</p>
+            </CardContent>
+          </Card>
+        </TabsContent>
+      </Tabs>
     </div>
   )
 }
