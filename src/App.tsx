@@ -6,6 +6,8 @@ import AccountDetailPage from '@/app/accounts/[accountId]/page'
 import PeriodDetailPage from '@/app/accounts/[accountId]/periods/[periodId]/page'
 import DashboardPage from '@/app/page'
 import DataPage from '@/app/data/page'
+import CasesPage from '@/app/cases/page'
+import CaseDetailPage from '@/app/cases/[caseId]/page'
 import ImportPage from '@/app/import/page'
 import NoteEditPage from '@/app/notes/[noteId]/edit/page'
 import NotesPage from '@/app/notes/page'
@@ -60,6 +62,8 @@ function AppRoutes() {
         <Route path="/trades" element={<TradesPage />} />
         <Route path="/trades/new" element={<NewTradePage />} />
         <Route path="/trades/:tradeId" element={<TradeDetailPage />} />
+        <Route path="/cases" element={<CasesPage />} />
+        <Route path="/cases/:caseId" element={<CaseDetailPage />} />
         <Route path="/data" element={<DataPage />} />
         <Route path="/notes" element={<NotesPage />} />
         <Route path="/notes/:noteId/edit" element={<NoteEditPage />} />
