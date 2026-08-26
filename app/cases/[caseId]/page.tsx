@@ -297,7 +297,7 @@ export default function CaseDetailPage() {
               ) : (
                 <div className="flex flex-col gap-2 text-sm text-muted-foreground">
                   <Archive className="size-5" />
-                  <span>尚未关联 Trade。创建和选择关联将在 Stage 3 加入。</span>
+                  <span>尚未关联 Trade。可在 Trade 详情页的 Case 面板中选择本 Case 建立关联。</span>
                 </div>
               )}
             </CardContent>
