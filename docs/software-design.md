@@ -100,7 +100,9 @@ New manual trade-management records should be stored as Executions. TradeEvent r
 
 ### Case And CaseCard
 
-A Case is a continuous reasoning record created under an Account and Period. It can exist before a Trade is imported. CaseCard stores one immutable raw text entry in one of five phases: `pre-entry`, `entry`, `intermediate`, `closing`, or `reflection`. Each Card has one `barRef`; a Card never represents multiple BARs.
+A Case is a continuous reasoning record created under an Account and Period. It can exist before a Trade is imported. CaseCard stores one immutable raw text entry in one of five phases: `pre-entry`, `entry`, `intermediate`, `closing`, or `reflection`. Each Card maps to at most one `barRef`; a Card never represents multiple BARs.
+
+Recording is thinking-first: users speak or type free text only. BAR numbers mentioned in the text (`BAR41`, `第 42 根 K 线`) are extracted mechanically into `barRef`; AI extraction and completeness checklists arrive in Stage 5. `barRef` may stay missing on a Card until extraction or a later manual backfill—the thinking layer never blocks on form filling.
 
 `barRef` follows the TradingView Bar Count indicator convention: bar 1 is the first bar opening at UTC 00:00 of the day, incrementing by one per bar. `lib/bar-time.ts` converts between `barRef` and UTC time by pure arithmetic, which matches gapless 24/7 markets. Markets with session gaps will later need bar positioning from imported candles instead of time arithmetic.
 
@@ -231,7 +233,7 @@ Cairn runs a local HTTP service for companion scripts (planned TradingView captu
 - Configuration and a 32-byte random token are stored in `app_data_dir/api-config.json` (atomic tmp+rename writes). Default port is 8787. Port and enabled flag changes apply after restart; token regeneration applies immediately.
 - All endpoints except `GET /api/v1/health` require `Authorization: Bearer <token>`. Responses include permissive CORS headers and handle OPTIONS preflight so both `GM_xmlhttpRequest` and plain `fetch` clients work.
 - Endpoints: `GET /api/v1/health`, `GET/POST /api/v1/cases`, `GET /api/v1/cases/:id`, `GET/POST /api/v1/cases/:id/cards`, `POST /api/v1/bindings`, `DELETE /api/v1/bindings/:id`, `GET/POST /api/v1/case-tags`, `GET /api/v1/accounts` (with nested periods for capture context).
-- Card creation requires `phase`, `rawText`, and a positive integer `barRef`. Creation is idempotent: clients submit a stable `id`; replaying the same content returns the stored record, while replaying the same id with different raw text is rejected with 409.
+- Card creation requires `phase` and `rawText`. `barRef` is optional; when omitted the server mechanically extracts the first explicit BAR reference from the raw text (`BAR41`, `bar #38`, `第 42 根 K 线`), and the Card may be stored without one. Creation is idempotent: clients submit a stable `id`; replaying the same content returns the stored record, while replaying the same id with different raw text is rejected with 409.
 - The API never accepts order placement, position modification, or Trade writes.
 - Successful writes emit a `cairn://data-changed` Tauri event; the React store debounces and rehydrates so the UI reflects external writes without polling.
 

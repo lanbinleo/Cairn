@@ -132,6 +132,7 @@
 - `src-tauri/src/api.rs`：tiny_http 同步 server 线程，只监听 `127.0.0.1`，Bearer token 鉴权，宽松 CORS。
 - 端点：`GET /api/v1/health`、`GET/POST /api/v1/cases`、`GET /api/v1/cases/:id`、`GET/POST /api/v1/cases/:id/cards`、`POST /api/v1/bindings`、`DELETE /api/v1/bindings/:id`、`GET/POST /api/v1/case-tags`、`GET /api/v1/accounts`（含嵌套 Period）。
 - 幂等创建：稳定 id 重放同内容返回 200，同 id 不同 rawText 返回 409。
+- Card 提交只需 `phase` 和 `rawText`；`barRef` 选填，缺省时服务端从原文机械提取 BAR 引用，提取不到允许缺失（思想交给人，填表交给提取层，AI 增强留给 Stage 5）。
 - token 存 `api-config.json`（默认端口 8787），Settings 新增"本地 API"页：运行状态、token 复制与重新生成、开关与端口配置（重启生效）、端点速查。
 - 写入成功后 emit `cairn://data-changed`，前端 store 防抖刷新，日志已验证外部写入即时反映到 UI。
 - 不提供下单或仓位修改接口。

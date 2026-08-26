@@ -165,7 +165,7 @@ Current source of truth: `docs/software-design.md`.
 - Notes are Markdown with encoded mentions: `[[trade:ID]]` and `[[image:URL_OR_PATH]]`.
 - Case can exist before Trade import. Active CaseTradeBinding is one-to-one for both Case and Trade.
 - CaseCard raw text is immutable after submission. AI and mechanical parsing results must not rewrite it.
-- Each CaseCard maps to one explicit `barRef`; legacy `barRefs` arrays exist only for migration compatibility.
+- Each CaseCard maps to at most one explicit `barRef`; legacy `barRefs` arrays exist only for migration compatibility. Users mention BAR numbers in free text; `barRef` is derived by mechanical extraction (REST API and store) and later AI, and may stay missing until backfilled. Manual `barRef` input is always optional, never required.
 - Case Tags are independent from Trade Tags, although both use the same seven colors.
 - Manual trade-management Executions use Move Stop (`stop`) for stop-loss changes, Move Target (`target-moved`) for take-profit changes, and Add / Edit Order (`order-edit`) for ordinary pending-order changes. Move Stop defaults to `stop-loss`; Move Target defaults to `take-profit`; manual trailing behavior is a Reason on Move Stop, not a `trailing-stop` order type by default.
 

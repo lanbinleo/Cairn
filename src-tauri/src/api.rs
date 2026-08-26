@@ -451,6 +451,72 @@ fn require_str(body: &Value, key: &str) -> Result<String, String> {
         .ok_or_else(|| format!("request body is missing valid {key}"))
 }
 
+/// 与前端 lib/cases.ts 的 extractExplicitBarRef 同规则：
+/// "bar #38" / "BAR41" / "第 42 根 K 线"，取最早出现的引用。
+fn extract_bar_ref(raw_text: &str) -> Option<i64> {
+    let mut best: Option<(usize, i64)> = None;
+    let lower = raw_text.to_lowercase();
+
+    let is_word = |ch: u8| ch.is_ascii_alphanumeric() || ch == b'_';
+    let mut search_from = 0;
+    while let Some(rel) = lower[search_from..].find("bar") {
+        let bar_pos = search_from + rel;
+        search_from = bar_pos + 3;
+        let prev_ok = bar_pos == 0 || !is_word(lower.as_bytes()[bar_pos - 1]);
+        let bytes = lower.as_bytes();
+        let mut j = bar_pos + 3;
+        while j < bytes.len() && (bytes[j] == b' ' || bytes[j] == b'\t' || bytes[j] == b'#') {
+            j += 1;
+        }
+        let digits_start = j;
+        while j < bytes.len() && bytes[j].is_ascii_digit() {
+            j += 1;
+        }
+        let next_ok = j >= bytes.len() || !is_word(bytes[j]);
+        if prev_ok && j > digits_start && next_ok {
+            if let Ok(value) = lower[digits_start..j].parse::<i64>() {
+                if value > 0 && best.as_ref().is_none_or(|(pos, _)| bar_pos < *pos) {
+                    best = Some((bar_pos, value));
+                }
+            }
+        }
+    }
+
+    let needle = '第'.len_utf8();
+    let mut search_from = 0;
+    while let Some(rel) = raw_text[search_from..].find('第') {
+        let pos = search_from + rel;
+        search_from = pos + needle;
+        let rest = &raw_text[pos + needle..];
+        let trimmed = rest.trim_start();
+        let digits: String = trimmed.chars().take_while(|ch| ch.is_ascii_digit()).collect();
+        if digits.is_empty() {
+            continue;
+        }
+        let after_digits = &trimmed[digits.len()..];
+        let after_root = after_digits.trim_start();
+        if !after_root.starts_with('根') {
+            continue;
+        }
+        let unit = after_root['根'.len_utf8()..].trim_start();
+        let unit_lower = unit.to_lowercase();
+        let unit_ok = unit_lower.starts_with("k线")
+            || unit_lower.starts_with("k 线")
+            || unit_lower.starts_with("蜡烛")
+            || unit_lower.starts_with("bar");
+        if !unit_ok {
+            continue;
+        }
+        if let Ok(value) = digits.parse::<i64>() {
+            if value > 0 && best.as_ref().is_none_or(|(found, _)| pos < *found) {
+                best = Some((pos, value));
+            }
+        }
+    }
+
+    best.map(|(_, value)| value)
+}
+
 fn validate_id(id: &str) -> Result<(), String> {
     let valid = !id.is_empty()
         && id.len() <= 64
@@ -562,13 +628,19 @@ fn create_case_card(
         ));
     }
     let raw_text = require_str(body, "rawText")?;
-    let bar_ref = body
-        .get("barRef")
-        .and_then(Value::as_i64)
-        .ok_or_else(|| "request body is missing valid barRef".to_string())?;
-    if bar_ref < 1 {
-        return Err("invalid barRef: must be a positive integer".to_string());
-    }
+    // barRef 可选：思想交给人，填表交给提取层。未提供时从原文机械提取（Stage 5 后由 AI 增强）。
+    let bar_ref: Option<i64> = match body.get("barRef") {
+        Some(value) => {
+            let parsed = value
+                .as_i64()
+                .ok_or_else(|| "invalid barRef: must be an integer".to_string())?;
+            if parsed < 1 {
+                return Err("invalid barRef: must be a positive integer".to_string());
+            }
+            Some(parsed)
+        }
+        None => extract_bar_ref(&raw_text),
+    };
     let entry_decision = body
         .get("entryDecision")
         .and_then(Value::as_str)
@@ -595,9 +667,11 @@ fn create_case_card(
         "caseId": case_id,
         "phase": phase,
         "rawText": raw_text,
-        "barRef": bar_ref,
         "createdAt": now,
     });
+    if let Some(bar) = bar_ref {
+        data["barRef"] = json!(bar);
+    }
     if let Some(decision) = entry_decision {
         data["entryDecision"] = json!(decision);
     }
@@ -847,7 +921,7 @@ mod tests {
     }
 
     #[test]
-    fn create_card_requires_bar_ref_and_valid_phase() {
+    fn create_card_extracts_bar_ref_and_validates_phase() {
         let conn = setup_conn();
         call(
             &conn,
@@ -855,15 +929,35 @@ mod tests {
             "/api/v1/cases",
             json!({ "id": "case-1", "title": "T", "accountId": "acct-1", "periodId": "period-1" }),
         );
-        let no_bar = json!({ "phase": "entry", "rawText": "BAR38 二次入场" });
+
+        // 未提供 barRef 时从原文机械提取
+        let extracted = json!({ "phase": "entry", "rawText": "BAR38 出现二次入场做多信号" });
+        let outcome = call(&conn, "POST", "/api/v1/cases/case-1/cards", extracted);
+        assert_eq!(outcome.status, 200);
+        assert_eq!(outcome.body["barRef"], 38);
+
+        // 中文写法也能提取
+        let chinese = json!({ "phase": "closing", "rawText": "第 42 根 K 线走弱，我离场了" });
+        let outcome = call(&conn, "POST", "/api/v1/cases/case-1/cards", chinese);
+        assert_eq!(outcome.status, 200);
+        assert_eq!(outcome.body["barRef"], 42);
+
+        // 没有 BAR 引用时允许缺失
+        let no_bar = json!({ "phase": "intermediate", "rawText": "动能在减弱，考虑上移止损" });
         let outcome = call(&conn, "POST", "/api/v1/cases/case-1/cards", no_bar);
+        assert_eq!(outcome.status, 200);
+        assert!(outcome.body.get("barRef").is_none());
+
+        // 显式提供时校验合法性
+        let zero_bar = json!({ "phase": "entry", "rawText": "x", "barRef": 0 });
+        let outcome = call(&conn, "POST", "/api/v1/cases/case-1/cards", zero_bar);
         assert_eq!(outcome.status, 400);
 
         let bad_phase = json!({ "phase": "daydream", "rawText": "x", "barRef": 3 });
         let outcome = call(&conn, "POST", "/api/v1/cases/case-1/cards", bad_phase);
         assert_eq!(outcome.status, 400);
 
-        let missing_case = json!({ "phase": "entry", "rawText": "x", "barRef": 3 });
+        let missing_case = json!({ "phase": "entry", "rawText": "x" });
         let outcome = call(
             &conn,
             "POST",

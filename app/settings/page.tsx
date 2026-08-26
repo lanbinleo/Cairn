@@ -479,7 +479,7 @@ export default function SettingsPage() {
                     ['GET', '/api/v1/cases', 'Case 列表'],
                     ['POST', '/api/v1/cases', '创建 Case；title / accountId / periodId 必填；同 id 同内容幂等'],
                     ['GET', '/api/v1/cases/:id/cards', '该 Case 的 Card 列表'],
-                    ['POST', '/api/v1/cases/:id/cards', '提交 Card；phase / rawText / barRef 必填；原文不可变，重复提交幂等'],
+                    ['POST', '/api/v1/cases/:id/cards', '提交 Card；phase / rawText 必填，barRef 选填（缺省从原文提取 BAR 引用）；原文不可变，重复提交幂等'],
                     ['POST', '/api/v1/bindings', '建立 Case↔Trade 绑定；双向一对一'],
                     ['DELETE', '/api/v1/bindings/:id', '解除绑定'],
                     ['GET / POST', '/api/v1/case-tags', 'Case 标签查询与创建'],
