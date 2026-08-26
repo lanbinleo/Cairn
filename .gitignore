@@ -30,6 +30,12 @@ next-env.d.ts
 /work/
 /outputs/
 
+# local data snapshots and production copies
+/output/
+
+# agent tooling sessions
+.zcode/
+
 # tauri / vite
 /dist/
 /src-tauri/target/
