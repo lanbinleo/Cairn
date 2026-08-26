@@ -122,6 +122,7 @@ Current source of truth: `docs/software-design.md`.
 
 - `src-tauri/src/lib.rs`: Tauri builder, command registration, tray setup, app metadata commands, attachment file read/write, chart source file save.
 - `src-tauri/src/db.rs`: SQLite schema, read/write/delete/restore/backup logic, state hydration.
+- `src-tauri/src/api.rs`: local REST API on `127.0.0.1` (Bearer token, CORS, idempotent Case/Card writes) for companion capture scripts; emits `cairn://data-changed` so the UI refreshes.
 - `src-tauri/src/paths.rs`: app data path helpers.
 - `src-tauri/src/diagnostics.rs`: panic hook, logs, temp diagnostics.
 - `src-tauri/src/main.rs`: native entrypoint.

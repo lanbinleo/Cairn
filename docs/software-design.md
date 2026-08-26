@@ -102,6 +102,10 @@ New manual trade-management records should be stored as Executions. TradeEvent r
 
 A Case is a continuous reasoning record created under an Account and Period. It can exist before a Trade is imported. CaseCard stores one immutable raw text entry in one of five phases: `pre-entry`, `entry`, `intermediate`, `closing`, or `reflection`. Each Card has one `barRef`; a Card never represents multiple BARs.
 
+`barRef` follows the TradingView Bar Count indicator convention: bar 1 is the first bar opening at UTC 00:00 of the day, incrementing by one per bar. `lib/bar-time.ts` converts between `barRef` and UTC time by pure arithmetic, which matches gapless 24/7 markets. Markets with session gaps will later need bar positioning from imported candles instead of time arithmetic.
+
+A Case spans from the end of the previous Trade to the next executed Trade. Pre-entry observation and non-executed Entry ideas stay in the same Case while the trader keeps observing. A Case that never leads to an executed Trade remains as an observation-only record.
+
 An Entry CaseCard can be marked `pending`, `executed`, or `continue-observing`. A non-executed Entry remains an Entry in stored data but is displayed with Pre-entry observations. Explicit BAR references are mechanically extracted without rewriting the raw text.
 
 Case and Trade use a separate CaseTradeBinding. Active bindings are one-to-one in both directions. Case Tags use CaseTagDef and are independent from Trade TagDef.
@@ -218,6 +222,18 @@ Imported source files are copied into the app data directory under `attachments/
 Data coverage is organized around the selected timeframe. The Data page prioritizes missing symbol/month combinations so the user can work through incomplete data first. Coverage summaries are derived from expected bar timestamps for the timeframe and the candles already present in `chart_candles`.
 
 Chart candle imports are persisted in batches through a native command so a multi-thousand-row CSV does not issue one frontend-to-Rust write per candle.
+
+## Local REST API
+
+Cairn runs a local HTTP service for companion scripts (planned TradingView capture widget) to write Case data without opening the main window. Implementation lives in `src-tauri/src/api.rs` and reuses the same SQLite write path as the app UI, so raw-text immutability and one-to-one binding constraints behave identically.
+
+- The server binds to `127.0.0.1` only and starts with the app; closing the window hides to tray and the API keeps running.
+- Configuration and a 32-byte random token are stored in `app_data_dir/api-config.json` (atomic tmp+rename writes). Default port is 8787. Port and enabled flag changes apply after restart; token regeneration applies immediately.
+- All endpoints except `GET /api/v1/health` require `Authorization: Bearer <token>`. Responses include permissive CORS headers and handle OPTIONS preflight so both `GM_xmlhttpRequest` and plain `fetch` clients work.
+- Endpoints: `GET /api/v1/health`, `GET/POST /api/v1/cases`, `GET /api/v1/cases/:id`, `GET/POST /api/v1/cases/:id/cards`, `POST /api/v1/bindings`, `DELETE /api/v1/bindings/:id`, `GET/POST /api/v1/case-tags`, `GET /api/v1/accounts` (with nested periods for capture context).
+- Card creation requires `phase`, `rawText`, and a positive integer `barRef`. Creation is idempotent: clients submit a stable `id`; replaying the same content returns the stored record, while replaying the same id with different raw text is rejected with 409.
+- The API never accepts order placement, position modification, or Trade writes.
+- Successful writes emit a `cairn://data-changed` Tauri event; the React store debounces and rehydrates so the UI reflects external writes without polling.
 
 ## Backup
 
