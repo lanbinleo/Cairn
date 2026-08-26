@@ -11,7 +11,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { computeTradeMetrics } from '@/lib/metrics'
 import { fmtUtcDateTime, fmtDuration } from '@/lib/format'
 import { useCairn } from '@/lib/store'
-import { uniqueTagNames } from '@/lib/tags'
+import { sortTagNamesByColor } from '@/lib/tags'
 import type { Trade } from '@/lib/types'
 import { cn } from '@/lib/utils'
 
@@ -69,7 +69,7 @@ export function TradesTable({
   /** 是否显示 账户/Period 列（全局交易列表用） */
   showContext?: boolean
 }) {
-  const { getAccount, getPeriod, symbols } = useCairn()
+  const { getAccount, getPeriod, symbols, tagDefs } = useCairn()
   const sorted = [...trades].sort((a, b) => computeTradeMetrics(b).entryTime - computeTradeMetrics(a).entryTime)
 
   const symbolLabel = (symbolId: string) => {
@@ -101,7 +101,7 @@ export function TradesTable({
           const symbol = symbols.find((x) => x.id === trade.symbolId)
           const symbolFull = symbol ? `${symbol.exchange}:${symbol.code}` : trade.symbolId
           const symbolShort = symbol ? compactSymbolCode(symbol.code) : symbolLabel(trade.symbolId)
-          const tags = uniqueTagNames(trade.tags)
+          const tags = sortTagNamesByColor(trade.tags, tagDefs)
           return (
             <TableRow key={trade.id} className="group">
               <TableCell>

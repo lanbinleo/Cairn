@@ -1,4 +1,8 @@
-import type { TagDef } from './types'
+import type { TagColor, TagDef } from './types'
+
+export const TAG_COLOR_ORDER: TagColor[] = ['red', 'orange', 'yellow', 'green', 'cyan', 'blue', 'purple']
+
+const tagColorRank = new Map<TagColor, number>(TAG_COLOR_ORDER.map((color, index) => [color, index]))
 
 export function normalizeTagName(name: string): string {
   return name.trim().replace(/\s+/g, ' ')
@@ -28,6 +32,30 @@ export function uniqueTagNames(names: readonly string[]): string[] {
   }
 
   return tags
+}
+
+export function compareTagDefsByColor(a: TagDef, b: TagDef): number {
+  const colorDiff = (tagColorRank.get(a.color) ?? TAG_COLOR_ORDER.length) - (tagColorRank.get(b.color) ?? TAG_COLOR_ORDER.length)
+  if (colorDiff !== 0) return colorDiff
+  const nameDiff = a.name.localeCompare(b.name, undefined, { sensitivity: 'base' })
+  if (nameDiff !== 0) return nameDiff
+  return a.createdAt - b.createdAt
+}
+
+export function sortTagDefsByColor(tagDefs: readonly TagDef[]): TagDef[] {
+  return [...tagDefs].sort(compareTagDefsByColor)
+}
+
+export function sortTagNamesByColor(names: readonly string[], tagDefs: readonly TagDef[]): string[] {
+  const defByKey = new Map(tagDefs.map((tag) => [tagNameKey(tag.name), tag]))
+  return uniqueTagNames(names).sort((a, b) => {
+    const defA = defByKey.get(tagNameKey(a))
+    const defB = defByKey.get(tagNameKey(b))
+    if (defA && defB) return compareTagDefsByColor(defA, defB)
+    if (defA) return -1
+    if (defB) return 1
+    return a.localeCompare(b, undefined, { sensitivity: 'base' })
+  })
 }
 
 export function findTagByName(tagDefs: readonly TagDef[], name: string, exceptId?: string): TagDef | undefined {

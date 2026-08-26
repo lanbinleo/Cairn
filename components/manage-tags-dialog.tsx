@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Check, Plus, Tags, Trash2 } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
@@ -118,8 +118,17 @@ export function ManageTagsDialog() {
   const { tagDefs, createTag } = useCairn()
   const [newName, setNewName] = useState('')
   const [newColor, setNewColor] = useState<TagColor>('blue')
+  const [colorFilter, setColorFilter] = useState<TagColor | 'all'>('all')
   const normalizedNewName = normalizeTagName(newName)
   const duplicateNewName = Boolean(normalizedNewName && findTagByName(tagDefs, normalizedNewName))
+  const sortedTagDefs = useMemo(
+    () => [...tagDefs].sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }) || a.createdAt - b.createdAt),
+    [tagDefs],
+  )
+  const visibleTagDefs = useMemo(
+    () => (colorFilter === 'all' ? sortedTagDefs : sortedTagDefs.filter((tag) => tag.color === colorFilter)),
+    [colorFilter, sortedTagDefs],
+  )
 
   function handleCreate() {
     if (!normalizedNewName || duplicateNewName) return
@@ -166,13 +175,45 @@ export function ManageTagsDialog() {
             </Button>
           </div>
 
+          <div className="flex flex-wrap items-center gap-1.5 py-2" role="group" aria-label="按颜色筛选标签">
+            <button
+              type="button"
+              aria-pressed={colorFilter === 'all'}
+              onClick={() => setColorFilter('all')}
+              className={cn(
+                'inline-flex h-7 items-center rounded-full px-2.5 text-xs font-medium transition-colors',
+                colorFilter === 'all' ? 'bg-primary/12 text-primary ring-1 ring-primary/30' : 'bg-muted text-muted-foreground hover:text-foreground',
+              )}
+            >
+              全部
+            </button>
+            {TAG_COLORS.map((color) => (
+              <button
+                key={color}
+                type="button"
+                aria-pressed={colorFilter === color}
+                aria-label={`筛选${tagColorNames[color]}色标签`}
+                onClick={() => setColorFilter(color)}
+                className={cn(
+                  'inline-flex h-7 items-center gap-1.5 rounded-full px-2.5 text-xs font-medium transition-colors',
+                  colorFilter === color ? 'bg-primary/12 text-primary ring-1 ring-primary/30' : 'bg-muted text-muted-foreground hover:text-foreground',
+                )}
+              >
+                <span className={cn('size-2 rounded-full', tagDotClasses[color])} aria-hidden="true" />
+                {tagColorNames[color]}
+              </button>
+            ))}
+          </div>
+
           <Separator className="my-1" />
 
           {tagDefs.length === 0 ? (
             <p className="py-6 text-center text-sm text-muted-foreground">还没有标签，先创建一个吧</p>
+          ) : visibleTagDefs.length === 0 ? (
+            <p className="py-6 text-center text-sm text-muted-foreground">这个颜色下还没有标签</p>
           ) : (
             <div className="flex flex-col divide-y">
-              {tagDefs.map((tag) => (
+              {visibleTagDefs.map((tag) => (
                 <TagRow key={tag.id} tag={tag} />
               ))}
             </div>

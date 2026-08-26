@@ -21,7 +21,7 @@ import {
 } from '@/components/ui/select'
 import { computeTradeMetrics } from '@/lib/metrics'
 import { useCairn } from '@/lib/store'
-import { findTagByName, tagNameKey, tagNamesEqual, uniqueTagNames } from '@/lib/tags'
+import { findTagByName, sortTagDefsByColor, tagNameKey, tagNamesEqual, uniqueTagNames } from '@/lib/tags'
 import { getPossibleDuplicateTrade } from '@/lib/trade-duplicates'
 import { parseTradeTransferPayload, type TradeTransferPayload } from '@/lib/trade-transfer'
 import type { Execution, Trade, TradeEvent } from '@/lib/types'
@@ -52,6 +52,7 @@ export default function TradesPage() {
     () => (accountId === ALL ? periods : periods.filter((p) => p.accountId === accountId)),
     [accountId, periods],
   )
+  const sortedTagDefs = useMemo(() => sortTagDefsByColor(tagDefs), [tagDefs])
 
   function toggleTag(name: string) {
     setActiveTags((prev) => {
@@ -279,7 +280,7 @@ export default function TradesPage() {
 
       {tagDefs.length > 0 && (
         <div className="flex flex-wrap items-center gap-1.5" role="group" aria-label="按标签筛选">
-          {tagDefs.map((tag) => {
+          {sortedTagDefs.map((tag) => {
             const active = activeTags.includes(tag.name)
             return (
               <button
