@@ -17,6 +17,14 @@ import {
 } from '@/components/ui/dialog'
 import { Field, FieldDescription, FieldGroup, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
+import {
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Textarea } from '@/components/ui/textarea'
 import { barIndexToTime, barNumberToTime, barsPerDay, isValidBarNumber, timeToBarIndex, timeToBarNumber, utcDayStart } from '@/lib/bar-time'
@@ -30,28 +38,37 @@ import {
 } from '@/lib/executions'
 import { fmtPrice, fmtUtcDate, fmtUtcTime } from '@/lib/format'
 import { useCairn } from '@/lib/store'
-import { findTagByName, normalizeTagName, tagNamesEqual, uniqueTagNames } from '@/lib/tags'
+import { findTagByName, normalizeTagName, sortTagDefsByColor, sortTagNamesByColor, tagNamesEqual, uniqueTagNames } from '@/lib/tags'
 import type { Execution, ExecutionAction, OrderType, TagColor, Trade } from '@/lib/types'
 import { cn } from '@/lib/utils'
 
 const EXECUTION_TIMEFRAME_MINUTES = 5
 
 const SIGNAL_OPTIONS = [
-  'Entry',
-  'Exit',
-  'Scale In',
-  'Scale Out',
-  'TP1',
-  'TP2',
-  'TP3',
-  'SL',
-  'Break Even',
-  'Trailing Stop',
-  'Move Stop',
-  'Move Target',
-  'Order Updated',
-  'Manual',
+  'Trail / protect profit',
+  'Break even',
+  'Reduce risk',
+  'Widen stop / hold through',
+  'Structure changed',
+  'Target update',
+  'Manual order update',
+  'Other',
 ]
+
+const DEFAULT_REASON_BY_ACTION: Partial<Record<ExecutionAction, string>> = {
+  stop: 'Trail / protect profit',
+  'target-moved': 'Target update',
+  'order-edit': 'Manual order update',
+}
+
+const ORDER_TYPE_BY_ACTION: Partial<Record<ExecutionAction, OrderType>> = {
+  stop: 'stop-loss',
+  'target-moved': 'take-profit',
+  'order-edit': 'limit',
+}
+
+const MANUAL_ORDER_TYPES: OrderType[] = ['limit', 'stop', 'stop-limit']
+const POSITION_ORDER_TYPES: OrderType[] = ['market', 'limit', 'stop', 'stop-limit']
 
 function parseUtcDate(dateText: string) {
   const match = dateText.match(/^(\d{4})-(\d{2})-(\d{2})$/)
@@ -66,10 +83,65 @@ function optionalNumber(value: unknown) {
   return Number.isFinite(parsed) ? parsed : undefined
 }
 
-function normalizeExecution(execution: Execution, tradeId: string): Execution {
+function normalizeEditableAction(action: ExecutionAction): ExecutionAction {
+  if (action === 'stop-set' || action === 'stop-moved') return 'stop'
+  if (action === 'target-set') return 'target-moved'
+  return action
+}
+
+function reasonForAction(action: ExecutionAction, current?: string) {
+  if (!isManagementExecutionAction(action)) return current
+  if (current && SIGNAL_OPTIONS.includes(current)) return current
+  return DEFAULT_REASON_BY_ACTION[action]
+}
+
+function orderTypeForAction(action: ExecutionAction, current: OrderType): OrderType {
+  if (action === 'stop' || action === 'target-moved') return ORDER_TYPE_BY_ACTION[action] ?? current
+  if (action === 'order-edit') return MANUAL_ORDER_TYPES.includes(current) ? current : 'limit'
+  if (isPositionExecutionAction(action)) return POSITION_ORDER_TYPES.includes(current) ? current : 'market'
+  return current
+}
+
+function editableExecution(execution: Execution): Execution {
+  const action = normalizeEditableAction(execution.action)
   return {
     ...execution,
+    action,
+    orderType: orderTypeForAction(action, execution.orderType),
+    signal: reasonForAction(action, execution.signal),
+  }
+}
+
+function orderOptionsForExecution(execution: Execution) {
+  const action = normalizeEditableAction(execution.action)
+  let allowed: OrderType[]
+  if (action === 'stop') {
+    allowed = ['stop-loss']
+  } else if (action === 'target-moved') {
+    allowed = ['take-profit']
+  } else if (action === 'order-edit') {
+    allowed = MANUAL_ORDER_TYPES
+  } else if (isPositionExecutionAction(action)) {
+    allowed = POSITION_ORDER_TYPES
+  } else {
+    allowed = ORDER_TYPE_OPTIONS.map((option) => option.value)
+  }
+
+  const options = ORDER_TYPE_OPTIONS.filter((option) => allowed.includes(option.value))
+  if (!options.some((option) => option.value === execution.orderType)) {
+    const current = ORDER_TYPE_OPTIONS.find((option) => option.value === execution.orderType)
+    if (current) return [current, ...options]
+  }
+  return options
+}
+
+function normalizeExecution(execution: Execution, tradeId: string): Execution {
+  const action = normalizeEditableAction(execution.action)
+  return {
+    ...execution,
+    action,
     tradeId,
+    orderType: orderTypeForAction(action, execution.orderType),
     price: optionalNumber(execution.price),
     quantity: optionalNumber(execution.quantity),
     anchorPrice: optionalNumber(execution.anchorPrice),
@@ -95,25 +167,26 @@ export function EditTradeDialog({ trade }: { trade: Trade }) {
   const [sl, setSl] = useState(trade.initialStopLoss?.toString() ?? '')
   const [tp, setTp] = useState(trade.initialTakeProfit?.toString() ?? '')
   const [status, setStatus] = useState(trade.status)
-  const [executionRows, setExecutionRows] = useState<Execution[]>(trade.executions)
+  const [executionRows, setExecutionRows] = useState<Execution[]>(trade.executions.map(editableExecution))
   const [expandedExecutionIds, setExpandedExecutionIds] = useState<Set<string>>(new Set())
   const [draggingExecutionId, setDraggingExecutionId] = useState<string | null>(null)
   const draggingExecutionIdRef = useRef<string | null>(null)
-  const [selectedTags, setSelectedTags] = useState<string[]>(uniqueTagNames(trade.tags))
+  const [selectedTags, setSelectedTags] = useState<string[]>(sortTagNamesByColor(trade.tags, tagDefs))
   const [newTagName, setNewTagName] = useState('')
   const [newTagColor, setNewTagColor] = useState<TagColor>('blue')
   const normalizedNewTagName = normalizeTagName(newTagName)
+  const sortedTagDefs = sortTagDefsByColor(tagDefs)
 
   function resetForm() {
     setNote(trade.note ?? '')
     setSl(trade.initialStopLoss?.toString() ?? '')
     setTp(trade.initialTakeProfit?.toString() ?? '')
     setStatus(trade.status)
-    setExecutionRows(trade.executions.map((execution) => ({ ...execution })))
+    setExecutionRows(trade.executions.map((execution) => editableExecution({ ...execution })))
     setExpandedExecutionIds(new Set())
     setDraggingExecutionId(null)
     draggingExecutionIdRef.current = null
-    setSelectedTags(uniqueTagNames(trade.tags))
+    setSelectedTags(sortTagNamesByColor(trade.tags, tagDefs))
     setNewTagName('')
     setNewTagColor('blue')
   }
@@ -144,7 +217,7 @@ export function EditTradeDialog({ trade }: { trade: Trade }) {
       executions: executionRows
         .map((execution) => normalizeExecution(execution, trade.id))
         .filter(canSaveExecution),
-      tags: uniqueTagNames(selectedTags),
+      tags: sortTagNamesByColor(selectedTags, tagDefs),
     })
     if (status !== trade.status) setTradeStatus(trade.id, status)
     setOpen(false)
@@ -157,11 +230,14 @@ export function EditTradeDialog({ trade }: { trade: Trade }) {
   function updateExecutionAction(index: number, action: ExecutionAction) {
     const execution = executionRows[index]
     if (!execution) return
-    const patch: Partial<Execution> = { action }
-    if (action.startsWith('stop')) patch.orderType = 'stop-loss'
-    if (action.startsWith('target')) patch.orderType = 'take-profit'
-    if (isPositionExecutionAction(action) && execution.quantity == null) patch.quantity = 1
-    if (isManagementExecutionAction(action) && execution.anchorPrice == null) patch.anchorPrice = execution.price
+    const nextAction = normalizeEditableAction(action)
+    const patch: Partial<Execution> = {
+      action: nextAction,
+      orderType: orderTypeForAction(nextAction, execution.orderType),
+      signal: reasonForAction(nextAction, execution.signal),
+    }
+    if (isPositionExecutionAction(nextAction) && execution.quantity == null) patch.quantity = 1
+    if (isManagementExecutionAction(nextAction) && execution.anchorPrice == null) patch.anchorPrice = execution.price
     updateExecution(index, patch)
   }
 
@@ -300,12 +376,6 @@ export function EditTradeDialog({ trade }: { trade: Trade }) {
           <DialogDescription>整理基本信息、复盘备注与 executions</DialogDescription>
         </DialogHeader>
 
-        <datalist id="execution-signal-options">
-          {SIGNAL_OPTIONS.map((option) => (
-            <option key={option} value={option} />
-          ))}
-        </datalist>
-
         <Tabs defaultValue="basic">
           <TabsList>
             <TabsTrigger value="basic">基本信息</TabsTrigger>
@@ -342,7 +412,7 @@ export function EditTradeDialog({ trade }: { trade: Trade }) {
               <Field>
                 <FieldLabel>标签</FieldLabel>
                 <div className="flex flex-wrap gap-1.5">
-                  {tagDefs.map((def) => {
+                  {sortedTagDefs.map((def) => {
                     const active = selectedTags.some((tag) => tagNamesEqual(tag, def.name))
                     return (
                       <button key={def.id} type="button" onClick={() => toggleTag(def.name)} className="rounded-full">
@@ -430,7 +500,9 @@ export function EditTradeDialog({ trade }: { trade: Trade }) {
                   const currentOrderTypeLabel = orderTypeLabel[execution.orderType] ?? execution.orderType
                   const isPositionAction = isPositionExecutionAction(execution.action)
                   const isManagementAction = isManagementExecutionAction(execution.action)
-                  const priceLabel = isManagementAction ? '目标价' : '价格'
+                  const orderOptions = orderOptionsForExecution(execution)
+                  const orderTypeLocked = execution.action === 'stop' || execution.action === 'target-moved'
+                  const priceLabel = execution.action === 'stop' ? 'Stop price' : execution.action === 'target-moved' ? 'Target price' : isManagementAction ? 'Order price' : '价格'
                   const summaryPrice = execution.price == null ? '—' : fmtPrice(execution.price)
                   const summary = isPositionAction
                     ? `${actionLabel} · ${execution.quantity ?? '—'} @ ${summaryPrice}`
@@ -539,10 +611,11 @@ export function EditTradeDialog({ trade }: { trade: Trade }) {
                             <select
                               id={`execution-order-${execution.id}`}
                               value={execution.orderType}
+                              disabled={orderTypeLocked}
                               onChange={(event) => updateExecution(index, { orderType: event.target.value as OrderType })}
-                              className="h-8 rounded-lg border border-input bg-background px-2 text-sm"
+                              className="h-8 rounded-lg border border-input bg-background px-2 text-sm disabled:cursor-not-allowed disabled:opacity-70"
                             >
-                              {ORDER_TYPE_OPTIONS.map((option) => (
+                              {orderOptions.map((option) => (
                                 <option key={option.value} value={option.value}>
                                   {option.label}
                                 </option>
@@ -586,14 +659,39 @@ export function EditTradeDialog({ trade }: { trade: Trade }) {
                             </Field>
                           )}
                           <Field className="col-span-2">
-                            <FieldLabel htmlFor={`execution-signal-${execution.id}`}>Signal</FieldLabel>
-                            <Input
-                              id={`execution-signal-${execution.id}`}
-                              list="execution-signal-options"
-                              value={execution.signal ?? ''}
-                              onChange={(event) => updateExecution(index, { signal: event.target.value || undefined })}
-                              placeholder="选择常用 signal 或直接输入"
-                            />
+                            {isManagementAction ? (
+                              <>
+                                <FieldLabel>Reason</FieldLabel>
+                                <Select
+                                  items={SIGNAL_OPTIONS.map((option) => ({ value: option, label: option }))}
+                                  value={execution.signal ?? ''}
+                                  onValueChange={(value) => updateExecution(index, { signal: String(value) || undefined })}
+                                >
+                                  <SelectTrigger className="w-full">
+                                    <SelectValue placeholder="Reason" />
+                                  </SelectTrigger>
+                                  <SelectContent>
+                                    <SelectGroup>
+                                      {SIGNAL_OPTIONS.map((option) => (
+                                        <SelectItem key={option} value={option}>
+                                          {option}
+                                        </SelectItem>
+                                      ))}
+                                    </SelectGroup>
+                                  </SelectContent>
+                                </Select>
+                              </>
+                            ) : (
+                              <>
+                                <FieldLabel htmlFor={`execution-signal-${execution.id}`}>Signal</FieldLabel>
+                                <Input
+                                  id={`execution-signal-${execution.id}`}
+                                  value={execution.signal ?? ''}
+                                  onChange={(event) => updateExecution(index, { signal: event.target.value || undefined })}
+                                  placeholder="TradingView signal"
+                                />
+                              </>
+                            )}
                           </Field>
                         </div>
                       )}
