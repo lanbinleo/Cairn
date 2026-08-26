@@ -1,3 +1,4 @@
+mod ai;
 mod api;
 mod db;
 mod diagnostics;
@@ -116,6 +117,29 @@ fn regenerate_api_token(app: AppHandle) -> Result<api::ApiStatus, String> {
 #[tauri::command]
 fn set_api_config(app: AppHandle, enabled: bool, port: u16) -> Result<api::ApiStatus, String> {
     api::set_config(&app, enabled, port)
+}
+
+#[tauri::command]
+fn list_ai_providers(app: AppHandle) -> Result<Vec<ai::AiProvider>, String> {
+    ai::list(&app)
+}
+
+#[tauri::command]
+fn save_ai_provider(app: AppHandle, provider: ai::AiProvider) -> Result<Vec<ai::AiProvider>, String> {
+    let name = provider.name.clone();
+    let providers = ai::save(&app, provider)?;
+    ai::log_provider_event(&app, format!("provider saved: {name}"));
+    Ok(providers)
+}
+
+#[tauri::command]
+fn delete_ai_provider(app: AppHandle, id: String) -> Result<Vec<ai::AiProvider>, String> {
+    ai::delete(&app, id)
+}
+
+#[tauri::command]
+async fn fetch_ai_models(base_url: String, api_key: String) -> Result<Vec<String>, String> {
+    ai::fetch_models(base_url, api_key).await
 }
 
 #[derive(Serialize)]
@@ -272,6 +296,10 @@ pub fn run() {
             get_api_status,
             regenerate_api_token,
             set_api_config,
+            list_ai_providers,
+            save_ai_provider,
+            delete_ai_provider,
+            fetch_ai_models,
             save_attachment_file,
             read_attachment_file,
             save_chart_source_file

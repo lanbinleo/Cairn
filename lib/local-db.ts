@@ -166,3 +166,38 @@ export async function setApiConfig(enabled: boolean, port: number): Promise<ApiS
   if (!isTauriRuntime()) return offlineApiStatus
   return invoke<ApiStatus>('set_api_config', { enabled, port })
 }
+
+/* ---------- AI Provider 管理 ---------- */
+
+export interface AiProvider {
+  id: string
+  name: string
+  baseUrl: string
+  apiKey: string
+  presetId?: string
+  defaultModel?: string
+  isDefault: boolean
+  createdAt: number
+  updatedAt: number
+}
+
+const offlineProviders: AiProvider[] = []
+
+export async function listAiProviders(): Promise<AiProvider[]> {
+  if (!isTauriRuntime()) return offlineProviders
+  return invoke<AiProvider[]>('list_ai_providers')
+}
+
+export async function saveAiProvider(provider: AiProvider): Promise<AiProvider[]> {
+  if (!isTauriRuntime()) return offlineProviders
+  return invoke<AiProvider[]>('save_ai_provider', { provider })
+}
+
+export async function deleteAiProvider(id: string): Promise<AiProvider[]> {
+  if (!isTauriRuntime()) return offlineProviders
+  return invoke<AiProvider[]>('delete_ai_provider', { id })
+}
+
+export async function fetchAiModels(baseUrl: string, apiKey: string): Promise<string[]> {
+  return invoke<string[]>('fetch_ai_models', { baseUrl, apiKey })
+}

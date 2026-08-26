@@ -4,13 +4,15 @@ import { invoke } from '@tauri-apps/api/core'
 import { relaunch } from '@tauri-apps/plugin-process'
 import { check } from '@tauri-apps/plugin-updater'
 import { useTheme } from 'next-themes'
+import { Pencil, Plus, Star, Trash2 } from 'lucide-react'
 import type { ReactNode } from 'react'
 import { useEffect, useState } from 'react'
-import { Check, Copy, RefreshCw, Trash2 } from 'lucide-react'
+import { Check, Copy, RefreshCw } from 'lucide-react'
 
 import { PageHeader } from '@/components/page-header'
 import { CreateSymbolDialog } from '@/components/create-symbol-dialog'
 import { BackupCard } from '@/components/backup-card'
+import { AiProviderBadge, AiProviderDialog } from '@/components/ai-provider-dialog'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -34,7 +36,7 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { getApiStatus, regenerateApiToken, setApiConfig, type ApiStatus } from '@/lib/local-db'
+import { deleteAiProvider, getApiStatus, listAiProviders, regenerateApiToken, setApiConfig, type AiProvider, type ApiStatus } from '@/lib/local-db'
 import { useCairn } from '@/lib/store'
 
 const categoryLabel: Record<string, string> = {
@@ -84,6 +86,9 @@ export default function SettingsPage() {
   const [apiMessage, setApiMessage] = useState('')
   const [copiedToken, setCopiedToken] = useState(false)
   const [savingApi, setSavingApi] = useState(false)
+  const [aiProviders, setAiProviders] = useState<AiProvider[]>([])
+  const [aiDialogOpen, setAiDialogOpen] = useState(false)
+  const [editingProvider, setEditingProvider] = useState<AiProvider | null>(null)
 
   useEffect(() => setMounted(true), [])
 
@@ -98,6 +103,7 @@ export default function SettingsPage() {
         setApiPortDraft(String(status.port))
       })
       .catch(() => undefined)
+    void listAiProviders().then(setAiProviders).catch(() => undefined)
   }, [])
 
   function applyApiStatus(status: ApiStatus) {
@@ -187,6 +193,7 @@ export default function SettingsPage() {
           <TabsTrigger value="data" className="px-4">数据</TabsTrigger>
           <TabsTrigger value="docs" className="px-4">文档</TabsTrigger>
           <TabsTrigger value="api" className="px-4">本地 API</TabsTrigger>
+          <TabsTrigger value="ai" className="px-4">AI</TabsTrigger>
           <TabsTrigger value="logs" className="px-4">日志</TabsTrigger>
           <TabsTrigger value="about" className="px-4">关于</TabsTrigger>
         </TabsList>
@@ -510,6 +517,84 @@ export default function SettingsPage() {
           </Card>
         </TabsContent>
 
+        <TabsContent value="ai">
+          <Card>
+            <CardHeader>
+              <CardTitle>AI Providers</CardTitle>
+              <CardDescription>OpenAI compatible 接口配置；AI 识别与完整性检查将使用默认 Provider</CardDescription>
+              <CardAction>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={!isTauriRuntime()}
+                  onClick={() => {
+                    setEditingProvider(null)
+                    setAiDialogOpen(true)
+                  }}
+                >
+                  <Plus data-icon="inline-start" />
+                  添加 Provider
+                </Button>
+              </CardAction>
+            </CardHeader>
+            <CardContent>
+              {aiProviders.length === 0 ? (
+                <div className="flex min-h-[120px] flex-col items-center justify-center gap-2 text-sm text-muted-foreground">
+                  <span>还没有配置 AI Provider。</span>
+                </div>
+              ) : (
+                <div className="flex flex-col">
+                  {aiProviders.map((provider) => (
+                    <div key={provider.id} className="flex items-center gap-3 border-b py-3.5 last:border-b-0">
+                      <AiProviderBadge presetId={provider.presetId} />
+                      <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+                        <div className="flex items-center gap-2">
+                          <span className="truncate text-sm font-medium">{provider.name}</span>
+                          {provider.isDefault && (
+                            <Badge variant="secondary" className="gap-1">
+                              <Star className="size-3" />
+                              默认
+                            </Badge>
+                          )}
+                        </div>
+                        <span className="truncate font-mono text-xs text-muted-foreground">
+                          {provider.baseUrl}
+                          {provider.defaultModel ? ` · ${provider.defaultModel}` : ''}
+                        </span>
+                      </div>
+                      <div className="flex shrink-0 items-center gap-1">
+                        <Button
+                          variant="ghost"
+                          size="icon-sm"
+                          aria-label={`编辑 ${provider.name}`}
+                          onClick={() => {
+                            setEditingProvider(provider)
+                            setAiDialogOpen(true)
+                          }}
+                        >
+                          <Pencil />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="icon-sm"
+                          aria-label={`删除 ${provider.name}`}
+                          onClick={() => {
+                            if (window.confirm(`删除 AI Provider「${provider.name}」？`)) {
+                              void deleteAiProvider(provider.id).then(setAiProviders)
+                            }
+                          }}
+                        >
+                          <Trash2 />
+                        </Button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </TabsContent>
+
         <TabsContent value="logs">
           <Card>
             <CardHeader>
@@ -560,6 +645,16 @@ export default function SettingsPage() {
           </Card>
         </TabsContent>
       </Tabs>
+
+      <AiProviderDialog
+        open={aiDialogOpen}
+        onOpenChange={setAiDialogOpen}
+        provider={editingProvider}
+        onSaved={(providers) => {
+          setAiProviders(providers)
+          setAiDialogOpen(false)
+        }}
+      />
     </div>
   )
 }
