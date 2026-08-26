@@ -112,7 +112,7 @@
 
 ## Stage 5：AI
 
-状态：未开始。
+状态：基础设施已开始；provider 配置已交付（Settings 新增 AI 分区：OpenAI compatible 多 provider、`/models` 模型获取与连接测试、国内外 presets、默认 Provider 标记；凭证存本机 `ai-providers.json`，不进备份）。识别、检查单与版本化派生结果未开始。
 
 计划：
 

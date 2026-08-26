@@ -237,6 +237,16 @@ Cairn runs a local HTTP service for companion scripts (planned TradingView captu
 - The API never accepts order placement, position modification, or Trade writes.
 - Successful writes emit a `cairn://data-changed` Tauri event; the React store debounces and rehydrates so the UI reflects external writes without polling.
 
+## AI Providers
+
+Cairn talks to OpenAI-compatible chat APIs through user-configured providers. Implementation lives in `src-tauri/src/ai.rs`; the Settings page has a dedicated AI tab.
+
+- Providers are OpenAI-compatible endpoints with a name, base URL, optional API key, and an optional default model. Common presets (OpenAI, Anthropic, OpenRouter, Gemini, Groq, DeepSeek, Zhipu GLM, Kimi, Qwen, SiliconFlow, local Ollama, custom) prefill the base URL and show a branded badge.
+- Model discovery uses `GET {base_url}/models` with Bearer auth (omitted for keyless local endpoints). A successful fetch doubles as a connection test.
+- One provider is marked default; AI features (Stage 5 card extraction and completeness checks) will use it.
+- Credentials are configuration, not data: they are stored in `app_data_dir/ai-providers.json` (atomic writes) and are excluded from backups and restores.
+- The client is a thin reqwest layer rather than an SDK; chat calls stay a `chat(provider, messages, schema)`-style function so requests and responses remain fully recordable for provenance (model/prompt/schema versions).
+
 ## Backup
 
 Cairn exports JSON backups containing a version, timestamp, backup kind, and full hydrated state. Restore replaces the local app state.
