@@ -271,14 +271,12 @@
     background: rgba(255,182,72,.1);
     border: 1px solid rgba(255,182,72,.4);
     border-radius: 10px;
-    padding: 9px 11px;
-    font-size: 11.5px;
+    padding: 8px 11px;
+    font-size: 12px;
     line-height: 1.6;
     color: var(--warn);
   }
   #completeness-tip.show { display: block; animation: pop .2s ease; }
-  #completeness-tip .ct-title { font-weight: 600; margin-bottom: 2px; }
-  #completeness-tip .ct-note { color: var(--text-dim); }
   #completeness-tip button {
     background: none; border: none; color: var(--text-dim);
     cursor: pointer; font-size: 12px; padding: 0; float: right;
@@ -364,7 +362,7 @@
   <span class="symbol">BINANCE:BTCUSDT</span>
   <span class="tf">5m</span>
   <span class="tf">Bar Count</span>
-  <span class="utc">图表时区 UTC · 底部橙色数字 = 当前 BAR 序号（PineScript Bar Count 效果）</span>
+  <span class="utc">UTC · 底部橙字 = BAR 序号</span>
 </div>
 
 <div id="chart-area">
@@ -372,7 +370,7 @@
 </div>
 
 <div id="hint">
-  <span>Mock v2：✎ 记一笔展开 / ⌄ 收起，球常驻不消失；拖球或标题栏移动（松手不会误触）；文字里提到 BAR 号自动提取；entry 卡提交后有完整性检查雏形；点击图表空白收起面板</span>
+  <span>Mock：球与面板可拖动；点图表空白处收起面板</span>
   <button id="hint-close" aria-label="关闭说明">✕</button>
 </div>
 
@@ -420,26 +418,16 @@
         </div>
       </div>
 
-      <textarea id="card-input" placeholder="想到什么说什么，思想交给你，填表交给 AI……&#10;例：BAR41 出现明显顶部结构，如果下一根走弱我就离场" spellcheck="false"></textarea>
+      <textarea id="card-input" placeholder="想到什么说什么……" spellcheck="false"></textarea>
 
       <div id="input-row">
-        <input id="bar-input" inputmode="numeric" placeholder="BAR № 选填">
-        <span class="bar-label">在文字里提到 BAR41 会自动提取</span>
-        <button id="mic-btn" title="语音输入提示">🎤</button>
+        <input id="bar-input" inputmode="numeric" placeholder="BAR №">
         <button id="submit-btn">提交 ⌘↵</button>
       </div>
 
       <div id="completeness-tip">
         <button id="ct-close" title="知道了">✕</button>
-        <div class="ct-title">📋 完整性提示（将来由 AI 检查）</div>
         <div id="ct-body"></div>
-        <div class="ct-note">原文提交后不可改写；要补充就再记一张卡。</div>
-      </div>
-
-      <div id="mic-tip">
-        🎤 请使用<b>系统语音输入</b>直接对本输入框说话：<br>
-        Windows 按 <b>Win + H</b>；macOS 连按两次 <b>Fn</b>（听写）。<br>
-        本 mock 不内置录音；Cairn 0.2.0 只保存提交后的文字。
       </div>
     </div>
 
@@ -583,8 +571,8 @@ function renderCards() {
     el.className = 'mock-card';
     el.style.setProperty('--pc', meta.color);
     const barHtml = card.bar
-      ? `<span class="mc-bar">BAR ${card.bar}${card.extracted ? ' ·自动' : ''}</span>`
-      : `<span class="mc-bar none">无 BAR 锚点</span>`;
+      ? `<span class="mc-bar">BAR ${card.bar}</span>`
+      : '';
     el.innerHTML = `
       <div class="mc-meta">
         <span class="mc-phase">${meta.label}</span>
@@ -641,10 +629,7 @@ document.querySelector('.ed-row').addEventListener('click', e => {
   b.classList.add('active');
 });
 
-/* ---- 语音提示 ---- */
-document.getElementById('mic-btn').addEventListener('click', () => {
-  document.getElementById('mic-tip').classList.toggle('show');
-});
+/* ---- 语音提示已移除（系统语音输入直接可用） ---- */
 
 /* ---- 提交：BAR 选填，自动提取 ---- */
 function submitCard() {
@@ -657,7 +642,6 @@ function submitCard() {
   const card = {
     phase: currentPhase,
     bar,
-    extracted: !Number.isInteger(manualBar) && extracted != null,
     text,
     time: `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`,
   };
@@ -670,13 +654,12 @@ function submitCard() {
 
   const hints = checkCompleteness(card.phase, text);
   if (hints.length > 0) {
-    ctBody.innerHTML = `这条还没有提到：${hints.map(h => `<b>${h}</b>`).join('、')}。`;
+    ctBody.innerHTML = `还没提到：${hints.map(h => `<b>${h}</b>`).join('、')}`;
     ctTip.classList.add('show');
-    showToast(bar ? `✓ 已保存（mock）· 提取到 BAR ${bar}` : '✓ 已保存（mock）· 未发现 BAR 引用');
   } else {
     ctTip.classList.remove('show');
-    showToast(bar ? `✓ 已保存（mock）· 提取到 BAR ${bar}` : '✓ 已保存（mock）· 未发现 BAR 引用');
   }
+  showToast('✓ 已保存（mock）');
   ta.focus();
 }
 submitBtn.addEventListener('click', submitCard);
