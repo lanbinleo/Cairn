@@ -15,7 +15,7 @@
 
 ## Stage 1：Case 数据基础
 
-状态：已实现，等待联合测试。
+状态：已实现；typecheck/build/cargo check/cargo test 通过，等待隔离环境联合测试。
 
 范围：
 
@@ -40,7 +40,7 @@
 
 ## Stage 2：Case 管理页面
 
-状态：已实现，等待联合测试。
+状态：已实现；typecheck/build/cargo check/cargo test 通过，等待隔离环境联合测试。
 
 范围：
 
@@ -72,7 +72,7 @@
 
 ## Stage 3：Trade 页面整合
 
-状态：已实现，等待联合测试。
+状态：已实现；typecheck/build/cargo check/cargo test 通过，等待隔离环境联合测试。
 
 范围：
 
