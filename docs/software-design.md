@@ -39,10 +39,14 @@ Account
     Trade
       Execution
       TradeEvent
+    Case
+      CaseCard
 
 Shared:
   Symbol
   TagDef
+  CaseTagDef
+  CaseTradeBinding
   Note
   Attachment
   ImportBatch
@@ -67,14 +71,19 @@ Execution is an atomic trade action. It can be a position-changing fill or a tra
 
 - Pending action: `undecided`
 - Position-changing actions: `entry`, `scale-in`, `scale-out`, `exit`
-- Trade-management actions: `stop`, `target-set`, `target-moved`, `order-edit`
-- Legacy stop actions `stop-set` and `stop-moved` may still appear in restored/imported data. New manual UI records use `stop`; the app displays Set Stop or Move Stop from context.
+- Trade-management actions: `stop`, `target-moved`, `order-edit`
+- The manual UI labels `stop` as Move Stop. It records a stop-loss level change; if no previous stop exists, the first Move Stop establishes the active stop level.
+- The manual UI labels `target-moved` as Move Target. It records a take-profit level change; if no previous target exists, the first Move Target establishes the active target level.
+- Legacy actions `stop-set`, `stop-moved`, and `target-set` may still appear in restored/imported data. Editing and saving a trade may normalize them to `stop` or `target-moved`.
+- `order-edit` records ordinary pending-order creation or modification, such as limit, stop, or stop-limit order changes. It should not be used for normal stop-loss or take-profit movement.
 - `orderType`: `market`, `limit`, `stop`, `stop-limit`, `stop-loss`, `take-profit`, `trailing-stop`
+- Manual Move Stop defaults to `stop-loss`; manual Move Target defaults to `take-profit`; manual Add / Edit Order defaults to `limit`.
+- `trailing-stop` is retained for compatibility with imported or historical records. Manual trailing behavior is represented as Move Stop with a Reason such as Trail / protect profit, not as a trailing-stop order type by default.
 - `price` is the fill price for position-changing actions, or the stop/target/order price for management actions.
 - `quantity` is required for position-changing actions and may be empty for management actions.
 - `anchorPrice` is an optional manual anchor used to draw risk/reward zones for management stages.
 - Buy/sell meaning is derived from `Trade.direction` and position-changing `Execution.action`.
-- `signal` preserves TradingView text.
+- `signal` preserves TradingView text for position-changing records. For trade-management records, the UI presents it as Reason, for example Trail / protect profit, Break even, Reduce risk, Widen stop / hold through, Structure changed, Target update, Manual order update, or Other.
 - `sourceRef` preserves imported row identity.
 
 ### TradeEvent
@@ -88,6 +97,16 @@ TradeEvent is retained for imported chart annotations and legacy data:
 - `note`
 
 New manual trade-management records should be stored as Executions. TradeEvent records may still be rendered on the timeline and chart for compatibility.
+
+### Case And CaseCard
+
+A Case is a continuous reasoning record created under an Account and Period. It can exist before a Trade is imported. CaseCard stores one immutable raw text entry in one of five phases: `pre-entry`, `entry`, `intermediate`, `closing`, or `reflection`. Each Card has one `barRef`; a Card never represents multiple BARs.
+
+An Entry CaseCard can be marked `pending`, `executed`, or `continue-observing`. A non-executed Entry remains an Entry in stored data but is displayed with Pre-entry observations. Explicit BAR references are mechanically extracted without rewriting the raw text.
+
+Case and Trade use a separate CaseTradeBinding. Active bindings are one-to-one in both directions. Case Tags use CaseTagDef and are independent from Trade TagDef.
+
+Trade detail separates `Overview`, `Case`, and `Trade` views. Overview keeps the chart and trade result summary, shows the Case summary below the result card, renders extracted BAR references as Case Card markers, and combines Executions, legacy TradeEvents, and Case Cards into one Timeline. Chart markers expose their event or Card summary on hover; Case markers can open the corresponding Card. Case shows the same immutable Card text as the Case page and supports creating, selecting, binding, unbinding, and rebinding Cases. Trade contains numeric analysis and is the future home of process scoring and AI suggestions.
 
 ### ImportBatch
 
@@ -110,6 +129,11 @@ The Rust layer stores app data in entity tables:
 - `chart_data`
 - `notes`
 - `tag_defs`
+- `cases`
+- `case_cards`
+- `case_trade_bindings`
+- `case_tag_defs`
+- `case_tag_links`
 - `attachments`
 - `import_batches`
 
@@ -161,11 +185,11 @@ Trade charts can render execution management stages:
 - `Entry line`: an entry/average-entry reference line.
 - `Zones`: retained as an optional visual aid for risk/reward areas between an execution's `anchorPrice` and the active stop/target price.
 
-A management stage begins at a `stop`, `target-set`, `target-moved`, or `order-edit` execution and ends at the next stop/target/order-edit execution. If a field is not changed, the previous active stop or target continues through the next stage.
+A management stage begins at a `stop`, `target-moved`, `target-set`, or `order-edit` execution and ends at the next stop/target/order-edit execution. If a field is not changed, the previous active stop or target continues through the next stage.
 
 ## Tags
 
-TagDef is global. Trade tags reference tag names. Tag names are trimmed, whitespace-normalized, and unique by case-insensitive comparison. Renaming a TagDef updates all Trade tag references. Deleting a TagDef removes that tag from referencing trades after user confirmation. Trade list filtering uses AND semantics across selected tags.
+TagDef is global. Trade tags reference tag names. Tag names are trimmed, whitespace-normalized, and unique by case-insensitive comparison. Tag color is categorical, not decorative. Trade-tag groups should be displayed in color order from red to purple, with name order inside the same color. Renaming a TagDef updates all Trade tag references. Deleting a TagDef removes that tag from referencing trades after user confirmation. Trade list filtering uses AND semantics across selected tags. Tag management lists tags by localized name order and supports filtering by color.
 
 Note tags are text tags and are independent from Trade tags. Note tag input uses the same trimming and de-duplication behavior.
 
