@@ -8,7 +8,7 @@ use std::{
 use chrono::{Duration, Local, NaiveDate};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 use tauri::AppHandle;
 
 use crate::paths;
@@ -698,27 +698,49 @@ fn save_case(conn: &Connection, id: &str, data: Value) -> Result<(), String> {
     Ok(())
 }
 
-fn save_case_card(conn: &Connection, id: &str, data: Value) -> Result<(), String> {
+fn save_case_card(conn: &Connection, id: &str, mut data: Value) -> Result<(), String> {
     let raw_text = data
         .get("rawText")
         .and_then(Value::as_str)
-        .ok_or_else(|| "case card is missing rawText".to_string())?;
+        .ok_or_else(|| "case card is missing rawText".to_string())?
+        .to_string();
     if raw_text.trim().is_empty() {
         return Err("case card rawText cannot be empty".to_string());
     }
-    let existing_raw: Option<String> = conn
+    let existing: Option<(String, Value)> = conn
         .query_row(
-            "SELECT raw_text FROM case_cards WHERE id = ?1",
+            "SELECT raw_text, data FROM case_cards WHERE id = ?1",
             params![id],
-            |row| row.get(0),
+            |row| {
+                let raw: String = row.get(0)?;
+                let json: String = row.get(1)?;
+                Ok((raw, serde_json::from_str(&json).unwrap_or(Value::Null)))
+            },
         )
         .optional()
         .map_err(|err| err.to_string())?;
-    if existing_raw
-        .as_deref()
-        .is_some_and(|existing| existing != raw_text)
-    {
-        return Err("case card rawText is immutable".to_string());
+
+    // 错字修正允许修改 rawText，但旧值自动进入 rawTextHistory 并盖 rawTextEditedAt 时间戳；
+    // REST API 层仍按幂等语义拒绝同 id 不同 rawText 的重放。
+    if let Some((existing_raw, existing_data)) = existing {
+        if existing_raw != raw_text {
+            let mut history: Vec<Value> = existing_data
+                .get("rawTextHistory")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            history.push(json!(existing_raw));
+            if let Value::Object(map) = &mut data {
+                map.insert("rawTextHistory".to_string(), Value::Array(history));
+                map.insert(
+                    "rawTextEditedAt".to_string(),
+                    json!(std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_millis() as u64)
+                        .unwrap_or(0)),
+                );
+            }
+        }
     }
 
     let case_id = data
@@ -741,6 +763,7 @@ fn save_case_card(conn: &Connection, id: &str, data: Value) -> Result<(), String
         ON CONFLICT(id) DO UPDATE SET
           case_id=excluded.case_id,
           phase=excluded.phase,
+          raw_text=excluded.raw_text,
           data=excluded.data,
           updated_at=excluded.updated_at,
           deleted_at=NULL
@@ -1310,7 +1333,7 @@ mod tests {
     }
 
     #[test]
-    fn case_card_raw_text_cannot_be_rewritten() {
+    fn case_card_raw_text_edit_records_history() {
         let conn = Connection::open_in_memory().unwrap();
         migrate(&conn).unwrap();
         let original = serde_json::json!({
@@ -1323,15 +1346,24 @@ mod tests {
         });
         save_record_in_tx(&conn, "caseCards", "card-1", original).unwrap();
 
-        let rewritten = serde_json::json!({
+        let corrected = serde_json::json!({
             "id": "card-1",
             "caseId": "case-1",
             "phase": "entry",
-            "rawText": "事后改写的内容",
+            "rawText": "BAR38 出现二次入场做多型号（错字已修正）",
             "barRef": 38,
             "createdAt": 1
         });
-        assert!(save_record_in_tx(&conn, "caseCards", "card-1", rewritten).is_err());
+        save_record_in_tx(&conn, "caseCards", "card-1", corrected).unwrap();
+
+        let stored = read_record_by_id(&conn, "caseCards", "card-1")
+            .unwrap()
+            .expect("card exists");
+        assert_eq!(stored["rawText"], "BAR38 出现二次入场做多型号（错字已修正）");
+        let history = stored["rawTextHistory"].as_array().unwrap();
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0], "BAR38 出现二次入场做多信号");
+        assert!(stored["rawTextEditedAt"].as_u64().unwrap() > 0);
     }
 
     #[test]
