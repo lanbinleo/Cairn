@@ -38,10 +38,22 @@ import { useCairn } from '@/lib/store'
 import { groupRows, parseChartBars, parseChartEvents, parseTradingViewRows, readFileAsDataUrl, type ParsedChartEvent, type ProposedTrade } from '@/lib/tradingview-import'
 import { CHART_TIMEFRAMES, chartTimeframeLabel } from '@/lib/chart-timeframes'
 import { getPossibleDuplicateTrade } from '@/lib/trade-duplicates'
+import { matchTradesToCases, type ImportMatchCandidate, type ImportMatchLevel } from '@/lib/case-import-matching'
+import { computeTradeMetrics } from '@/lib/metrics'
+import { fmtUtcDateTime } from '@/lib/format'
 import type { ChartBar, ChartTimeframe, Execution, ImportBatch, OrderType, Trade, TradeDirection, TradeEvent } from '@/lib/types'
 import { cn } from '@/lib/utils'
 
 const STEPS = ['选择归属', '上传文件', '归组预览', '完成'] as const
+
+/** 导入结果页的 Case 关联行状态 */
+interface ImportMatchRow {
+  tradeId: string
+  level: ImportMatchLevel
+  candidates: ImportMatchCandidate[]
+  /** 已绑定（自动或人工确认）的 Case；null 表示待定/无匹配 */
+  boundCaseId: string | null
+}
 
 const fileSlots = [
   {
@@ -138,7 +150,7 @@ function proposedTradeCandidate(
 
 export default function ImportPage() {
   const navigate = useNavigate()
-  const { accounts, periods, symbols, trades, getPeriod, updatePeriod, createTrades, createImportBatch, rollbackImportBatch } = useCairn()
+  const { accounts, periods, symbols, trades, getPeriod, updatePeriod, createTrades, createImportBatch, rollbackImportBatch, cases, caseCards, caseBindings, createCaseBinding, deleteCaseBinding } = useCairn()
   const fileInputs = useRef<Record<string, HTMLInputElement | null>>({})
   const [step, setStep] = useState(0)
   const [accountId, setAccountId] = useState(accounts[0]?.id ?? '')
@@ -153,6 +165,9 @@ export default function ImportPage() {
   const [referenceImage, setReferenceImage] = useState('')
   const [importError, setImportError] = useState('')
   const [createdBatchId, setCreatedBatchId] = useState('')
+  const [matchRows, setMatchRows] = useState<ImportMatchRow[]>([])
+  const [batchBindings, setBatchBindings] = useState<Array<{ bindingId: string; caseId: string; tradeId: string }>>([])
+  const [pendingCaseByTrade, setPendingCaseByTrade] = useState<Record<string, string>>({})
 
   const periodOptions = periods.filter((p) => p.accountId === accountId)
   const canNext =
@@ -207,13 +222,13 @@ export default function ImportPage() {
       }
     }
     if (step === 2) {
-      confirmImport()
+      await confirmImport()
       return
     }
     setStep((s) => s + 1)
   }
 
-  function confirmImport() {
+  async function confirmImport() {
     const now = Date.now()
     const maxSeq = trades.reduce((max, trade) => Math.max(max, trade.seq), 0)
     const batchId = `imp-${now}`
@@ -279,7 +294,50 @@ export default function ImportPage() {
     if (period && !period.symbolIds.includes(symbolId)) {
       updatePeriod(period.id, { symbolIds: [...period.symbolIds, symbolId] })
     }
+    await runImportCaseMatching(created)
     setStep(3)
+  }
+
+  /** 导入后 Case 关联：精确匹配自动绑定，其余列候选人工确认 */
+  async function runImportCaseMatching(created: Trade[]) {
+    const matches = matchTradesToCases(created, cases, caseCards, caseBindings)
+    const usedCaseIds = new Set<string>()
+    const rows: ImportMatchRow[] = []
+    const bindings: Array<{ bindingId: string; caseId: string; tradeId: string }> = []
+    for (const match of matches) {
+      if (match.level === 'exact' && !usedCaseIds.has(match.candidates[0].caseId)) {
+        try {
+          const binding = await createCaseBinding(match.candidates[0].caseId, match.tradeId, 'import')
+          usedCaseIds.add(match.candidates[0].caseId)
+          bindings.push({ bindingId: binding.id, caseId: binding.caseId, tradeId: binding.tradeId })
+          rows.push({ ...match, boundCaseId: binding.caseId })
+          continue
+        } catch {
+          // 绑定失败（如并发状态冲突）退回人工确认
+        }
+      }
+      rows.push({ ...match, boundCaseId: null })
+    }
+    setMatchRows(rows)
+    setBatchBindings(bindings)
+  }
+
+  /** 人工确认关联（suggest 行） */
+  async function confirmManualBinding(tradeId: string) {
+    const caseId = pendingCaseByTrade[tradeId]
+    if (!caseId) return
+    try {
+      const binding = await createCaseBinding(caseId, tradeId, 'import')
+      setBatchBindings((prev) => [...prev, { bindingId: binding.id, caseId: binding.caseId, tradeId: binding.tradeId }])
+      setMatchRows((prev) => prev.map((row) => (row.tradeId === tradeId ? { ...row, boundCaseId: caseId } : row)))
+      setPendingCaseByTrade((prev) => {
+        const next = { ...prev }
+        delete next[tradeId]
+        return next
+      })
+    } catch (error) {
+      setImportError(error instanceof Error ? error.message : String(error))
+    }
   }
 
   function updateProposedExecution(tradeIndex: number, executionIndex: number, patch: Partial<Execution>) {
@@ -684,7 +742,7 @@ export default function ImportPage() {
       {/* Step 3：完成 */}
       {step === 3 && (
         <Card>
-          <CardContent className="flex flex-col items-center gap-4 py-16 text-center">
+          <CardContent className="flex flex-col items-center gap-4 py-10 text-center">
             <CircleCheck className="size-12 text-profit" aria-hidden="true" />
             <div className="flex flex-col gap-1">
               <h2 className="text-lg font-semibold">导入完成</h2>
@@ -692,6 +750,70 @@ export default function ImportPage() {
                 {selectedTradeIds.length} 个 Trade 已归入所选 Period。
               </p>
             </div>
+            {matchRows.length > 0 && (
+              <div className="flex w-full max-w-3xl flex-col gap-2 text-left">
+                <h3 className="text-sm font-medium">Case 关联</h3>
+                <p className="text-xs text-muted-foreground">
+                  绿色 = 精确匹配已自动关联；黄色 = 候选待确认（Case 记录时间与成交时间接近）；红色 = 未找到 Case。匹配按账户与时间窗（±15 分钟），请顺手核对品种。
+                </p>
+                <div className="flex flex-col gap-1.5">
+                  {matchRows.map((row) => {
+                    const trade = trades.find((item) => item.id === row.tradeId)
+                    if (!trade) return null
+                    const metrics = computeTradeMetrics(trade)
+                    const symbol = symbols.find((item) => item.id === trade.symbolId)
+                    const boundCase = cases.find((item) => item.id === row.boundCaseId)
+                    const tone = row.boundCaseId != null || row.level === 'exact'
+                      ? 'bg-profit'
+                      : row.level === 'suggest'
+                        ? 'bg-amber-500'
+                        : 'bg-loss'
+                    return (
+                      <div key={row.tradeId} className="flex flex-wrap items-center gap-2 rounded-lg border px-3 py-2">
+                        <span className={cn('inline-block size-2.5 shrink-0 rounded-full', tone)} aria-hidden="true" />
+                        <span className="font-mono text-xs">
+                          #{String(trade.seq).padStart(3, '0')} {symbol ? `${symbol.exchange}:${symbol.code}` : ''}
+                        </span>
+                        <span className="text-xs text-muted-foreground">{fmtUtcDateTime(metrics.entryTime)}</span>
+                        {boundCase ? (
+                          <span className="ml-auto flex items-center gap-2 text-sm">
+                            <Link to={`/cases/${boundCase.id}`} className="underline-offset-2 hover:underline">{boundCase.title}</Link>
+                            <Badge variant="secondary">{row.level === 'exact' ? '自动关联' : '已确认'}</Badge>
+                          </span>
+                        ) : row.level === 'suggest' ? (
+                          <span className="ml-auto flex items-center gap-2">
+                            <Select
+                              items={row.candidates.map((candidate) => ({
+                                value: candidate.caseId,
+                                label: cases.find((item) => item.id === candidate.caseId)?.title ?? candidate.caseId,
+                              }))}
+                              value={pendingCaseByTrade[row.tradeId] ?? row.candidates[0]?.caseId}
+                              onValueChange={(value) => setPendingCaseByTrade((prev) => ({ ...prev, [row.tradeId]: value as string }))}
+                            >
+                              <SelectTrigger className="h-8 w-52"><SelectValue placeholder="选择 Case" /></SelectTrigger>
+                              <SelectContent>
+                                <SelectGroup>
+                                  {row.candidates.map((candidate) => (
+                                    <SelectItem key={candidate.caseId} value={candidate.caseId}>
+                                      {cases.find((item) => item.id === candidate.caseId)?.title ?? candidate.caseId}
+                                    </SelectItem>
+                                  ))}
+                                </SelectGroup>
+                              </SelectContent>
+                            </Select>
+                            <Button size="sm" className="h-8" onClick={() => void confirmManualBinding(row.tradeId)}>
+                              关联
+                            </Button>
+                          </span>
+                        ) : (
+                          <span className="ml-auto text-xs text-muted-foreground">未找到 Case</span>
+                        )}
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
+            )}
             <div className="flex items-center gap-2">
               <Button onClick={() => navigate(periodId ? `/accounts/${accountId}/periods/${periodId}` : '/accounts')}>
                 查看 Period
@@ -709,6 +831,9 @@ export default function ImportPage() {
                   setReferenceImage('')
                   setImportError('')
                   setCreatedBatchId('')
+                  setMatchRows([])
+                  setBatchBindings([])
+                  setPendingCaseByTrade({})
                 }}
               >
                 再导入一批
@@ -717,6 +842,7 @@ export default function ImportPage() {
                 <Button
                   variant="outline"
                   onClick={() => {
+                    batchBindings.forEach((entry) => void deleteCaseBinding(entry.bindingId))
                     rollbackImportBatch(createdBatchId)
                     setCreatedBatchId('')
                     navigate('/trades')
