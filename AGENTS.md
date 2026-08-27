@@ -91,6 +91,9 @@ Top-level orientation:
 - CaseCard membership is repairable: a Card can be moved to another Case from the Case detail page; only `caseId` changes, raw text does not.
 - The capture widget follows the current-Case session model: the panel header states the destination Case, switching is on demand, and starting a new Case is the primary organizational action.
 - Trade evaluation keeps process score and R decoupled: the process score uses only decision-time information (design in `docs/case-recording-0.2.0.md` §7.1); R is recorded but never labels a trade.
+- Risk decomposition: R = PnL ÷ initial risk (|first entry fill − initialStopLoss| × first-entry qty; scaling in never dilutes it). Actual risk = Σ per entry fill × |fill − stop in effect then| × qty (`lib/metrics.ts`). Both R values display side by side, no judgment.
+- Case auto-close (`lib/case-auto-close.ts`): an active Case auto-closes once when its bound Trade is fully closed AND a Closing Card exists, or (no binding) when a Reflection Card exists; manual status edits never re-trigger it.
+- TradingView import runs Case matching (`lib/case-import-matching.ts`): exact entry+closing time-window matches auto-bind (`source: 'import'`); partial/overlapping matches are yellow suggestions; no Case is red. Cases/Cards carry no symbol — matching is account + time only.
 - Manual trade-management Executions use Move Stop (`stop`) for stop-loss changes, Move Target (`target-moved`) for take-profit changes, and Add / Edit Order (`order-edit`) for ordinary pending-order changes. Move Stop defaults to `stop-loss`; Move Target defaults to `take-profit`; manual trailing behavior is a Reason on Move Stop, not a `trailing-stop` order type by default.
 
 ## Branching And Releases

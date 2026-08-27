@@ -9,7 +9,10 @@ Detailed per-file map of the codebase. AGENTS.md carries only the top-level orie
 | Task | Go to |
 | --- | --- |
 | Bar number ↔ UTC time math | `lib/bar-time.ts` (TS) · `src-tauri/src/api.rs` `extract_bar_ref` (Rust twin) |
-| PnL / R / equity / drawdown | `lib/metrics.ts` |
+| PnL / R / equity / drawdown / risk decomposition | `lib/metrics.ts` |
+| Case auto-close derivation | `lib/case-auto-close.ts` |
+| Import Case matching (green/yellow/red) | `lib/case-import-matching.ts` |
+| Trade list advanced filter + presets | `lib/trade-filters.ts` + `components/trade-filter-menu.tsx` |
 | Which Executions change position | `lib/executions.ts` (`POSITION_EXECUTION_ACTIONS`, `isPositionExecutionAction`) |
 | Card raw-text edit / history enforcement | `src-tauri/src/db.rs` `save_case_card` |
 | Local REST endpoints & auth | `src-tauri/src/api.rs` (`handle_request`, port 8787, token in `api-config.json`) |
@@ -43,7 +46,7 @@ Detailed per-file map of the codebase. AGENTS.md carries only the top-level orie
 
 Shared page pieces: `page-header.tsx`, `stat-card.tsx`, `pnl-text.tsx` (`PnlText`/`RText`), `sparkline.tsx`, `trades-table.tsx` (reusable, exports `DirectionBadge`/`StatusBadge`), `trade-chart.tsx` (chart + overlays + case markers), `attachment-image.tsx`, `backup-card.tsx`, `coverage-timeline.tsx`, `window-titlebar.tsx`, `app-sidebar.tsx`.
 
-Case & AI: `trade-case-panel.tsx` (Trade→Case binding + summary), `case-tag-badge.tsx`, `manage-case-tags-dialog.tsx`, `create-case-dialog.tsx`, `case-card-analysis.tsx` (`HighlightedCaseCardText` underline rendering + `CaseCardAnalysisView` compact footer & memo popover), `ai-retry-button.tsx` (`AiRetryLink` instruction-retry popover), `trade-process-score.tsx` (ten-point scorecard), `relative-time.tsx` (`RelativeTime` readable relative time, hover shows full UTC).
+Case & AI: `trade-case-panel.tsx` (Trade→Case binding + summary), `case-tag-badge.tsx`, `manage-case-tags-dialog.tsx`, `create-case-dialog.tsx`, `case-card-analysis.tsx` (`HighlightedCaseCardText` underline rendering + `CaseCardAnalysisView` compact footer & memo popover), `ai-retry-button.tsx` (`AiRetryLink` instruction-retry popover), `trade-process-score.tsx` (ten-point scorecard, header total when saved), `relative-time.tsx` (`RelativeTime` readable relative time, hover shows full UTC), `trade-plan-compare.tsx` (计划 vs 实际 comparison card), `trade-filter-menu.tsx` (trade list advanced filter dropdown + preset dialogs + chips).
 
 Dialogs live under `components/*-dialog.tsx` (edit-trade, manage-tags, create-symbol, ai-provider-dialog with preset logos…). Dashboard-only pieces under `components/dashboard/`. Base primitives under `components/ui/` (dialog, select, popover (base-ui Positioner pattern), dropdown-menu, tabs, switch, tooltip, table, …).
 
@@ -54,7 +57,10 @@ Dialogs live under `components/*-dialog.tsx` (edit-trade, manage-tags, create-sy
 - `store.tsx`: context store — hydration (`loadLocalState → normalizeSnapshot`), mutations (`createCaseCard`, `moveCaseCard`, `updateCaseCardText`, `analyzeCaseCard`, bindings, imports…), `cairn://data-changed` debounce refresh.
 - `local-db.ts`: Tauri invoke wrappers + browser fallbacks (`isTauriRuntime()`, `analyzeCaseCard`, `draftCaseTitle`, API status, AI providers).
 - `cases.ts`: phase options/prompts/labels, display rules (`displayPhaseForCaseCard`), `extractExplicitBarRef`, AI label & memo metadata.
-- `process-score.ts`: `deriveProcessFacts` (memo completeness, planned RR with `PROCESS_RR_THRESHOLD = 2`, stop-only-tightened), `firstNumberIn`.
+- `process-score.ts`: `deriveProcessFacts` (memo completeness, planned RR with `PROCESS_RR_THRESHOLD = 2`, stop-only-tightened), `firstNumberIn`, `savedProcessScoreTotal` (saved-score total from computed snapshot).
+- `case-auto-close.ts`: auto-close derivation + `isTradeFullyClosed`.
+- `case-import-matching.ts`: import-time Case↔Trade matching (exact auto-bind / suggest / none).
+- `trade-filters.ts`: advanced filter conditions, matcher, chips summary, localStorage presets.
 - `metrics.ts`, `executions.ts`, `execution-display.ts`: metric helpers, execution classification, display aggregation.
 - `tradingview-import.ts`, `trade-duplicates.ts`, `trade-transfer.ts`: import/grouping, dedupe, shape transfer.
 - `chart-data.ts`, `chart-datasets.ts`, `chart-timeframes.ts`, `bar-time.ts`: candles, coverage, timeframe, bar↔time.

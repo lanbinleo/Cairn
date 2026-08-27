@@ -112,6 +112,8 @@ An Entry CaseCard can be marked `pending`, `executed`, or `continue-observing`. 
 
 Case and Trade use a separate CaseTradeBinding. Active bindings are one-to-one in both directions. Case Tags use CaseTagDef and are independent from Trade TagDef.
 
+**Auto-close** (`lib/case-auto-close.ts`): an `active` Case flips to `closed` automatically, once, after data-change events (card create/move, binding create, trade create/status/execution updates). Conditions: the bound Trade is fully closed (exit quantity ≥ entry quantity) and a Closing Card exists; or, with no binding at all, a Reflection Card exists (observation-only Cases). A closed Trade without a Closing Card keeps the Case `active` on purpose — the open Case is the reminder that the exit record is missing. Manual status edits never trigger the derivation, so reopening a Case sticks.
+
 Trade detail separates `Overview`, `Case`, and `Trade` views. Overview keeps the chart and trade result summary, shows the Case summary below the result card, renders extracted BAR references as Case Card markers, and combines Executions, legacy TradeEvents, and Case Cards into one Timeline. Chart markers expose their event or Card summary on hover; Case markers can open the corresponding Card. Case shows the same immutable Card text as the Case page and supports creating, selecting, binding, unbinding, and rebinding Cases. Trade contains numeric analysis and is the future home of process scoring and AI suggestions.
 
 ### ImportBatch
@@ -168,6 +170,16 @@ TradingView import supports:
 
 If trade export and chart CSV time ranges do not overlap, chart data is not attached to that trade.
 
+### Import Case Matching
+
+After a batch is imported, `lib/case-import-matching.ts` proposes Case bindings per imported Trade (Cases and Cards do not store a symbol, so matching uses account plus time windows):
+
+- **Exact (green, auto-bound)**: same account; the Trade's first entry fill is within ±15 min of an executed Entry Card's record time, and the last exit fill is within ±15 min of a Closing Card's time; the Case is unbound. Exact matches bind automatically with `source: 'import'`; each Case is consumed once so two Trades cannot claim it.
+- **Suggest (yellow)**: entry-only matches, multiple exact candidates, or any Card overlapping the holding period ±60 min — listed as candidates for one-click manual confirmation.
+- **None (red)**: no candidate Case at all, surfaced so missing recordings are visible.
+
+The import result page renders one row per Trade with the color dot, both summaries, and candidate confirmation. Batch rollback also removes the bindings created during that import.
+
 ## Metrics
 
 Metrics are computed from position-changing Executions only:
@@ -182,6 +194,17 @@ Metrics are computed from position-changing Executions only:
 - Max drawdown
 
 Trade status is stored for workflow, but closed-trade metrics still derive from position-changing execution data. Trade detail editing can update executions, tags, initial stop loss, optional initial take profit, notes, and reference images.
+
+### Risk And R Decomposition
+
+R keeps a single meaning — the plan's risk unit — and the Trade tab shows the decomposition instead of redefining R:
+
+- **Initial risk (planned 1R)** = |first entry fill price − `initialStopLoss`| × first entry quantity. `rMultiple` = realized PnL ÷ initial risk, anchored to the first entry so scaling in does not dilute the denominator. For single-entry trades this equals the historical average-entry formula.
+- **Actual risk** = Σ over every entry/scale-in fill of |fill price − stop in effect at that fill| × fill quantity. "Stop in effect" is the latest stop-action Execution (`stop`/`stop-set`/`stop-moved`, which carry the new stop price) before the fill; if none, `initialStopLoss`. Stop widens or tightens made before an add therefore land in that add's segment. `rActual` = PnL ÷ actual risk.
+- **Final stop** = the stop price in effect at the last fill (equals `initialStopLoss` when never moved).
+- No user input: everything derives mechanically from Executions plus `initialStopLoss`. Both R numbers display side by side without judgment; scale-out does not change either denominator, and gap/slippage losses beyond the stop surface as `rActual` < −1.
+
+The Trade tab also renders a 计划 vs 实际 comparison table: plan direction/stop/target from the bound Case's Entry Card memo (Trade's `initialStopLoss`/`initialTakeProfit` take precedence) against actual direction, final stop, and average exit — facts side by side, no verdicts.
 
 ## Trade Chart Overlays
 
