@@ -116,9 +116,11 @@
 
 计划：
 
-- Settings 增加 AI 配置分类。
+- Settings 增加 AI 配置分类。（已交付）
 - 单 Card 和批量 Case 识别。
 - BAR JSON、原文 Span Highlight、缺失信息提示。
+- Entry Card 六字段 memo 提取（方向、止损、目标、置信度、失效点、放弃方案），完整性检查单 = 缺失字段集合；也是过程分 memo 项的输入（设计见 `docs/case-recording-0.2.0.md` §5.4、§7.1）。
+- 过程分（十分制）的输入管线：机械项（止损只收紧、盈亏比、入场纪律、出场按计划）从 Execution 计算；判断项（结构成立）锚定入场 BAR 冻结图人工评分。
 - 保存 model、prompt、schema 和 taxonomy 版本。
 - Case Tags 与 AI Labels 分开管理。
 - 重新识别不会修改 Raw text。

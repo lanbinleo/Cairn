@@ -237,7 +237,20 @@ AI classifies parts of the original text without rewriting them. Candidate label
 
 Highlights should reference character spans or exact quotes so the UI can color the original text directly.
 
-### 5.4 Keep AI output reproducible
+### 5.4 Entry memo: six-field extraction
+
+Entry Cards are organized around the pre-entry memo schema (the "three minutes before entry" discipline). The secretary AI extracts these fields as span quotes from the raw Entry Card text, never rewriting or summarizing:
+
+1. Direction (long/short)
+2. Stop-loss / invalidation price
+3. Target or expected path
+4. Confidence (percent when spoken)
+5. Invalidation condition (what proves the idea wrong)
+6. What other setups were rejected
+
+An optional emotion label may accompany the memo. The completeness checklist shown after submitting an Entry Card is exactly the set of missing fields among these six. This extraction also feeds the memo-completeness item of the process score (see Process Score below): completeness is countable, mechanical, and immune to hindsight.
+
+### 5.5 Keep AI output reproducible
 
 Illustrative response shape:
 
@@ -284,9 +297,18 @@ Expected flow:
 
 The widget is for recording. TradingView remains the preferred interface for replay orders and position actions.
 
-The earlier Tampermonkey project may provide reusable code for TradingView integration and local-server communication. It should be reviewed before choosing the final browser integration.
+### 6.1 Current-Case session model
 
-### 6.1 Local connection direction
+The capture widget does not present a Case picker as the primary control. Browsing and choosing among Cases mid-trade is a classification question the trader should not answer in the moment.
+
+- The panel header states where Cards go: the current Case title, plus the account · period context line. Confirming the destination is a glance, not a selection.
+- Switching Cases is opt-in: tapping the title opens a short recent-cases menu on demand.
+- Starting a new observation is the primary organizational action: one tap on ＋. The title may stay empty (AI can title it later from the first Cards); account and period are pre-filled from the last choice and only matter at this moment.
+- The current Case, phase, and widget position persist across opens.
+
+Cards can land in the wrong Case (a boundary misjudged, a new Case forgotten). Membership is repairable in the Cairn Case detail page: any Card can be moved to another Case. The raw text stays immutable; only `caseId` changes.
+
+### 6.2 Local connection direction
 
 A likely technical direction is:
 
@@ -338,6 +360,27 @@ After Binding, the Trade detail page displays:
 ```
 
 BAR references in Cards should link to or highlight the corresponding chart bars once the Case has enough Trade and chart context.
+
+## 7.1 Process Score (Trade 分析)
+
+Every bound Trade carries two independent numbers: a process score and R. The process score evaluates the trade using only information available at decision time; R is recorded but never becomes a label. Judging decisions by outcomes (resulting) pollutes the dataset: a lucky win on a bad process is a bad trade, and a disciplined loss is a good trade.
+
+Ten-point scorecard:
+
+| Item | Points | Source |
+| --- | --- | --- |
+| Structure valid (re-checked against the frozen chart at entry) | 2 | Human judgment, anchored |
+| Memo complete (six fields, one point off per missing field) | 2 | AI six-field extraction (§5.4) |
+| Planned risk-reward above threshold | 1 | Computed from memo stop/target and entry price |
+| Entry discipline (inside the planned zone, not chasing) | 1 | Entry Execution price vs planned zone |
+| Zero improvisation while holding (one point off per unplanned action) | 2 | Execution sequence vs Card-stated plans (AI-assisted match) |
+| Stop only tightened, never loosened | 1 | Mechanical from Execution order |
+| Exit per plan (not panic-closed) | 1 | Exit Execution vs memo target/stop |
+
+- Most items are factual records fixed when the trade happened; hindsight cannot change them. The only genuinely pollutable item is "structure valid", so blind evaluation is implemented by freezing the chart at the entry bar during scoring rather than by hiding PnL.
+- The scorecard is itself a hypothesis tested by R: after roughly a hundred trades, compare average R of the 8+ group against the ≤5 group. No difference means the scorecard measures the wrong thing and should be changed.
+- Quantified trading slang lives here too: 卖飞 (exit price as a share of MFE; persistently low means systematically timid exits), 踏空 (hypothetical R of skipped setups; skipped setups that systematically make money mean the filter is too tight), 遗憾 (free text, the emotional outlet, not quantified).
+- Display location: the Trade 分析 tab on the Trade detail page, alongside outcome facts (R, MFE/MAE, PnL) which stay clearly separated from process evaluation.
 
 ## 8. Forward and Retrospective Records
 
