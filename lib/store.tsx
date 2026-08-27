@@ -65,6 +65,7 @@ interface CairnStore {
   updateCase: (id: string, patch: Partial<Omit<TradeCase, 'id' | 'createdAt'>>) => void
   deleteCase: (id: string) => void
   createCaseCard: (input: Omit<CaseCard, 'id' | 'createdAt' | 'barRef' | 'barRefs'> & { barRef: number }) => CaseCard
+  moveCaseCard: (cardId: string, targetCaseId: string) => CaseCard | undefined
   createCaseBinding: (caseId: string, tradeId: string, source?: CaseTradeBinding['source']) => Promise<CaseTradeBinding>
   deleteCaseBinding: (id: string) => Promise<void>
   createTrades: (records: Trade[]) => void
@@ -293,6 +294,27 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
     )
     return created
   }, [makeId])
+
+  /** 修复通道：Card 归属错了可移动到其他 Case，rawText 保持不变。 */
+  const moveCaseCard = useCallback((cardId: string, targetCaseId: string): CaseCard | undefined => {
+    const card = caseCards.find((item) => item.id === cardId)
+    if (!card || card.caseId === targetCaseId) return card
+    const next: CaseCard = { ...card, caseId: targetCaseId }
+    setCaseCards((prev) => prev
+      .map((item) => (item.id === cardId ? next : item))
+      .sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id)))
+    void saveLocalRecord('caseCards', next)
+    const now = Date.now()
+    setCases((prev) =>
+      prev.map((caseRecord) => {
+        if (caseRecord.id !== targetCaseId && caseRecord.id !== card.caseId) return caseRecord
+        const nextCase = { ...caseRecord, updatedAt: now }
+        void saveLocalRecord('cases', nextCase)
+        return nextCase
+      }),
+    )
+    return next
+  }, [caseCards])
 
   const deleteCase = useCallback((id: string) => {
     const removedCardIds = new Set(caseCards.filter((card) => card.caseId === id).map((card) => card.id))
@@ -724,6 +746,7 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
       updateCase,
       deleteCase,
       createCaseCard,
+      moveCaseCard,
       createCaseBinding,
       deleteCaseBinding,
       createTrades,
@@ -753,7 +776,7 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
       updateCaseTag,
       deleteCaseTag,
     }),
-    [accounts, periods, trades, tagDefs, cases, caseCards, caseBindings, caseTagDefs, importBatches, attachments, chartImports, chartCandles, symbols, notes, updateAccount, updatePeriod, updateTrade, updateNote, createAccount, createPeriod, createSymbol, createNote, createImageAttachment, deleteAttachment, createCase, updateCase, deleteCase, createCaseCard, createCaseBinding, deleteCaseBinding, createTrades, createImportBatch, createChartImport, deleteChartImport, rollbackImportBatch, deleteAccount, deletePeriod, deleteTrade, deleteSymbol, deleteNote, restoreState, exportBackup, setTradeStatus, createTag, updateTag, deleteTag, createCaseTag, updateCaseTag, deleteCaseTag],
+    [accounts, periods, trades, tagDefs, cases, caseCards, caseBindings, caseTagDefs, importBatches, attachments, chartImports, chartCandles, symbols, notes, updateAccount, updatePeriod, updateTrade, updateNote, createAccount, createPeriod, createSymbol, createNote, createImageAttachment, deleteAttachment, createCase, updateCase, deleteCase, createCaseCard, moveCaseCard, createCaseBinding, deleteCaseBinding, createTrades, createImportBatch, createChartImport, deleteChartImport, rollbackImportBatch, deleteAccount, deletePeriod, deleteTrade, deleteSymbol, deleteNote, restoreState, exportBackup, setTradeStatus, createTag, updateTag, deleteTag, createCaseTag, updateCaseTag, deleteCaseTag],
   )
 
   return <StoreContext.Provider value={value}>{children}</StoreContext.Provider>

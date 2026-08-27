@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import { Link, Navigate, useNavigate, useParams } from 'react-router-dom'
-import { Archive, ArrowLeft, Link2, Plus, Trash2 } from 'lucide-react'
+import { Archive, ArrowLeft, ArrowRightLeft, Link2, Plus, Trash2 } from 'lucide-react'
 
 import { CaseTagBadge } from '@/components/case-tag-badge'
 import { ManageCaseTagsDialog } from '@/components/manage-case-tags-dialog'
@@ -47,6 +47,7 @@ export default function CaseDetailPage() {
     accounts,
     periods,
     trades,
+    cases,
     caseTagDefs,
     getCase,
     getCaseCards,
@@ -54,6 +55,7 @@ export default function CaseDetailPage() {
     updateCase,
     deleteCase,
     createCaseCard,
+    moveCaseCard,
   } = useCairn()
   const caseRecord = getCase(caseId)
   const [titleDraft, setTitleDraft] = useState('')
@@ -61,7 +63,13 @@ export default function CaseDetailPage() {
   const [entryDecision, setEntryDecision] = useState<CaseEntryDecision>('pending')
   const [barNumber, setBarNumber] = useState('')
   const [rawText, setRawText] = useState('')
+  const [movingCardId, setMovingCardId] = useState<string | null>(null)
+  const [moveTargetId, setMoveTargetId] = useState('')
   const cards = getCaseCards(caseId)
+  const otherCases = useMemo(
+    () => cases.filter((item) => item.id !== caseId).sort((a, b) => b.createdAt - a.createdAt),
+    [cases, caseId],
+  )
   const sortedCaseTagDefs = useMemo(() => sortTagDefsByColor(caseTagDefs), [caseTagDefs])
   const groupedCards = useMemo(() => {
     const groups: Record<CaseCardPhase, typeof cards> = {
@@ -97,6 +105,18 @@ export default function CaseDetailPage() {
     setRawText('')
     setBarNumber('')
     setEntryDecision('pending')
+  }
+
+  function startMoveCard(cardId: string) {
+    setMovingCardId(cardId)
+    setMoveTargetId('')
+  }
+
+  function confirmMoveCard(cardId: string) {
+    if (!moveTargetId) return
+    moveCaseCard(cardId, moveTargetId)
+    setMovingCardId(null)
+    setMoveTargetId('')
   }
 
   function saveTitle() {
@@ -223,9 +243,40 @@ export default function CaseDetailPage() {
                             {card.phase !== option.value && <span className="text-xs text-muted-foreground">展示于 {option.label}</span>}
                             {card.barRef != null && <Badge variant="outline">BAR {card.barRef}</Badge>}
                           </div>
-                          <time className="font-mono text-xs text-muted-foreground">{fmtUtcDateTime(card.createdAt)}</time>
+                          <div className="flex items-center gap-1">
+                            <time className="font-mono text-xs text-muted-foreground">{fmtUtcDateTime(card.createdAt)}</time>
+                            {otherCases.length > 0 && (
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                className="h-7 w-7 p-0 text-muted-foreground"
+                                title="移动到其他 Case"
+                                onClick={() => (movingCardId === card.id ? setMovingCardId(null) : startMoveCard(card.id))}
+                              >
+                                <ArrowRightLeft className="size-3.5" />
+                              </Button>
+                            )}
+                          </div>
                         </div>
                         <p className="whitespace-pre-wrap text-sm leading-6">{card.rawText}</p>
+                        {movingCardId === card.id && (
+                          <div className="mt-3 flex flex-wrap items-center gap-2 rounded-lg bg-background/70 p-2">
+                            <Select
+                              items={otherCases.map((item) => ({ value: item.id, label: item.title }))}
+                              value={moveTargetId || undefined}
+                              onValueChange={(value) => setMoveTargetId(value ?? '')}
+                            >
+                              <SelectTrigger className="h-8 w-56"><SelectValue placeholder="选择目标 Case" /></SelectTrigger>
+                              <SelectContent>
+                                <SelectGroup>
+                                  {otherCases.map((item) => <SelectItem key={item.id} value={item.id}>{item.title}</SelectItem>)}
+                                </SelectGroup>
+                              </SelectContent>
+                            </Select>
+                            <Button size="sm" className="h-8" disabled={!moveTargetId} onClick={() => confirmMoveCard(card.id)}>移动</Button>
+                            <Button variant="ghost" size="sm" className="h-8" onClick={() => setMovingCardId(null)}>取消</Button>
+                          </div>
+                        )}
                       </article>
                     ))}
                   </section>
