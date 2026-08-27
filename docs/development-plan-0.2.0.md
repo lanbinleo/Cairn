@@ -109,10 +109,12 @@
 
 待做：
 
-- 导入匹配的真实数据验收（浏览器测试环境无法上传 CSV，尚未实测）。
-- Case/Card 图片管理。
-- Binding 变更记录。
-- Case 删除、归档、附件、备份和恢复的完整检查。
+- Stage 1-4 验收清单人工跑一遍（含导入匹配的真实数据验收——浏览器测试环境无法上传 CSV）。
+
+已决定顺延或放弃（2026-08-27，Leo）：
+
+- Case/Card 图片管理 → 0.2.1 backlog。
+- Binding 变更记录 → 放弃（解绑/重绑 UI 已够用，审计需求不成立）。
 
 ## Stage 5：AI
 
@@ -165,7 +167,15 @@
 - `scripts/cairn-case-widget.user.js`：TradingView 悬浮记录浮窗（Shadow DOM 隔离、悬浮球拖动 + 4px 误触阈值、Case 切换/新建、五阶段、entryDecision、BAR 选填、阶段检查单提示「这张卡可以覆盖：…」（entry 与六字段 memo 对齐）、提交后入场完整性提示、卡片时间线）。
 - 脚本内使用 `GM_xmlhttpRequest` 跨域写本地 API（https 页面直连 http localhost 会被混合内容拦截），Token/端口/Case/Phase/位置全部记忆。
 - `scripts/cairn-case-widget.test.html`：GM shim 测试页，不装 Tampermonkey 即可对隔离 dev 环境全流程联调。
-- 待做：配套 PineScript Bar Count 指标脚本。
+- 配套 PineScript Bar Count 指标：`scripts/cairn-bar-count.pine`（基于 Leo 在用的脚本，日界改为显式 UTC 与 barRef 约定对齐）。
+
+## 0.2.1 Backlog（0.2.0 顺延项）
+
+- Case/Card 图片管理（附件 UI）。
+- Case Tags 与 AI Labels 的管理界面细分。
+- 8+ 组 vs ≤5 组平均 R 的证伪对比视图（先攒样本）。
+- 卖飞（出场价/MFE）、踏空（跳过 setup 假想 R）等量化指标（需要从图表数据推导 MFE/MAE）。
+- Case 增加 symbolId（如果导入匹配出现误配再做）。
 
 ## 每个 Stage 的检查
 
