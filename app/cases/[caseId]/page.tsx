@@ -4,7 +4,6 @@ import { useEffect, useMemo, useState } from 'react'
 import { Link, Navigate, useNavigate, useParams } from 'react-router-dom'
 import { Archive, ArrowLeft, ArrowRightLeft, Link2, Pencil, Plus, Sparkles, Trash2, WandSparkles } from 'lucide-react'
 
-import { AiRetryButton } from '@/components/ai-retry-button'
 import { CaseTagBadge } from '@/components/case-tag-badge'
 import { CaseCardAnalysisView, HighlightedCaseCardText } from '@/components/case-card-analysis'
 import { ManageCaseTagsDialog } from '@/components/manage-case-tags-dialog'
@@ -352,13 +351,16 @@ export default function CaseDetailPage() {
                             >
                               <Pencil className="size-3.5" />
                             </Button>
-                            <span className="flex items-center">
-                              <AiRetryButton
-                                label={card.aiAnalysis ? '重新识别' : 'AI 整理'}
-                                busy={analyzingCardIds.has(card.id)}
-                                onRetry={(instruction) => runAnalysis(card.id, instruction)}
-                              />
-                            </span>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="h-7 gap-1 px-2 text-muted-foreground"
+                              disabled={analyzingCardIds.has(card.id)}
+                              onClick={() => runAnalysis(card.id)}
+                            >
+                              <Sparkles className={cn('size-3.5', analyzingCardIds.has(card.id) && 'animate-pulse')} />
+                              {analyzingCardIds.has(card.id) ? '整理中…' : card.aiAnalysis ? '重新识别' : 'AI 整理'}
+                            </Button>
                             {otherCases.length > 0 && (
                               <Button
                                 variant="ghost"
@@ -388,7 +390,11 @@ export default function CaseDetailPage() {
                         {analysisErrors[card.id] && (
                           <p className="mt-2 rounded-md border border-destructive/40 bg-destructive/10 px-2 py-1.5 text-xs text-destructive">{analysisErrors[card.id]}</p>
                         )}
-                        <CaseCardAnalysisView card={card} />
+                        <CaseCardAnalysisView
+                          card={card}
+                          busy={analyzingCardIds.has(card.id)}
+                          onRetry={(instruction) => runAnalysis(card.id, instruction)}
+                        />
                         {movingCardId === card.id && (
                           <div className="mt-3 flex flex-wrap items-center gap-2 rounded-lg bg-background/70 p-2">
                             <Select

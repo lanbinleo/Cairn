@@ -2,6 +2,7 @@
 
 import type { ReactNode } from 'react'
 
+import { AiRetryLink } from '@/components/ai-retry-button'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { CASE_CARD_LABEL_META, CASE_MEMO_FIELD_LABEL } from '@/lib/cases'
 import type { CaseCard, CaseCardLabel } from '@/lib/types'
@@ -59,11 +60,17 @@ function fmtShortUtc(ms: number): string {
   return new Date(ms).toISOString().slice(11, 16) + ' UTC'
 }
 
+interface CaseCardAnalysisViewProps {
+  card: CaseCard
+  busy: boolean
+  onRetry: (instruction?: string) => void
+}
+
 /**
- * 分析落库后的紧凑落款行：图例 · 缺失字段 · 模型与时间。
+ * 分析落库后的紧凑落款行：图例 · 缺失字段 · 模型与时间 · 详情/带要求重试。
  * 结构化详情（memo 网格与原文引用）收进 Popover，不占卡片正文。
  */
-export function CaseCardAnalysisView({ card }: { card: CaseCard }) {
+export function CaseCardAnalysisView({ card, busy, onRetry }: CaseCardAnalysisViewProps) {
   const analysis = card.aiAnalysis
   if (!analysis) return null
   const stale = card.rawTextEditedAt != null && analysis.analyzedAt < card.rawTextEditedAt
@@ -94,6 +101,7 @@ export function CaseCardAnalysisView({ card }: { card: CaseCard }) {
         </span>
       )}
       <span className="font-mono" title={fullTime}>{analysis.model} · {fmtShortUtc(analysis.analyzedAt)}</span>
+      <AiRetryLink busy={busy} onRetry={onRetry} />
       {hasMemo && (
         <Popover>
           <PopoverTrigger
