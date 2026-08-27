@@ -9,7 +9,7 @@ This file is loaded at the start of Codex sessions. Keep it useful. When the app
 - Leo prefers thinking through the work before action. If the request is ambiguous, ask before editing.
 - If Leo says "开始干", the task is considered clear enough: say what technology/files you will touch, then make the change.
 - If Leo is confident but appears mistaken, point it out clearly with the reason.
-- Tell yourself before finishing any meaningful task: do not forget to maintain this document.
+- Tell yourself before finishing any meaningful task: do not forget to maintain this document and `docs/project-map.md`.
 
 ## Product Snapshot
 
@@ -32,6 +32,7 @@ Current source of truth: `docs/software-design.md`.
 - Check branch and dirty state: `git status --short --branch`.
 - If development work starts on `main`, create or switch to a version branch. If Leo did not name a version, increment the patch version and use `dev/x.y.z`.
 - Read this file before broad project exploration.
+- For file locations and module ownership, read `docs/project-map.md` instead of spawning search agents.
 - For product behavior or data rules, read `docs/software-design.md`.
 - For release steps, read `docs/development-workflow.md`.
 - For version-specific release notes, read `docs/release-x.y.z.md`.
@@ -53,106 +54,19 @@ Current source of truth: `docs/software-design.md`.
 - Frontend: React 19 + Vite + TypeScript.
 - Routing: `react-router-dom` configured in `src/App.tsx`.
 - Desktop runtime: Tauri 2.
-- Native layer: Rust commands for SQLite, filesystem attachments, imports, backups, tray, logs, diagnostics, and app metadata.
+- Native layer: Rust commands for SQLite, filesystem attachments, imports, backups, tray, logs, diagnostics, app metadata, the local REST API, and AI chat.
 - Storage: local SQLite in the Tauri app data directory.
 - Future cloud: backup/restore only, not realtime multi-device sync.
 
 ## Module Map
 
-### App Entrypoints
+The detailed per-file map lives in **`docs/project-map.md`** — every page, component, lib module, Rust module, script, the storage-collection layout, and a "where do I…" quick index. Read it before exploring unfamiliar areas instead of launching search agents, and update it in the same branch whenever files are added, removed, or change ownership.
 
-- `src/main.tsx`: React mount point.
-- `src/App.tsx`: route table, app shell, sidebar, titlebar, providers, page transitions.
-- `app/globals.css`: global Tailwind/CSS theme, layout animation, app-wide styles.
-- `index.html`: Vite HTML entry.
+Top-level orientation:
 
-### Pages
-
-- `app/page.tsx`: dashboard.
-- `app/accounts/page.tsx`: account list.
-- `app/accounts/[accountId]/page.tsx`: account detail.
-- `app/accounts/[accountId]/periods/[periodId]/page.tsx`: period detail.
-- `app/trades/page.tsx`: trade list.
-- `app/trades/new/page.tsx`: manual trade creation.
-- `app/trades/[tradeId]/page.tsx`: trade detail, chart, timeline, notes, image review.
-- `app/cases/page.tsx`: Case list, filtering, creation, and Case Tag access.
-- `app/cases/[caseId]/page.tsx`: Case metadata, phased Card recording, tags, and Binding status.
-- `app/data/page.tsx`: chart data import, coverage, candle library management.
-- `app/import/page.tsx`: TradingView import flow.
-- `app/notes/page.tsx`: notes list.
-- `app/notes/[noteId]/edit/page.tsx`: note editor.
-- `app/settings/page.tsx`: settings, backup, diagnostics.
-
-### UI Components
-
-- `components/app-sidebar.tsx`: primary navigation.
-- `components/window-titlebar.tsx`: desktop titlebar behavior.
-- `components/page-header.tsx`, `components/stat-card.tsx`, `components/pnl-text.tsx`, `components/sparkline.tsx`: shared page display pieces.
-- `components/trades-table.tsx`: reusable trade table.
-- `components/trade-chart.tsx`: chart rendering and overlays.
-- `components/trade-case-panel.tsx`: Trade Overview Case summary, Case/Card view, and one-to-one Binding actions.
-- `components/trade-process-score.tsx`: Trade 分析 tab process scorecard (mechanical items derive live, judgment items manual, snapshot into `Trade.processScore`).
-- `components/case-card-analysis.tsx`: Card AI-analysis compact footer, memo detail popover, and label-colored raw text rendering.
-- `components/ai-retry-button.tsx`: AI retry control with optional user instruction, reused across AI surfaces.
-- `components/attachment-image.tsx`: app-data and data URL image rendering.
-- `components/backup-card.tsx`: backup/restore UI.
-- `components/coverage-timeline.tsx`: chart data coverage visualization.
-- Dialog components live under `components/*-dialog.tsx`.
-- Base UI primitives live under `components/ui/`.
-- Dashboard-only pieces live under `components/dashboard/`.
-
-### Frontend Domain And Data Layer
-
-- `lib/types.ts`: core TypeScript domain types.
-- `lib/seed.ts`: initial/empty state shape used by browser development and first app load.
-- `lib/store.tsx`: React context store, state hydration, mutations, normalization, migrations, backup calls.
-- `lib/local-db.ts`: Tauri `invoke` wrappers and browser-runtime fallbacks.
-- `lib/metrics.ts`: PnL, R multiple, equity, win/loss, drawdown, expectancy helpers.
-- `lib/executions.ts`: execution classification and position-changing logic.
-- `lib/execution-display.ts`: display labels and execution presentation helpers.
-- `lib/tradingview-import.ts`: TradingView workbook/CSV parsing and trade grouping.
-- `lib/trade-duplicates.ts`: duplicate detection for imported/manual trades.
-- `lib/trade-transfer.ts`: transfer helpers between imported and app trade shapes.
-- `lib/chart-data.ts`, `lib/chart-datasets.ts`, `lib/chart-timeframes.ts`, `lib/bar-time.ts`: chart candles, coverage, timeframe, and bar-index helpers.
-- `lib/tags.ts`: TagDef normalization, uniqueness, rename/delete behavior.
-- `lib/cases.ts`: Case phase labels, recording prompts, display rules, AI label/memo metadata, and explicit BAR reference extraction.
-- `lib/process-score.ts`: process-score derivation (memo completeness, planned RR, stop-only-tightened) from Executions and the bound Case's Entry memo.
-- `lib/note-mentions.ts`: `[[trade:ID]]` and `[[image:URL_OR_PATH]]` parsing.
-- `lib/clipboard-images.ts`: clipboard image handling.
-- `lib/frontend-log.ts`: frontend-to-Tauri log forwarding.
-- `lib/format.ts`, `lib/utils.ts`: formatting and shared helpers.
-
-### Native Tauri Layer
-
-- `src-tauri/src/lib.rs`: Tauri builder, command registration, tray setup, app metadata commands, attachment file read/write, chart source file save.
-- `src-tauri/src/db.rs`: SQLite schema, read/write/delete/restore/backup logic, state hydration.
-- `src-tauri/src/api.rs`: local REST API on `127.0.0.1` (Bearer token, CORS, idempotent Case/Card writes) for companion capture scripts; emits `cairn://data-changed` so the UI refreshes.
-- `src-tauri/src/ai.rs`: OpenAI-compatible AI provider settings (multi-provider, `/models` fetch via reqwest); credentials live in `app_data_dir/ai-providers.json` and never enter backups.
-- `src-tauri/src/paths.rs`: app data path helpers.
-- `src-tauri/src/diagnostics.rs`: panic hook, logs, temp diagnostics.
-- `src-tauri/src/main.rs`: native entrypoint.
-- `src-tauri/Cargo.toml` and `src-tauri/Cargo.lock`: Rust package/version/dependencies.
-- `src-tauri/tauri.conf.json`: main Tauri config.
-- `src-tauri/tauri.local.conf.json`: local build config.
-- `src-tauri/tauri.windows.conf.json`: Windows-specific config.
-- `src-tauri/capabilities/default.json`: Tauri permissions.
-- `src-tauri/icons/`: app icons.
-
-### Docs, Scripts, And References
-
-- `docs/software-design.md`: active product, data, import, metric, chart, backup, and packaging design.
-- `docs/development-workflow.md`: release and verification checklist.
-- `docs/release-0.1.x.md`: version-specific release notes.
-- `docs/future-backup-sync.md`: future backup sync notes.
-- `docs/todo-0.1.3-test.md`: historical test notes.
-- `reference/legacy/`: historical V0/backend/mock-data references only; not active architecture.
-- `scripts/dev-isolated.ps1`: isolated Tauri dev launch.
-- `scripts/release.ps1`: release verification helper.
-- `scripts/cairn-case-widget.user.js`: Tampermonkey userscript that injects the floating Case-recording widget into TradingView and writes through the local REST API.
-- `scripts/cairn-case-widget.test.html`: GM-shim harness page for testing the userscript against the isolated dev environment without Tampermonkey.
-- `package.json`: npm scripts and frontend dependencies.
-- `pnpm-lock.yaml`: package lockfile.
-- `vite.config.ts`, `tsconfig.json`, `postcss.config.mjs`, `components.json`: frontend tooling/config.
+- Frontend: pages under `app/`, components under `components/`, domain logic under `lib/`, routes in `src/App.tsx`.
+- Native: `src-tauri/src/` — `lib.rs` (commands/setup), `db.rs` (SQLite), `api.rs` (local REST on 127.0.0.1), `ai.rs` (providers + chat + prompts), `diagnostics.rs` (logs).
+- Companion userscript: `scripts/cairn-case-widget.user.js` (+ `scripts/cairn-case-widget.test.html` harness).
 
 ## Domain Rules To Remember
 
@@ -177,8 +91,6 @@ Current source of truth: `docs/software-design.md`.
 - CaseCard membership is repairable: a Card can be moved to another Case from the Case detail page; only `caseId` changes, raw text does not.
 - The capture widget follows the current-Case session model: the panel header states the destination Case, switching is on demand, and starting a new Case is the primary organizational action.
 - Trade evaluation keeps process score and R decoupled: the process score uses only decision-time information (design in `docs/case-recording-0.2.0.md` §7.1); R is recorded but never labels a trade.
-- Each CaseCard maps to at most one explicit `barRef`; legacy `barRefs` arrays exist only for migration compatibility. Users mention BAR numbers in free text; `barRef` is derived by mechanical extraction (REST API and store) and later AI, and may stay missing until backfilled. Manual `barRef` input is always optional, never required.
-- Case Tags are independent from Trade Tags, although both use the same seven colors.
 - Manual trade-management Executions use Move Stop (`stop`) for stop-loss changes, Move Target (`target-moved`) for take-profit changes, and Add / Edit Order (`order-edit`) for ordinary pending-order changes. Move Stop defaults to `stop-loss`; Move Target defaults to `take-profit`; manual trailing behavior is a Reason on Move Stop, not a `trailing-stop` order type by default.
 
 ## Branching And Releases
@@ -204,6 +116,7 @@ Current source of truth: `docs/software-design.md`.
 - Isolated Tauri dev: `pnpm tauri:dev:isolated`.
 - Local Tauri build: `pnpm tauri:build:local`.
 - Release check: `pnpm release:check x.y.z`.
+- AI real-provider e2e (uses the configured provider, one real call per test): `CAIRN_AI_E2E=1 cargo test --manifest-path src-tauri/Cargo.toml ai_chat_e2e -- --ignored --nocapture`.
 - Release executable verification after `pnpm build`: `cargo build --manifest-path src-tauri/Cargo.toml --release --features tauri/custom-protocol`.
 
 ## Verification
