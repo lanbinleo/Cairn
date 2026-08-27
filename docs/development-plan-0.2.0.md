@@ -125,7 +125,7 @@
 
 ## Stage 6：本地 REST API
 
-状态：已实现；typecheck/build/cargo check/cargo test 通过，隔离环境 curl 实测全链路通过，等待实际脚本接入验证。
+状态：已实现；typecheck/build/cargo check/cargo test 通过，隔离环境 curl 实测全链路通过，Tampermonkey 浮窗脚本已接入实测（2026-08-27，`scripts/cairn-case-widget.user.js`）。
 
 已交付：
 
@@ -137,9 +137,12 @@
 - 写入成功后 emit `cairn://data-changed`，前端 store 防抖刷新，日志已验证外部写入即时反映到 UI。
 - 不提供下单或仓位修改接口。
 
-后续配套（不属于本 Stage）：
+已交付的配套浮窗（不属于本 Stage，跟随 Stage 6 验收）：
 
-- Tampermonkey 浮窗脚本与配套 PineScript Bar Count。
+- `scripts/cairn-case-widget.user.js`：TradingView 悬浮记录浮窗（Shadow DOM 隔离、悬浮球拖动 + 4px 误触阈值、Case 切换/新建、五阶段、entryDecision、BAR 选填、入场完整性提示雏形、卡片时间线）。
+- 脚本内使用 `GM_xmlhttpRequest` 跨域写本地 API（https 页面直连 http localhost 会被混合内容拦截），Token/端口/Case/Phase/位置全部记忆。
+- `scripts/cairn-case-widget.test.html`：GM shim 测试页，不装 Tampermonkey 即可对隔离 dev 环境全流程联调。
+- 待做：配套 PineScript Bar Count 指标脚本。
 
 ## 每个 Stage 的检查
 

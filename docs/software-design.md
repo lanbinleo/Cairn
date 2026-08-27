@@ -227,7 +227,9 @@ Chart candle imports are persisted in batches through a native command so a mult
 
 ## Local REST API
 
-Cairn runs a local HTTP service for companion scripts (planned TradingView capture widget) to write Case data without opening the main window. Implementation lives in `src-tauri/src/api.rs` and reuses the same SQLite write path as the app UI, so raw-text immutability and one-to-one binding constraints behave identically.
+Cairn runs a local HTTP service for companion scripts (the TradingView capture widget) to write Case data without opening the main window. Implementation lives in `src-tauri/src/api.rs` and reuses the same SQLite write path as the app UI, so raw-text immutability and one-to-one binding constraints behave identically.
+
+- The capture widget is a Tampermonkey userscript at `scripts/cairn-case-widget.user.js`: a Shadow-DOM floating ball and panel over the TradingView chart. It matches the approved HTML mock (drag with a 4px misfire threshold, persistent ball that toggles to a collapse button, five phase pills, entry decision, optional BAR input, entry-phase completeness hints, card timeline). It talks to this API with `GM_xmlhttpRequest` (an https page cannot `fetch` http localhost directly), remembers token/port/selected Case/phase/widget position, and can create Cases inline with account and period picked from `GET /api/v1/accounts`. `scripts/cairn-case-widget.test.html` is a GM-shim harness page that runs the same userscript against the isolated dev environment for testing without Tampermonkey.
 
 - The server binds to `127.0.0.1` only and starts with the app; closing the window hides to tray and the API keeps running.
 - Configuration and a 32-byte random token are stored in `app_data_dir/api-config.json` (atomic tmp+rename writes). Default port is 8787. Port and enabled flag changes apply after restart; token regeneration applies immediately.

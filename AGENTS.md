@@ -144,6 +144,8 @@ Current source of truth: `docs/software-design.md`.
 - `reference/legacy/`: historical V0/backend/mock-data references only; not active architecture.
 - `scripts/dev-isolated.ps1`: isolated Tauri dev launch.
 - `scripts/release.ps1`: release verification helper.
+- `scripts/cairn-case-widget.user.js`: Tampermonkey userscript that injects the floating Case-recording widget into TradingView and writes through the local REST API.
+- `scripts/cairn-case-widget.test.html`: GM-shim harness page for testing the userscript against the isolated dev environment without Tampermonkey.
 - `package.json`: npm scripts and frontend dependencies.
 - `pnpm-lock.yaml`: package lockfile.
 - `vite.config.ts`, `tsconfig.json`, `postcss.config.mjs`, `components.json`: frontend tooling/config.
