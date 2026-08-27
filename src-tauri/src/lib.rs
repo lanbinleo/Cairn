@@ -201,6 +201,41 @@ async fn analyze_case_card(
     Ok(updated)
 }
 
+/// AI 秘书代拟 Case 标题：读 Case 的全部 Card 原文，返回一个短标题草稿（不落库，由前端确认写入）。
+#[tauri::command]
+async fn draft_case_title(
+    app: AppHandle,
+    db: tauri::State<'_, db::Db>,
+    case_id: String,
+) -> Result<String, String> {
+    let (provider, model, cards) = {
+        let conn = db.conn()?;
+        if db::read_record_by_id(&conn, "cases", &case_id)?.is_none() {
+            return Err(format!("case not found: {case_id}"));
+        }
+        let cards: Vec<(String, String)> = db::read_case_cards_for_case(&conn, &case_id)?
+            .iter()
+            .filter_map(|card| {
+                let phase = card.get("phase")?.as_str()?.to_string();
+                let text = card.get("rawText")?.as_str()?.to_string();
+                Some((phase, text))
+            })
+            .collect();
+        let (provider, model) = ai::default_provider(&app)?
+            .ok_or_else(|| "还没有默认 AI Provider，请在 设置 → AI 中配置".to_string())?;
+        (provider, model, cards)
+    };
+    if cards.is_empty() {
+        return Err("这个 Case 还没有 Card，无法拟题".to_string());
+    }
+    let messages = ai::build_title_messages(&cards);
+    ai::log_provider_event(&app, format!("drafting title for case {case_id}"));
+    let content = ai::chat_completion(&provider, &model, &messages).await?;
+    let title = ai::parse_title(&content)?;
+    ai::log_provider_event(&app, format!("case {case_id} title drafted"));
+    Ok(title)
+}
+
 #[derive(Serialize)]
 struct SavedAttachmentFile {
     file_name: String,
@@ -360,6 +395,7 @@ pub fn run() {
             delete_ai_provider,
             fetch_ai_models,
             analyze_case_card,
+            draft_case_title,
             save_attachment_file,
             read_attachment_file,
             save_chart_source_file

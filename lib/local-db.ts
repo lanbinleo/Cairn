@@ -210,3 +210,11 @@ export async function analyzeCaseCard(cardId: string, instruction?: string): Pro
   }
   return invoke<CaseCard>('analyze_case_card', { cardId, instruction: instruction ?? null })
 }
+
+/** AI 秘书代拟 Case 标题，返回草稿（不落库）。 */
+export async function draftCaseTitle(caseId: string): Promise<string> {
+  if (!isTauriRuntime()) {
+    throw new Error('AI 拟题需要桌面版运行')
+  }
+  return invoke<string>('draft_case_title', { caseId })
+}

@@ -512,6 +512,37 @@ pub fn parse_analysis(
     }))
 }
 
+// ==================== Case 标题代拟 ====================
+
+pub fn build_title_messages(cards: &[(String, String)]) -> Vec<ChatMessage> {
+    let system = "你是交易日志的拟题秘书。交易者在一个 Case 里按阶段记录了几段口语原文，你为这个 Case 起一个简短标题。
+
+规则：
+- 只输出 JSON：{\"title\": \"...\"}，不要 markdown 代码块和解释。
+- 标题用中文，不超过 20 个字，概括这笔交易的 setup 或核心想法（品种、方向、结构），像交易者随手记的名字，例如「BTC 区间假突破做空」「ETH 突破追多被扫」。
+- 原文里没有的信息不要编造；如果还没有入场想法，就概括观察对象，例如「BTC 区间上沿反复测试观察」。";
+    let user = cards
+        .iter()
+        .map(|(phase, text)| format!("[{}] {}", phase_label(phase), text))
+        .collect::<Vec<_>>()
+        .join("\n");
+    vec![ChatMessage::system(system), ChatMessage::user(user)]
+}
+
+pub fn parse_title(content: &str) -> Result<String, String> {
+    let json_text = extract_json_object(content);
+    let parsed: Value =
+        serde_json::from_str(json_text).map_err(|err| format!("model output is not JSON: {err}"))?;
+    let title = parsed
+        .get("title")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|title| !title.is_empty())
+        .ok_or_else(|| "model output has no title".to_string())?;
+    let capped: String = title.chars().take(40).collect();
+    Ok(capped)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -559,6 +590,25 @@ mod tests {
     #[test]
     fn parse_analysis_rejects_non_json() {
         assert!(parse_analysis("entry", RAW, "抱歉我不能", "m", "p", 1).is_err());
+    }
+
+    #[test]
+    fn title_messages_and_parse() {
+        let cards = vec![
+            ("pre-entry".to_string(), "BAR28 区间上沿第三次测试".to_string()),
+            ("entry".to_string(), "BAR38 做空，止损上沿上方".to_string()),
+        ];
+        let messages = build_title_messages(&cards);
+        assert!(messages[1].content.contains("[观察] BAR28"));
+        assert!(messages[1].content.contains("[入场] BAR38"));
+
+        assert_eq!(
+            parse_title("```json\n{\"title\":\"BTC 区间假突破做空\"}\n```").unwrap(),
+            "BTC 区间假突破做空"
+        );
+        assert_eq!(parse_title(r#"{"title":"  ETH 突破追多  "}"#).unwrap(), "ETH 突破追多");
+        assert!(parse_title(r#"{"title":"  "}"#).is_err());
+        assert!(parse_title("我不会起标题").is_err());
     }
 
     /// 真实 provider 联调（读 dev-profile 的 ai-providers.json，花一次真实调用）。
