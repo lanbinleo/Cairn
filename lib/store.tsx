@@ -5,9 +5,10 @@
  * Tauri 运行时通过本地 SQLite 持久化，浏览器开发环境使用空 seed。
  */
 
-import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react'
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import { listen } from '@tauri-apps/api/event'
 import { loadLocalState, saveLocalRecord, saveLocalRecords, deleteLocalRecord, restoreLocalState, exportLocalBackup, saveAttachmentFile, isTauriRuntime, analyzeCaseCard as analyzeCaseCardRemote } from './local-db'
+import { deriveAutoCloseCases } from './case-auto-close'
 import type { CairnStateSnapshot } from './seed'
 import { seedState } from './seed'
 import { logFrontendError, logFrontendMessage } from './frontend-log'
@@ -171,6 +172,10 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
   const [attachments, setAttachments] = useState<Attachment[]>(seedState.attachments)
   const [chartImports, setChartImports] = useState<ChartImport[]>(seedState.chartImports)
   const [chartCandles, setChartCandles] = useState<ChartCandle[]>(seedState.chartCandles)
+  /** 数据变更事件计数：触发一次自动收尾推导（手动改状态不触发，避免和用户抢状态） */
+  const [autoCloseTick, setAutoCloseTick] = useState(0)
+  const handledAutoCloseTickRef = useRef(0)
+  const requestAutoCloseCheck = useCallback(() => setAutoCloseTick((tick) => tick + 1), [])
 
   const makeId = useCallback((prefix: string) => {
     return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
@@ -277,6 +282,17 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
     )
   }, [caseTagDefs])
 
+  // 自动收尾：只在数据变更事件（requestAutoCloseCheck）后判断一次；
+  // 用户手动把已满足条件的 Case 改回「记录中」不会被立即再次收尾。
+  useEffect(() => {
+    if (autoCloseTick === handledAutoCloseTickRef.current) return
+    handledAutoCloseTickRef.current = autoCloseTick
+    const candidates = deriveAutoCloseCases(cases, caseCards, caseBindings, trades)
+    for (const candidate of candidates) {
+      updateCase(candidate.caseId, { status: 'closed' })
+    }
+  }, [autoCloseTick, cases, caseCards, caseBindings, trades, updateCase])
+
   const createCaseCard = useCallback((input: Omit<CaseCard, 'id' | 'createdAt' | 'barRef' | 'barRefs'> & { barRef: number }): CaseCard => {
     const created: CaseCard = {
       ...input,
@@ -294,8 +310,9 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
         return next
       }),
     )
+    requestAutoCloseCheck()
     return created
-  }, [makeId])
+  }, [makeId, requestAutoCloseCheck])
 
   /** 修复通道：Card 归属错了可移动到其他 Case，rawText 保持不变。 */
   const moveCaseCard = useCallback((cardId: string, targetCaseId: string): CaseCard | undefined => {
@@ -315,8 +332,9 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
         return nextCase
       }),
     )
+    requestAutoCloseCheck()
     return next
-  }, [caseCards])
+  }, [caseCards, requestAutoCloseCheck])
 
   /** 错字修正：rawText 可改，旧值进 rawTextHistory（Rust 落库时同样自动追加）。 */
   const updateCaseCardText = useCallback((cardId: string, rawText: string): CaseCard | undefined => {
@@ -373,8 +391,9 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
     }
     await saveLocalRecord('caseBindings', created)
     setCaseBindings((prev) => [...prev, created])
+    requestAutoCloseCheck()
     return created
-  }, [caseBindings, makeId])
+  }, [caseBindings, makeId, requestAutoCloseCheck])
 
   const deleteCaseBinding = useCallback(async (id: string) => {
     await deleteLocalRecord('caseBindings', id)
@@ -388,7 +407,8 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
     normalizedRecords.forEach((record) => {
       void saveLocalRecord('trades', record)
     })
-  }, [tagDefs])
+    requestAutoCloseCheck()
+  }, [tagDefs, requestAutoCloseCheck])
 
   const createImportBatch = useCallback((batch: ImportBatch) => {
     setImportBatches((prev) => [...prev, batch])
@@ -612,7 +632,8 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
         return next
       }),
     )
-  }, [tagDefs])
+    if (patch.status != null || patch.executions != null) requestAutoCloseCheck()
+  }, [tagDefs, requestAutoCloseCheck])
 
   const updateNote = useCallback((id: string, patch: Partial<(typeof seedState.notes)[number]>) => {
     setNotes((prev) =>
@@ -634,7 +655,8 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
         return next
       }),
     )
-  }, [])
+    requestAutoCloseCheck()
+  }, [requestAutoCloseCheck])
 
   const createTag = useCallback(
     (name: string, color: TagColor): TagDef | null => {
