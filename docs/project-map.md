@@ -16,6 +16,7 @@ Detailed per-file map of the codebase. AGENTS.md carries only the top-level orie
 | AI provider config / chat / prompts | `src-tauri/src/ai.rs` (prompts + `parse_analysis`/`parse_title` + `chat_completion`) |
 | Case phases, prompts, label colors, memo fields | `lib/cases.ts` (`CASE_PHASE_*`, `CASE_CARD_LABEL_META`, `CASE_MEMO_FIELD_LABEL`) |
 | Process score derivation | `lib/process-score.ts` |
+| Readable relative time (N 分钟前 / 昨天 / MM-DD) | `components/relative-time.tsx` · `fmtRelativeTime` in `lib/format.ts` |
 | Store mutations (create/move/edit cards, analyze) | `lib/store.tsx` |
 | TradingView import parsing | `lib/tradingview-import.ts`, page `app/import/page.tsx` |
 | The floating TradingView widget | `scripts/cairn-case-widget.user.js` + `scripts/cairn-case-widget.test.html` |
@@ -42,7 +43,7 @@ Detailed per-file map of the codebase. AGENTS.md carries only the top-level orie
 
 Shared page pieces: `page-header.tsx`, `stat-card.tsx`, `pnl-text.tsx` (`PnlText`/`RText`), `sparkline.tsx`, `trades-table.tsx` (reusable, exports `DirectionBadge`/`StatusBadge`), `trade-chart.tsx` (chart + overlays + case markers), `attachment-image.tsx`, `backup-card.tsx`, `coverage-timeline.tsx`, `window-titlebar.tsx`, `app-sidebar.tsx`.
 
-Case & AI: `trade-case-panel.tsx` (Trade→Case binding + summary), `case-tag-badge.tsx`, `manage-case-tags-dialog.tsx`, `create-case-dialog.tsx`, `case-card-analysis.tsx` (`HighlightedCaseCardText` underline rendering + `CaseCardAnalysisView` compact footer & memo popover), `ai-retry-button.tsx` (`AiRetryLink` instruction-retry popover), `trade-process-score.tsx` (ten-point scorecard).
+Case & AI: `trade-case-panel.tsx` (Trade→Case binding + summary), `case-tag-badge.tsx`, `manage-case-tags-dialog.tsx`, `create-case-dialog.tsx`, `case-card-analysis.tsx` (`HighlightedCaseCardText` underline rendering + `CaseCardAnalysisView` compact footer & memo popover), `ai-retry-button.tsx` (`AiRetryLink` instruction-retry popover), `trade-process-score.tsx` (ten-point scorecard), `relative-time.tsx` (`RelativeTime` readable relative time, hover shows full UTC).
 
 Dialogs live under `components/*-dialog.tsx` (edit-trade, manage-tags, create-symbol, ai-provider-dialog with preset logos…). Dashboard-only pieces under `components/dashboard/`. Base primitives under `components/ui/` (dialog, select, popover (base-ui Positioner pattern), dropdown-menu, tabs, switch, tooltip, table, …).
 

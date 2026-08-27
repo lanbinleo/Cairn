@@ -44,7 +44,6 @@ export function AiRetryLink({ onRetry, busy = false }: AiRetryLinkProps) {
         <div className="flex flex-col gap-2">
           <Textarea
             rows={3}
-            autoFocus
             value={instruction}
             onChange={(event) => setInstruction(event.target.value)}
             onKeyDown={(event) => {

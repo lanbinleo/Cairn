@@ -258,7 +258,7 @@ export function TradeCasePanel({ trade, targetCardId }: { trade: Trade; targetCa
               </CardDescription>
             </div>
             <div className="flex items-center gap-2">
-              <Button variant="outline" render={<Link to={`/cases/${caseRecord.id}`} />}>打开 Case 页面</Button>
+              <Button variant="outline" nativeButton={false} render={<Link to={`/cases/${caseRecord.id}`} />}>打开 Case 页面</Button>
               <Button
                 variant="ghost"
                 className="text-muted-foreground hover:text-destructive"

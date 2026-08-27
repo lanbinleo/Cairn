@@ -76,7 +76,7 @@ export default function NotesPage() {
                 <div className="flex items-start justify-between gap-3">
                   <CardTitle className="text-lg text-balance">{active.title}</CardTitle>
                   <div className="flex items-center gap-1">
-                    <Button variant="ghost" size="icon-sm" aria-label={`编辑笔记 ${active.title}`} render={<Link to={`/notes/${active.id}/edit`} />}>
+                    <Button variant="ghost" size="icon-sm" nativeButton={false} aria-label={`编辑笔记 ${active.title}`} render={<Link to={`/notes/${active.id}/edit`} />}>
                       <Pencil />
                     </Button>
                     <Button

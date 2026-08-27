@@ -7,6 +7,7 @@ import { Archive, ArrowLeft, ArrowRightLeft, Link2, Pencil, Plus, Sparkles, Tras
 import { CaseTagBadge } from '@/components/case-tag-badge'
 import { CaseCardAnalysisView, HighlightedCaseCardText } from '@/components/case-card-analysis'
 import { ManageCaseTagsDialog } from '@/components/manage-case-tags-dialog'
+import { RelativeTime } from '@/components/relative-time'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -27,7 +28,6 @@ import {
   caseStatusLabel,
   displayPhaseForCaseCard,
 } from '@/lib/cases'
-import { fmtUtcDateTime } from '@/lib/format'
 import { draftCaseTitle } from '@/lib/local-db'
 import { useCairn } from '@/lib/store'
 import { sortTagDefsByColor } from '@/lib/tags'
@@ -228,7 +228,7 @@ export default function CaseDetailPage() {
             </Button>
             {titleError && <span className="text-xs text-destructive">{titleError}</span>}
           </div>
-          <p className="text-sm text-muted-foreground">{account?.name} · {period?.name} · 创建于 {fmtUtcDateTime(caseRecord.createdAt)}</p>
+          <p className="text-sm text-muted-foreground">{account?.name} · {period?.name} · 创建于 <RelativeTime ms={caseRecord.createdAt} /></p>
         </div>
         <div className="flex items-center gap-2">
           <ManageCaseTagsDialog />
@@ -341,7 +341,7 @@ export default function CaseDetailPage() {
                             )}
                           </div>
                           <div className="flex items-center gap-1">
-                            <time className="font-mono text-xs text-muted-foreground">{fmtUtcDateTime(card.createdAt)}</time>
+                            <RelativeTime ms={card.createdAt} className="text-xs text-muted-foreground" />
                             <Button
                               variant="ghost"
                               size="sm"
@@ -443,7 +443,7 @@ export default function CaseDetailPage() {
               <Separator />
               <div className="text-sm"><span className="text-muted-foreground">状态：</span>{caseStatusLabel[caseRecord.status]}</div>
               <div className="text-sm"><span className="text-muted-foreground">来源：</span>{caseProvenanceLabel[caseRecord.provenance]}</div>
-              <div className="text-sm"><span className="text-muted-foreground">更新：</span>{fmtUtcDateTime(caseRecord.updatedAt)}</div>
+              <div className="text-sm"><span className="text-muted-foreground">更新：</span><RelativeTime ms={caseRecord.updatedAt} /></div>
             </CardContent>
           </Card>
 
@@ -479,7 +479,7 @@ export default function CaseDetailPage() {
               {boundTrade ? (
                 <div className="flex flex-col gap-2">
                   <span className="text-sm">已关联 Trade #{String(boundTrade.seq).padStart(3, '0')}</span>
-                  <Button variant="outline" size="sm" render={<Link to={`/trades/${boundTrade.id}`} />}>查看 Trade</Button>
+                  <Button variant="outline" size="sm" nativeButton={false} render={<Link to={`/trades/${boundTrade.id}`} />}>查看 Trade</Button>
                 </div>
               ) : (
                 <div className="flex flex-col gap-2 text-sm text-muted-foreground">

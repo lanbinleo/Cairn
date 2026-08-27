@@ -153,7 +153,7 @@ export default function TradesPage() {
               <ClipboardPaste data-icon="inline-start" />
               粘贴 JSON
             </Button>
-            <Button render={<Link to="/trades/new" />}>
+            <Button nativeButton={false} render={<Link to="/trades/new" />}>
               <Plus data-icon="inline-start" />
               手动录入
             </Button>

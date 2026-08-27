@@ -3,6 +3,7 @@
 import type { ReactNode } from 'react'
 
 import { AiRetryLink } from '@/components/ai-retry-button'
+import { RelativeTime } from '@/components/relative-time'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { CASE_CARD_LABEL_META, CASE_MEMO_FIELD_LABEL } from '@/lib/cases'
 import type { CaseCard, CaseCardLabel } from '@/lib/types'
@@ -56,10 +57,6 @@ export function HighlightedCaseCardText({ text, labels }: { text: string; labels
   return <p className="whitespace-pre-wrap text-sm leading-6">{nodes}</p>
 }
 
-function fmtShortUtc(ms: number): string {
-  return new Date(ms).toISOString().slice(11, 16) + ' UTC'
-}
-
 interface CaseCardAnalysisViewProps {
   card: CaseCard
   busy: boolean
@@ -77,7 +74,6 @@ export function CaseCardAnalysisView({ card, busy, onRetry }: CaseCardAnalysisVi
   const memo = analysis.memo ?? {}
   const hasMemo = Object.keys(memo).length > 0
   const usedTypes = [...new Set(analysis.labels.map((label) => label.type))]
-  const fullTime = new Date(analysis.analyzedAt).toISOString().slice(0, 16).replace('T', ' ') + ' UTC'
 
   return (
     <div className="mt-2 flex flex-wrap items-center gap-x-2.5 gap-y-1 text-xs text-muted-foreground">
@@ -100,7 +96,7 @@ export function CaseCardAnalysisView({ card, busy, onRetry }: CaseCardAnalysisVi
           已过期
         </span>
       )}
-      <span className="font-mono" title={fullTime}>{analysis.model} · {fmtShortUtc(analysis.analyzedAt)}</span>
+      <span className="font-mono">{analysis.model} · <RelativeTime ms={analysis.analyzedAt} /></span>
       <AiRetryLink busy={busy} onRetry={onRetry} />
       {hasMemo && (
         <Popover>
