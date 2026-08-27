@@ -257,6 +257,12 @@ The first Stage 5 slice runs on each CaseCard ("AI 整理"): the default provide
 - Validation is defensive: markdown fences are stripped, unknown label types and non-verbatim quotes are dropped, `direction` normalizes to long/short, `confidence` clamps to 0–100. The UI renders label-colored underlines directly on the original text, the memo grid with quotes, and missing-field hints.
 - Every AI surface ships with a retry control (`components/ai-retry-button.tsx`): clicking retries immediately; a hover-revealed caret opens a menu where the user can type a correction instruction (appended as an extra user message) and retry with it.
 - If the raw text was edited after an analysis (`analyzedAt` older than `rawTextEditedAt`), the UI marks the analysis stale and suggests a re-run.
+- The analysis footer is deliberately compact — legend, missing fields, model, and time on one muted line; the memo grid with verbatim quotes lives behind a popover. "全部 AI 整理" analyzes every Card of the Case in parallel with per-card busy and error state.
+- The same chat layer drafts Case titles (`draft_case_title`): it reads all Card raw texts of a Case and returns a short title suggestion (≤20 chars) that the user applies from the Case page. Naming is the secretary's job; recording stays untitled until then.
+
+### Process Score (Trade 分析)
+
+The Trade tab hosts the ten-point process scorecard (`lib/process-score.ts`, `components/trade-process-score.tsx`). Mechanical items derive live: memo completeness from the bound Case's Entry Card analysis (missing fields count), planned risk-reward from entry/stop/target prices (memo strings, `initialStopLoss`/`initialTakeProfit` fallbacks), and stop-only-tightened from the stop Execution sequence (direction-aware). Judgment items (structure valid, entry discipline, exit per plan, unplanned-action count) are human inputs; saved scores snapshot the derivation into `Trade.processScore.computed` so the evaluation stays anchored to decision-time facts. R is displayed beside the score and never contributes to it.
 
 ## Backup
 

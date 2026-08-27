@@ -91,6 +91,9 @@ Current source of truth: `docs/software-design.md`.
 - `components/trades-table.tsx`: reusable trade table.
 - `components/trade-chart.tsx`: chart rendering and overlays.
 - `components/trade-case-panel.tsx`: Trade Overview Case summary, Case/Card view, and one-to-one Binding actions.
+- `components/trade-process-score.tsx`: Trade 分析 tab process scorecard (mechanical items derive live, judgment items manual, snapshot into `Trade.processScore`).
+- `components/case-card-analysis.tsx`: Card AI-analysis compact footer, memo detail popover, and label-colored raw text rendering.
+- `components/ai-retry-button.tsx`: AI retry control with optional user instruction, reused across AI surfaces.
 - `components/attachment-image.tsx`: app-data and data URL image rendering.
 - `components/backup-card.tsx`: backup/restore UI.
 - `components/coverage-timeline.tsx`: chart data coverage visualization.
@@ -112,7 +115,8 @@ Current source of truth: `docs/software-design.md`.
 - `lib/trade-transfer.ts`: transfer helpers between imported and app trade shapes.
 - `lib/chart-data.ts`, `lib/chart-datasets.ts`, `lib/chart-timeframes.ts`, `lib/bar-time.ts`: chart candles, coverage, timeframe, and bar-index helpers.
 - `lib/tags.ts`: TagDef normalization, uniqueness, rename/delete behavior.
-- `lib/cases.ts`: Case phase labels, recording prompts, display rules, and explicit BAR reference extraction.
+- `lib/cases.ts`: Case phase labels, recording prompts, display rules, AI label/memo metadata, and explicit BAR reference extraction.
+- `lib/process-score.ts`: process-score derivation (memo completeness, planned RR, stop-only-tightened) from Executions and the bound Case's Entry memo.
 - `lib/note-mentions.ts`: `[[trade:ID]]` and `[[image:URL_OR_PATH]]` parsing.
 - `lib/clipboard-images.ts`: clipboard image handling.
 - `lib/frontend-log.ts`: frontend-to-Tauri log forwarding.

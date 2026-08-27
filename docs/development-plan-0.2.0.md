@@ -112,7 +112,24 @@
 
 ## Stage 5：AI
 
-状态：第一刀已落地（2026-08-27）。`ai.rs` 新增 `chat_completion`（POST /chat/completions，temperature 0，90s 超时，不带 response_format 以兼容全 provider）与 Card 结构化提取：prompt v1（`0.2.0-prompt-1`）+ schema v1（`0.2.0-schema-1`），真实 glm-5.3-flash 联调一次通过（六字段 memo、span quote 标签、barRef 提议、missingFields 机械推导）。CaseCard 新增 `aiAnalysis` 版本化派生字段与"AI 整理"按钮（标签下划线高亮原文、memo 网格、缺失提示）；`AiRetryButton` 支持直重试与带补充要求重试；rawText 错字修正开放（自动历史 + 过期标记）。Provider 配置见前：Settings AI tab（多 provider + presets + `/models`），凭证存本机 `ai-providers.json` 不进备份。
+状态：主体已落地（2026-08-27）。
+
+已交付：
+
+- Provider 基础设施：Settings AI tab（多 provider + presets + `/models` 连接测试），凭证存本机 `ai-providers.json` 不进备份。
+- `ai.rs` `chat_completion`（POST /chat/completions，temperature 0，90s 超时，兼容全 provider）。
+- 单 Card 结构化提取（`analyze_case_card`）：prompt v1 + schema v1，六字段 memo、span quote 标签（11 类）、barRef 提议回填、missingFields 机械推导；`aiAnalysis` 版本化派生字段；glm-5.3-flash 真实联调通过（直接提取 + instruction 修正两链路）。
+- Case 批量识别：心路历程「全部 AI 整理」并行执行，每卡独立 busy/error 状态；分析落款压缩为一行（图例/缺失/模型/时间），memo 详情收进 Popover。
+- Case 标题代拟（`draft_case_title`）：读全部 Card 原文返回 ≤20 字标题草稿。
+- 过程分（Trade 分析 tab）：机械项（memo 完整、计划盈亏比、止损只收紧）从 Execution + Entry memo 实时推导；判断项人工填写；保存快照 `Trade.processScore.computed`；R 并排展示不进评分。
+- AI 重试通用件 `AiRetryButton`（直重试 + 带补充要求重试）。
+- rawText 错字修正（`rawTextHistory` + `rawTextEditedAt`，分析过期标记；REST API 仍拒绝改原文）。
+
+待做（后续 Stage）：
+
+- Case Tags 与 AI Labels 的管理界面细分。
+- 8+ 组 vs ≤5 组平均 R 的证伪对比视图（攒够样本后）。
+- 卖飞（出场价/MFE）、踏空（跳过 setup 假想 R）等量化指标。
 
 计划：
 
