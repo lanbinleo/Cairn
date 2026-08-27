@@ -2,9 +2,10 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import { Link, Navigate, useNavigate, useParams } from 'react-router-dom'
-import { Archive, ArrowLeft, ArrowRightLeft, Link2, Plus, Trash2 } from 'lucide-react'
+import { Archive, ArrowLeft, ArrowRightLeft, Link2, Pencil, Plus, Sparkles, Trash2 } from 'lucide-react'
 
 import { CaseTagBadge } from '@/components/case-tag-badge'
+import { CaseCardAnalysisView, HighlightedCaseCardText } from '@/components/case-card-analysis'
 import { ManageCaseTagsDialog } from '@/components/manage-case-tags-dialog'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -56,6 +57,8 @@ export default function CaseDetailPage() {
     deleteCase,
     createCaseCard,
     moveCaseCard,
+    updateCaseCardText,
+    analyzeCaseCard,
   } = useCairn()
   const caseRecord = getCase(caseId)
   const [titleDraft, setTitleDraft] = useState('')
@@ -65,6 +68,10 @@ export default function CaseDetailPage() {
   const [rawText, setRawText] = useState('')
   const [movingCardId, setMovingCardId] = useState<string | null>(null)
   const [moveTargetId, setMoveTargetId] = useState('')
+  const [analyzingCardId, setAnalyzingCardId] = useState<string | null>(null)
+  const [analysisError, setAnalysisError] = useState<string | null>(null)
+  const [editingCardId, setEditingCardId] = useState<string | null>(null)
+  const [editText, setEditText] = useState('')
   const cards = getCaseCards(caseId)
   const otherCases = useMemo(
     () => cases.filter((item) => item.id !== caseId).sort((a, b) => b.createdAt - a.createdAt),
@@ -117,6 +124,30 @@ export default function CaseDetailPage() {
     moveCaseCard(cardId, moveTargetId)
     setMovingCardId(null)
     setMoveTargetId('')
+  }
+
+  async function runAnalysis(cardId: string, instruction?: string) {
+    setAnalysisError(null)
+    setAnalyzingCardId(cardId)
+    try {
+      await analyzeCaseCard(cardId, instruction)
+    } catch (error) {
+      setAnalysisError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setAnalyzingCardId(null)
+    }
+  }
+
+  function startEditCard(cardId: string, rawText: string) {
+    setEditingCardId(cardId)
+    setEditText(rawText)
+  }
+
+  function saveEditCard(cardId: string) {
+    const trimmed = editText.trim()
+    if (trimmed) updateCaseCardText(cardId, trimmed)
+    setEditingCardId(null)
+    setEditText('')
   }
 
   function saveTitle() {
@@ -242,9 +273,33 @@ export default function CaseDetailPage() {
                             {card.entryDecision && <Badge variant="secondary">{caseEntryDecisionLabel[card.entryDecision]}</Badge>}
                             {card.phase !== option.value && <span className="text-xs text-muted-foreground">展示于 {option.label}</span>}
                             {card.barRef != null && <Badge variant="outline">BAR {card.barRef}</Badge>}
+                            {card.rawTextHistory && card.rawTextHistory.length > 0 && (
+                              <span className="text-xs text-muted-foreground" title={card.rawTextHistory.join('\n──\n')}>
+                                已修正 {card.rawTextHistory.length} 次
+                              </span>
+                            )}
                           </div>
                           <div className="flex items-center gap-1">
                             <time className="font-mono text-xs text-muted-foreground">{fmtUtcDateTime(card.createdAt)}</time>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="h-7 w-7 p-0 text-muted-foreground"
+                              title="修正原文错字（保留历史版本）"
+                              onClick={() => (editingCardId === card.id ? setEditingCardId(null) : startEditCard(card.id, card.rawText))}
+                            >
+                              <Pencil className="size-3.5" />
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="h-7 gap-1 px-2 text-muted-foreground"
+                              disabled={analyzingCardId === card.id}
+                              onClick={() => runAnalysis(card.id)}
+                            >
+                              <Sparkles className={cn('size-3.5', analyzingCardId === card.id && 'animate-pulse')} />
+                              {analyzingCardId === card.id ? '整理中…' : 'AI 整理'}
+                            </Button>
                             {otherCases.length > 0 && (
                               <Button
                                 variant="ghost"
@@ -258,7 +313,27 @@ export default function CaseDetailPage() {
                             )}
                           </div>
                         </div>
-                        <p className="whitespace-pre-wrap text-sm leading-6">{card.rawText}</p>
+                        {editingCardId === card.id ? (
+                          <div className="flex flex-col gap-2">
+                            <Textarea rows={5} value={editText} onChange={(event) => setEditText(event.target.value)} />
+                            <div className="flex justify-end gap-2">
+                              <Button variant="ghost" size="sm" onClick={() => setEditingCardId(null)}>取消</Button>
+                              <Button size="sm" disabled={!editText.trim()} onClick={() => saveEditCard(card.id)}>保存修正</Button>
+                            </div>
+                          </div>
+                        ) : card.aiAnalysis && card.aiAnalysis.labels.length > 0 ? (
+                          <HighlightedCaseCardText text={card.rawText} labels={card.aiAnalysis.labels} />
+                        ) : (
+                          <p className="whitespace-pre-wrap text-sm leading-6">{card.rawText}</p>
+                        )}
+                        {analysisError && analyzingCardId === null && (
+                          <p className="mt-2 rounded-md border border-destructive/40 bg-destructive/10 px-2 py-1.5 text-xs text-destructive">{analysisError}</p>
+                        )}
+                        <CaseCardAnalysisView
+                          card={card}
+                          busy={analyzingCardId === card.id}
+                          onRetry={(instruction) => runAnalysis(card.id, instruction)}
+                        />
                         {movingCardId === card.id && (
                           <div className="mt-3 flex flex-wrap items-center gap-2 rounded-lg bg-background/70 p-2">
                             <Select

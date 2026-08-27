@@ -56,3 +56,29 @@ export function extractExplicitBarRef(rawText: string): number | undefined {
   }
   return refs.sort((a, b) => a.index - b.index)[0]?.value
 }
+
+/** AI 秘书标签类型的中文与颜色（高亮原文用）。 */
+export const CASE_CARD_LABEL_META: Record<string, { label: string; color: string }> = {
+  'market-context': { label: '市场背景', color: '#94a3b8' },
+  'setup-condition': { label: '形态条件', color: '#60a5fa' },
+  'observed-pattern': { label: '观察结构', color: '#22d3ee' },
+  inference: { label: '推断预期', color: '#a78bfa' },
+  'entry-plan': { label: '入场计划', color: '#4ade80' },
+  invalidation: { label: '失效条件', color: '#f87171' },
+  'risk-plan': { label: '风险计划', color: '#fb923c' },
+  'position-management': { label: '持仓管理', color: '#fbbf24' },
+  action: { label: '已执行动作', color: '#34d399' },
+  emotion: { label: '情绪', color: '#f472b6' },
+  reflection: { label: '复盘', color: '#818cf8' },
+}
+
+/** 入场 memo 六字段的中文名（与过程分 memo 完整项同一清单）。 */
+export const CASE_MEMO_FIELD_LABEL: Record<string, string> = {
+  direction: '方向',
+  stopLoss: '止损',
+  target: '目标',
+  confidence: '置信度',
+  invalidation: '失效点',
+  rejectedAlternatives: '放弃的方案',
+  emotion: '情绪',
+}

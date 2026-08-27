@@ -94,18 +94,59 @@ export interface TradeCase {
   updatedAt: number
 }
 
-/** Case 内的一条原始记录。rawText 提交后不可改写。 */
+/** AI 秘书对一段原文的 span 引用标签。quote 必须逐字来自原文。 */
+export interface CaseCardLabel {
+  type: string
+  quote: string
+}
+
+/** memo 单字段：value 为规范化值，quote 为原文证据。 */
+export interface CaseMemoField {
+  value: string | number
+  quote?: string
+}
+
+/** 入场前三分钟 memo：六字段 + 可选情绪。缺省字段代表原文没提到。 */
+export interface CaseCardMemo {
+  direction?: CaseMemoField
+  stopLoss?: CaseMemoField
+  target?: CaseMemoField
+  confidence?: CaseMemoField
+  invalidation?: CaseMemoField
+  rejectedAlternatives?: CaseMemoField
+  emotion?: CaseMemoField
+}
+
+/** Card 的版本化 AI 派生结果。绝不改写 rawText；重跑整体替换。 */
+export interface CaseCardAnalysis {
+  schemaVersion: string
+  promptVersion: string
+  model: string
+  providerId: string
+  analyzedAt: number
+  barRef: { bar: number; quote?: string } | null
+  labels: CaseCardLabel[]
+  memo: CaseCardMemo | null
+  missingFields: string[]
+}
+
+/** Case 内的一条原始记录。rawText 可修正错字，旧值自动进 rawTextHistory。 */
 export interface CaseCard {
   id: string
   caseId: string
   phase: CaseCardPhase
   rawText: string
   entryDecision?: CaseEntryDecision
-  /** Card 对应的唯一 BAR。新 Card 必须明确填写。 */
+  /** Card 对应的唯一 BAR。机械提取或 AI 回填，允许缺失。 */
   barRef?: number
   /** 0.2.0 早期数据兼容字段；读取时只采用第一项。 */
   barRefs?: number[]
+  /** 每次修改 rawText 前的旧值，按时间顺序累积。 */
+  rawTextHistory?: string[]
+  /** 最近一次 rawText 修改时间；晚于此的分析视为过期。 */
+  rawTextEditedAt?: number
   createdAt: number
+  aiAnalysis?: CaseCardAnalysis
 }
 
 /** Case 与 Trade 的有效关系为一对一。 */

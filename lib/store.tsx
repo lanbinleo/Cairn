@@ -7,7 +7,7 @@
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react'
 import { listen } from '@tauri-apps/api/event'
-import { loadLocalState, saveLocalRecord, saveLocalRecords, deleteLocalRecord, restoreLocalState, exportLocalBackup, saveAttachmentFile, isTauriRuntime } from './local-db'
+import { loadLocalState, saveLocalRecord, saveLocalRecords, deleteLocalRecord, restoreLocalState, exportLocalBackup, saveAttachmentFile, isTauriRuntime, analyzeCaseCard as analyzeCaseCardRemote } from './local-db'
 import type { CairnStateSnapshot } from './seed'
 import { seedState } from './seed'
 import { logFrontendError, logFrontendMessage } from './frontend-log'
@@ -66,6 +66,8 @@ interface CairnStore {
   deleteCase: (id: string) => void
   createCaseCard: (input: Omit<CaseCard, 'id' | 'createdAt' | 'barRef' | 'barRefs'> & { barRef: number }) => CaseCard
   moveCaseCard: (cardId: string, targetCaseId: string) => CaseCard | undefined
+  updateCaseCardText: (cardId: string, rawText: string) => CaseCard | undefined
+  analyzeCaseCard: (cardId: string, instruction?: string) => Promise<CaseCard | undefined>
   createCaseBinding: (caseId: string, tradeId: string, source?: CaseTradeBinding['source']) => Promise<CaseTradeBinding>
   deleteCaseBinding: (id: string) => Promise<void>
   createTrades: (records: Trade[]) => void
@@ -315,6 +317,33 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
     )
     return next
   }, [caseCards])
+
+  /** 错字修正：rawText 可改，旧值进 rawTextHistory（Rust 落库时同样自动追加）。 */
+  const updateCaseCardText = useCallback((cardId: string, rawText: string): CaseCard | undefined => {
+    const trimmed = rawText.trim()
+    const card = caseCards.find((item) => item.id === cardId)
+    if (!card || !trimmed || trimmed === card.rawText) return card
+    const next: CaseCard = {
+      ...card,
+      rawText: trimmed,
+      rawTextHistory: [...(card.rawTextHistory ?? []), card.rawText],
+      rawTextEditedAt: Date.now(),
+    }
+    setCaseCards((prev) => prev
+      .map((item) => (item.id === cardId ? next : item))
+      .sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id)))
+    void saveLocalRecord('caseCards', next)
+    return next
+  }, [caseCards])
+
+  /** AI 秘书整理：结果写入 card.aiAnalysis，原文不动。instruction 为重试补充要求。 */
+  const analyzeCaseCard = useCallback(async (cardId: string, instruction?: string): Promise<CaseCard | undefined> => {
+    const updated = await analyzeCaseCardRemote(cardId, instruction)
+    setCaseCards((prev) => prev
+      .map((item) => (item.id === updated.id ? updated : item))
+      .sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id)))
+    return updated
+  }, [])
 
   const deleteCase = useCallback((id: string) => {
     const removedCardIds = new Set(caseCards.filter((card) => card.caseId === id).map((card) => card.id))
@@ -747,6 +776,8 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
       deleteCase,
       createCaseCard,
       moveCaseCard,
+      updateCaseCardText,
+      analyzeCaseCard,
       createCaseBinding,
       deleteCaseBinding,
       createTrades,
@@ -776,7 +807,7 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
       updateCaseTag,
       deleteCaseTag,
     }),
-    [accounts, periods, trades, tagDefs, cases, caseCards, caseBindings, caseTagDefs, importBatches, attachments, chartImports, chartCandles, symbols, notes, updateAccount, updatePeriod, updateTrade, updateNote, createAccount, createPeriod, createSymbol, createNote, createImageAttachment, deleteAttachment, createCase, updateCase, deleteCase, createCaseCard, moveCaseCard, createCaseBinding, deleteCaseBinding, createTrades, createImportBatch, createChartImport, deleteChartImport, rollbackImportBatch, deleteAccount, deletePeriod, deleteTrade, deleteSymbol, deleteNote, restoreState, exportBackup, setTradeStatus, createTag, updateTag, deleteTag, createCaseTag, updateCaseTag, deleteCaseTag],
+    [accounts, periods, trades, tagDefs, cases, caseCards, caseBindings, caseTagDefs, importBatches, attachments, chartImports, chartCandles, symbols, notes, updateAccount, updatePeriod, updateTrade, updateNote, createAccount, createPeriod, createSymbol, createNote, createImageAttachment, deleteAttachment, createCase, updateCase, deleteCase, createCaseCard, moveCaseCard, updateCaseCardText, analyzeCaseCard, createCaseBinding, deleteCaseBinding, createTrades, createImportBatch, createChartImport, deleteChartImport, rollbackImportBatch, deleteAccount, deletePeriod, deleteTrade, deleteSymbol, deleteNote, restoreState, exportBackup, setTradeStatus, createTag, updateTag, deleteTag, createCaseTag, updateCaseTag, deleteCaseTag],
   )
 
   return <StoreContext.Provider value={value}>{children}</StoreContext.Provider>
