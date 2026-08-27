@@ -2,8 +2,9 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import { Link, Navigate, useNavigate, useParams } from 'react-router-dom'
-import { Archive, ArrowLeft, ArrowRightLeft, Link2, Pencil, Plus, Sparkles, Trash2 } from 'lucide-react'
+import { Archive, ArrowLeft, ArrowRightLeft, Link2, Pencil, Plus, Sparkles, Trash2, WandSparkles } from 'lucide-react'
 
+import { AiRetryButton } from '@/components/ai-retry-button'
 import { CaseTagBadge } from '@/components/case-tag-badge'
 import { CaseCardAnalysisView, HighlightedCaseCardText } from '@/components/case-card-analysis'
 import { ManageCaseTagsDialog } from '@/components/manage-case-tags-dialog'
@@ -28,6 +29,7 @@ import {
   displayPhaseForCaseCard,
 } from '@/lib/cases'
 import { fmtUtcDateTime } from '@/lib/format'
+import { draftCaseTitle } from '@/lib/local-db'
 import { useCairn } from '@/lib/store'
 import { sortTagDefsByColor } from '@/lib/tags'
 import type { CaseCardPhase, CaseEntryDecision, CaseProvenance, CaseStatus } from '@/lib/types'
@@ -68,10 +70,13 @@ export default function CaseDetailPage() {
   const [rawText, setRawText] = useState('')
   const [movingCardId, setMovingCardId] = useState<string | null>(null)
   const [moveTargetId, setMoveTargetId] = useState('')
-  const [analyzingCardId, setAnalyzingCardId] = useState<string | null>(null)
-  const [analysisError, setAnalysisError] = useState<string | null>(null)
+  const [analyzingCardIds, setAnalyzingCardIds] = useState<Set<string>>(new Set())
+  const [analysisErrors, setAnalysisErrors] = useState<Record<string, string>>({})
+  const [batchAnalyzing, setBatchAnalyzing] = useState(false)
   const [editingCardId, setEditingCardId] = useState<string | null>(null)
   const [editText, setEditText] = useState('')
+  const [titleDrafting, setTitleDrafting] = useState(false)
+  const [titleError, setTitleError] = useState<string | null>(null)
   const cards = getCaseCards(caseId)
   const otherCases = useMemo(
     () => cases.filter((item) => item.id !== caseId).sort((a, b) => b.createdAt - a.createdAt),
@@ -114,6 +119,22 @@ export default function CaseDetailPage() {
     setEntryDecision('pending')
   }
 
+  async function draftTitle() {
+    setTitleError(null)
+    setTitleDrafting(true)
+    try {
+      const title = await draftCaseTitle(activeCase.id)
+      if (title && title !== activeCase.title) {
+        updateCase(activeCase.id, { title })
+        setTitleDraft(title)
+      }
+    } catch (error) {
+      setTitleError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setTitleDrafting(false)
+    }
+  }
+
   function startMoveCard(cardId: string) {
     setMovingCardId(cardId)
     setMoveTargetId('')
@@ -127,15 +148,31 @@ export default function CaseDetailPage() {
   }
 
   async function runAnalysis(cardId: string, instruction?: string) {
-    setAnalysisError(null)
-    setAnalyzingCardId(cardId)
+    setAnalysisErrors((prev) => {
+      if (!prev[cardId]) return prev
+      const next = { ...prev }
+      delete next[cardId]
+      return next
+    })
+    setAnalyzingCardIds((prev) => new Set(prev).add(cardId))
     try {
       await analyzeCaseCard(cardId, instruction)
     } catch (error) {
-      setAnalysisError(error instanceof Error ? error.message : String(error))
+      setAnalysisErrors((prev) => ({ ...prev, [cardId]: error instanceof Error ? error.message : String(error) }))
     } finally {
-      setAnalyzingCardId(null)
+      setAnalyzingCardIds((prev) => {
+        const next = new Set(prev)
+        next.delete(cardId)
+        return next
+      })
     }
+  }
+
+  async function analyzeAllCards() {
+    if (!cards.length) return
+    setBatchAnalyzing(true)
+    await Promise.allSettled(cards.map((card) => runAnalysis(card.id)))
+    setBatchAnalyzing(false)
   }
 
   function startEditCard(cardId: string, rawText: string) {
@@ -179,6 +216,19 @@ export default function CaseDetailPage() {
               }
             }}
           />
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7 gap-1 px-2 text-muted-foreground"
+              disabled={titleDrafting || cards.length === 0}
+              onClick={draftTitle}
+            >
+              <WandSparkles className={cn('size-3.5', titleDrafting && 'animate-pulse')} data-icon="inline-start" />
+              {titleDrafting ? '拟题中…' : 'AI 拟题'}
+            </Button>
+            {titleError && <span className="text-xs text-destructive">{titleError}</span>}
+          </div>
           <p className="text-sm text-muted-foreground">{account?.name} · {period?.name} · 创建于 {fmtUtcDateTime(caseRecord.createdAt)}</p>
         </div>
         <div className="flex items-center gap-2">
@@ -252,9 +302,21 @@ export default function CaseDetailPage() {
           </Card>
 
           <Card>
-            <CardHeader>
-              <CardTitle className="text-base">心路历程</CardTitle>
-              <CardDescription>{cards.length} 张原始 Card，按展示阶段和创建顺序排列</CardDescription>
+            <CardHeader className="flex flex-row flex-wrap items-center justify-between gap-2">
+              <div className="flex flex-col gap-1.5">
+                <CardTitle className="text-base">心路历程</CardTitle>
+                <CardDescription>{cards.length} 张原始 Card，按展示阶段和创建顺序排列</CardDescription>
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-8"
+                disabled={batchAnalyzing || analyzingCardIds.size > 0 || cards.length === 0}
+                onClick={analyzeAllCards}
+              >
+                <Sparkles className={cn('size-3.5', batchAnalyzing && 'animate-pulse')} data-icon="inline-start" />
+                {batchAnalyzing ? '整理中…' : '全部 AI 整理'}
+              </Button>
             </CardHeader>
             <CardContent className="flex flex-col gap-6">
               {cards.length === 0 ? (
@@ -290,16 +352,13 @@ export default function CaseDetailPage() {
                             >
                               <Pencil className="size-3.5" />
                             </Button>
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              className="h-7 gap-1 px-2 text-muted-foreground"
-                              disabled={analyzingCardId === card.id}
-                              onClick={() => runAnalysis(card.id)}
-                            >
-                              <Sparkles className={cn('size-3.5', analyzingCardId === card.id && 'animate-pulse')} />
-                              {analyzingCardId === card.id ? '整理中…' : 'AI 整理'}
-                            </Button>
+                            <span className="flex items-center">
+                              <AiRetryButton
+                                label={card.aiAnalysis ? '重新识别' : 'AI 整理'}
+                                busy={analyzingCardIds.has(card.id)}
+                                onRetry={(instruction) => runAnalysis(card.id, instruction)}
+                              />
+                            </span>
                             {otherCases.length > 0 && (
                               <Button
                                 variant="ghost"
@@ -326,14 +385,10 @@ export default function CaseDetailPage() {
                         ) : (
                           <p className="whitespace-pre-wrap text-sm leading-6">{card.rawText}</p>
                         )}
-                        {analysisError && analyzingCardId === null && (
-                          <p className="mt-2 rounded-md border border-destructive/40 bg-destructive/10 px-2 py-1.5 text-xs text-destructive">{analysisError}</p>
+                        {analysisErrors[card.id] && (
+                          <p className="mt-2 rounded-md border border-destructive/40 bg-destructive/10 px-2 py-1.5 text-xs text-destructive">{analysisErrors[card.id]}</p>
                         )}
-                        <CaseCardAnalysisView
-                          card={card}
-                          busy={analyzingCardId === card.id}
-                          onRetry={(instruction) => runAnalysis(card.id, instruction)}
-                        />
+                        <CaseCardAnalysisView card={card} />
                         {movingCardId === card.id && (
                           <div className="mt-3 flex flex-wrap items-center gap-2 rounded-lg bg-background/70 p-2">
                             <Select

@@ -2,9 +2,8 @@
 
 import type { ReactNode } from 'react'
 
-import { AiRetryButton } from '@/components/ai-retry-button'
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { CASE_CARD_LABEL_META, CASE_MEMO_FIELD_LABEL } from '@/lib/cases'
-import { fmtUtcDateTime } from '@/lib/format'
 import type { CaseCard, CaseCardLabel } from '@/lib/types'
 import { cn } from '@/lib/utils'
 
@@ -56,71 +55,82 @@ export function HighlightedCaseCardText({ text, labels }: { text: string; labels
   return <p className="whitespace-pre-wrap text-sm leading-6">{nodes}</p>
 }
 
-interface CaseCardAnalysisViewProps {
-  card: CaseCard
-  busy: boolean
-  onRetry: (instruction?: string) => void
+function fmtShortUtc(ms: number): string {
+  return new Date(ms).toISOString().slice(11, 16) + ' UTC'
 }
 
-/** 卡片的 AI 整理结果：memo 网格、缺失字段、标签图例、溯源与重试。 */
-export function CaseCardAnalysisView({ card, busy, onRetry }: CaseCardAnalysisViewProps) {
+/**
+ * 分析落库后的紧凑落款行：图例 · 缺失字段 · 模型与时间。
+ * 结构化详情（memo 网格与原文引用）收进 Popover，不占卡片正文。
+ */
+export function CaseCardAnalysisView({ card }: { card: CaseCard }) {
   const analysis = card.aiAnalysis
   if (!analysis) return null
   const stale = card.rawTextEditedAt != null && analysis.analyzedAt < card.rawTextEditedAt
   const memo = analysis.memo ?? {}
+  const hasMemo = Object.keys(memo).length > 0
   const usedTypes = [...new Set(analysis.labels.map((label) => label.type))]
+  const fullTime = new Date(analysis.analyzedAt).toISOString().slice(0, 16).replace('T', ' ') + ' UTC'
 
   return (
-    <div className="mt-3 flex flex-col gap-3 rounded-lg bg-background/70 p-3">
-      {stale && (
-        <p className="rounded-md border border-amber-500/40 bg-amber-500/10 px-2 py-1.5 text-xs text-amber-600 dark:text-amber-400">
-          原文在整理后修改过，结果可能已过期，建议重新识别。
-        </p>
-      )}
-
-      {Object.keys(memo).length > 0 && (
-        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-          {['direction', 'stopLoss', 'target', 'confidence', 'invalidation', 'rejectedAlternatives', 'emotion'].map((key) => {
-            const field = (memo as Record<string, { value: string | number; quote?: string } | undefined>)[key]
-            const missing = analysis.missingFields.includes(key)
-            return (
-              <div
-                key={key}
-                className={cn('rounded-md border px-2.5 py-1.5', missing ? 'border-dashed border-amber-500/40' : 'border-border')}
-              >
-                <div className="flex items-baseline justify-between gap-2">
-                  <span className="text-xs text-muted-foreground">{CASE_MEMO_FIELD_LABEL[key] ?? key}</span>
-                  <span className={cn('text-sm', missing && 'text-amber-600 dark:text-amber-400')}>
-                    {field ? field.value : missing ? '未提到' : '—'}
-                  </span>
-                </div>
-                {field?.quote && <p className="mt-0.5 text-xs italic text-muted-foreground">「{field.quote}」</p>}
-              </div>
-            )
-          })}
-        </div>
-      )}
-
-      {analysis.labels.length > 0 && (
-        <div className="flex flex-wrap gap-x-3 gap-y-1">
-          {usedTypes.map((type) => {
-            const meta = CASE_CARD_LABEL_META[type]
-            return (
-              <span key={type} className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                <span className="inline-block h-0.5 w-3 rounded-full" style={{ background: meta?.color }} />
-                {meta?.label ?? type}
-              </span>
-            )
-          })}
-        </div>
-      )}
-
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <span className="font-mono text-xs text-muted-foreground">
-          {analysis.model} · {fmtUtcDateTime(analysis.analyzedAt)}
+    <div className="mt-2 flex flex-wrap items-center gap-x-2.5 gap-y-1 text-xs text-muted-foreground">
+      {usedTypes.map((type) => {
+        const meta = CASE_CARD_LABEL_META[type]
+        return (
+          <span key={type} className="flex items-center gap-1">
+            <span className="inline-block h-0.5 w-2.5 rounded-full" style={{ background: meta?.color }} />
+            {meta?.label ?? type}
+          </span>
+        )
+      })}
+      {analysis.missingFields.length > 0 && (
+        <span className="rounded-sm bg-amber-500/10 px-1.5 py-0.5 text-amber-600 dark:text-amber-400">
+          缺：{analysis.missingFields.map((key) => CASE_MEMO_FIELD_LABEL[key] ?? key).join('、')}
         </span>
-        <AiRetryButton busy={busy} onRetry={onRetry} />
-      </div>
+      )}
+      {stale && (
+        <span className="rounded-sm bg-amber-500/10 px-1.5 py-0.5 text-amber-600 dark:text-amber-400" title="原文在整理后修改过，建议重新识别">
+          已过期
+        </span>
+      )}
+      <span className="font-mono" title={fullTime}>{analysis.model} · {fmtShortUtc(analysis.analyzedAt)}</span>
+      {hasMemo && (
+        <Popover>
+          <PopoverTrigger
+            render={
+              <button
+                type="button"
+                className="rounded-sm px-1 py-0.5 underline decoration-dotted underline-offset-2 hover:text-foreground"
+              />
+            }
+          >
+            详情
+          </PopoverTrigger>
+          <PopoverContent className="w-96">
+            <div className="grid grid-cols-2 gap-2">
+              {['direction', 'stopLoss', 'target', 'confidence', 'invalidation', 'rejectedAlternatives', 'emotion'].map((key) => {
+                const field = (memo as Record<string, { value: string | number; quote?: string } | undefined>)[key]
+                const missing = analysis.missingFields.includes(key)
+                if (!field && !missing) return null
+                return (
+                  <div
+                    key={key}
+                    className={cn('rounded-md border px-2.5 py-1.5', missing ? 'border-dashed border-amber-500/40' : 'border-border')}
+                  >
+                    <div className="flex items-baseline justify-between gap-2">
+                      <span className="text-xs text-muted-foreground">{CASE_MEMO_FIELD_LABEL[key] ?? key}</span>
+                      <span className={cn('text-sm', missing && 'text-amber-600 dark:text-amber-400')}>
+                        {field ? field.value : '未提到'}
+                      </span>
+                    </div>
+                    {field?.quote && <p className="mt-0.5 text-xs italic text-muted-foreground">「{field.quote}」</p>}
+                  </div>
+                )
+              })}
+            </div>
+          </PopoverContent>
+        </Popover>
+      )}
     </div>
   )
 }
