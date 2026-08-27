@@ -12,6 +12,7 @@ import { DirectionBadge, StatusBadge } from '@/components/trades-table'
 import { EditTradeDialog } from '@/components/edit-trade-dialog'
 import { TagBadge } from '@/components/tag-badge'
 import { TradeProcessScoreCard } from '@/components/trade-process-score'
+import { TradePlanCompareCard } from '@/components/trade-plan-compare'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
@@ -26,7 +27,7 @@ import { useCairn } from '@/lib/store'
 import { executionActionLabel, isPositionExecutionAction, orderTypeLabel } from '@/lib/executions'
 import { aggregateDisplayExecutions } from '@/lib/execution-display'
 import { computeTradeMetrics } from '@/lib/metrics'
-import { fmtPrice, fmtDuration, fmtUtcDateTime, fmtUtcDate } from '@/lib/format'
+import { fmtPrice, fmtDuration, fmtUtcDateTime, fmtUtcDate, fmtMoney } from '@/lib/format'
 import { sortTagNamesByColor } from '@/lib/tags'
 import { barNumberToTime, timeToBarNumber, utcDayStart } from '@/lib/bar-time'
 import { readFileAsDataUrl } from '@/lib/tradingview-import'
@@ -86,6 +87,7 @@ export default function TradeDetailPage() {
   const tradeBinding = caseBindings.find((binding) => binding.tradeId === trade.id)
   const boundCase = tradeBinding ? cases.find((caseRecord) => caseRecord.id === tradeBinding.caseId) : undefined
   const boundCaseCards = boundCase ? caseCards.filter((card) => card.caseId === boundCase.id) : []
+  const entryMemo = boundCaseCards.find((card) => card.phase === 'entry')?.aiAnalysis?.memo ?? null
   const caseMarkers: TradeChartCaseMarker[] = boundCaseCards.flatMap((card) => card.barRef == null ? [] : [{
     cardId: card.id,
     barNumber: card.barRef,
@@ -611,15 +613,25 @@ export default function TradeDetailPage() {
           <div className="flex flex-col gap-6">
             <Card>
               <CardHeader><CardTitle className="text-base">结果事实</CardTitle><p className="text-sm text-muted-foreground">结果只记录，不参与过程评分。</p></CardHeader>
-              <CardContent>
+              <CardContent className="flex flex-col gap-3">
                 <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
                   <div className="rounded-lg border p-4"><p className="text-xs text-muted-foreground">PnL</p>{trade.status === 'closed' ? <PnlText value={m.pnl} currency={account?.currency} className="mt-1 text-lg font-semibold" /> : <p className="mt-1 text-lg font-semibold text-muted-foreground">持仓中</p>}</div>
-                  <div className="rounded-lg border p-4"><p className="text-xs text-muted-foreground">R 倍数</p><RText value={m.rMultiple} className="mt-1 text-lg font-semibold" /></div>
+                  <div className="rounded-lg border p-4"><p className="text-xs text-muted-foreground">R 倍数（初始风险）</p><RText value={m.rMultiple} className="mt-1 text-lg font-semibold" /></div>
                   <div className="rounded-lg border p-4"><p className="text-xs text-muted-foreground">Execution</p><p className="mt-1 font-mono text-lg font-semibold">{trade.executions.length}</p></div>
                   <div className="rounded-lg border p-4"><p className="text-xs text-muted-foreground">持仓时长</p><p className="mt-1 font-mono text-lg font-semibold">{fmtDuration(m.durationMs)}</p></div>
                 </div>
+                {m.initialRisk != null && (
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                    <div className="rounded-lg border p-4"><p className="text-xs text-muted-foreground">初始风险</p><p className="mt-1 font-mono text-lg font-semibold tabular-nums">{fmtMoney(m.initialRisk, account?.currency)}</p></div>
+                    <div className="rounded-lg border p-4"><p className="text-xs text-muted-foreground">实际风险</p><p className="mt-1 font-mono text-lg font-semibold tabular-nums">{m.actualRisk == null ? '—' : fmtMoney(m.actualRisk, account?.currency)}</p></div>
+                    <div className="rounded-lg border p-4"><p className="text-xs text-muted-foreground">R 实际风险</p><RText value={m.rActual} className="mt-1 text-lg font-semibold" /></div>
+                    <div className="rounded-lg border p-4"><p className="text-xs text-muted-foreground">最终止损</p><p className="mt-1 font-mono text-lg font-semibold tabular-nums">{m.finalStop == null ? '—' : fmtPrice(m.finalStop, symbol?.pricePrecision)}</p></div>
+                  </div>
+                )}
+                <p className="text-xs text-muted-foreground">初始风险锚定首笔入场与初始止损（计划的 1R）；实际风险按每笔加仓当时的生效止损分段累加。两个 R 只并列，不判断。</p>
               </CardContent>
             </Card>
+            <TradePlanCompareCard trade={trade} m={m} entryMemo={entryMemo} pricePrecision={symbol?.pricePrecision} />
             <TradeProcessScoreCard trade={trade} rMultiple={m.rMultiple} />
           </div>
         </TabsContent>

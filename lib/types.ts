@@ -347,8 +347,18 @@ export interface TradeMetrics {
   avgExit: number
   /** 总仓位数量 */
   totalQuantity: number
-  /** R 倍数（需 initialStopLoss，否则为 null） */
+  /** R 倍数（实际 PnL ÷ 初始风险；需 initialStopLoss，否则为 null） */
   rMultiple: number | null
+  /** 实际 R（实际 PnL ÷ 实际风险分段累加；需 initialStopLoss，否则为 null） */
+  rActual: number | null
+  /** 初始风险：|首笔入场价 − 初始止损| × 首笔数量（计划的 1R）；缺初始止损为 null */
+  initialRisk: number | null
+  /** 实际风险：Σ 每笔入场 fill × |fill 价 − 当时生效止损| × 数量；缺初始止损为 null */
+  actualRisk: number | null
+  /** 首笔入场价（初始风险与 R 的基准；无成交为 0） */
+  firstEntryPrice: number
+  /** 最终止损：出场时生效的止损价（从未动过则等于 initialStopLoss）；无止损记录为 null */
+  finalStop: number | null
   /** 持仓时长 ms */
   durationMs: number
   entryTime: number
