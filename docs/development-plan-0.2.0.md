@@ -100,12 +100,16 @@
 
 ## Stage 4：导入匹配与数据管理
 
-状态：未开始。
+状态：导入匹配已实现（2026-08-27）；图片管理、Binding 变更记录、验收检查未开始。
 
-计划：
+已交付：
 
-- Trade 导入后推荐可能关联的 Case。
-- 模糊匹配要求人工确认。
+- Trade 导入后推荐可能关联的 Case（`lib/case-import-matching.ts`）：同账户下首笔入场时间 ≈ 已执行 Entry 卡记录时间（±15 分钟）且末笔离场 ≈ Closing 卡时间的精确匹配自动绑定（`source: 'import'`，每个 Case 只消费一次）；部分匹配/时间重叠进候选列表人工确认；无匹配标红提示。导入结果页逐笔展示绿/黄/红球，批次撤销连带删除本次建立的 Binding。注意：Case/Card 不记录 symbol，匹配只看账户 + 时间窗，品种一致性靠界面摘要人工核对。
+- 自动收尾（`lib/case-auto-close.ts`）：绑定的 Trade 完全平仓且存在 Closing 卡 → Case 自动置为已完成；无绑定时存在 Reflection 卡同理；平仓但没写 Closing 卡的保持记录中（开着的 Case 就是补记录的提醒）；手动改状态不会再次触发。
+
+待做：
+
+- 导入匹配的真实数据验收（浏览器测试环境无法上传 CSV，尚未实测）。
 - Case/Card 图片管理。
 - Binding 变更记录。
 - Case 删除、归档、附件、备份和恢复的完整检查。
@@ -158,7 +162,7 @@
 
 已交付的配套浮窗（不属于本 Stage，跟随 Stage 6 验收）：
 
-- `scripts/cairn-case-widget.user.js`：TradingView 悬浮记录浮窗（Shadow DOM 隔离、悬浮球拖动 + 4px 误触阈值、Case 切换/新建、五阶段、entryDecision、BAR 选填、入场完整性提示雏形、卡片时间线）。
+- `scripts/cairn-case-widget.user.js`：TradingView 悬浮记录浮窗（Shadow DOM 隔离、悬浮球拖动 + 4px 误触阈值、Case 切换/新建、五阶段、entryDecision、BAR 选填、阶段检查单提示「这张卡可以覆盖：…」（entry 与六字段 memo 对齐）、提交后入场完整性提示、卡片时间线）。
 - 脚本内使用 `GM_xmlhttpRequest` 跨域写本地 API（https 页面直连 http localhost 会被混合内容拦截），Token/端口/Case/Phase/位置全部记忆。
 - `scripts/cairn-case-widget.test.html`：GM shim 测试页，不装 Tampermonkey 即可对隔离 dev 环境全流程联调。
 - 待做：配套 PineScript Bar Count 指标脚本。

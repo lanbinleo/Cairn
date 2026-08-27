@@ -22,11 +22,11 @@ const navItems = [
   { href: '/', label: '总览', icon: LayoutDashboard },
   { href: '/accounts', label: '账户', icon: Wallet },
   { href: '/trades', label: '交易', icon: ChartCandlestick },
-  { href: '/cases', label: 'Cases', icon: MessagesSquare },
+  { href: '/cases', label: '案例', icon: MessagesSquare },
   { href: '/data', label: '数据', icon: Database },
   { href: '/notes', label: '笔记', icon: NotebookPen },
   { href: '/import', label: '导入', icon: Upload },
-  { href: '/settings', label: '品种与设置', icon: Settings },
+  { href: '/settings', label: '设置', icon: Settings },
 ]
 
 export function AppSidebar() {

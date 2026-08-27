@@ -61,6 +61,15 @@
     'reflection': { label: '复盘', color: '#ab47bc' },
   };
 
+  // 阶段检查单：提示这张卡可以 cover 什么（entry 与主程序六字段 memo 对齐）
+  const PHASE_PROMPTS = {
+    'pre-entry': '这张卡可以覆盖：现在什么市场状态 · 值得观察的位置/结构 · 出现什么条件才考虑入场',
+    'entry': '这张卡可以覆盖：方向 · 入场计划 · 止损 · 目标 · 信心（胜率）· 失效条件 · 放弃的备选',
+    'intermediate': '这张卡可以覆盖：现在是哪根 BAR · 新出现的结构 · 对持仓计划的改变',
+    'closing': '这张卡可以覆盖：哪根 BAR 触发离场 · 市场发生了什么变化 · 是否符合原计划',
+    'reflection': '这张卡可以覆盖：实际发生了什么 · 哪些判断有依据 · 哪些动作符合计划',
+  };
+
   /* ================= API ================= */
 
   function baseUrl() {
@@ -331,6 +340,8 @@
   .phase-pill:hover { color: var(--text); }
   .phase-pill.active { background: rgba(41,98,255,.18); border-color: var(--accent); color: #fff; }
 
+  #phase-checklist { font-size: 11px; line-height: 1.55; color: var(--text-dim); padding: 0 2px; margin-top: -4px; }
+
   #entry-decision { display: none; flex-direction: column; gap: 6px; }
   #entry-decision.show { display: flex; }
   #entry-decision .ed-title { font-size: 11px; color: var(--text-dim); }
@@ -518,6 +529,8 @@
           <button class="phase-pill" data-phase="closing">离场</button>
           <button class="phase-pill" data-phase="reflection">复盘</button>
         </div>
+
+        <div id="phase-checklist"></div>
 
         <div id="entry-decision">
           <div class="ed-title">这张入场卡的实际执行情况：</div>
@@ -802,6 +815,7 @@
     root.querySelectorAll('.phase-pill').forEach((pill) => {
       pill.classList.toggle('active', pill.dataset.phase === state.phase);
     });
+    $('phase-checklist').textContent = PHASE_PROMPTS[state.phase] || '';
     $('entry-decision').classList.toggle('show', state.phase === 'entry');
     root.querySelectorAll('.ed-btn').forEach((btn) => {
       btn.classList.toggle('active', btn.dataset.v === state.entryDecision);
