@@ -11,6 +11,7 @@ import { PnlText, RText } from '@/components/pnl-text'
 import { DirectionBadge, StatusBadge } from '@/components/trades-table'
 import { EditTradeDialog } from '@/components/edit-trade-dialog'
 import { TagBadge } from '@/components/tag-badge'
+import { TradeProcessScoreCard } from '@/components/trade-process-score'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
@@ -607,18 +608,20 @@ export default function TradeDetailPage() {
         </TabsContent>
 
         <TabsContent value="trade">
-          <Card>
-            <CardHeader><CardTitle className="text-base">Trade 分析</CardTitle><p className="text-sm text-muted-foreground">这里集中放交易结果、Execution 分析，以及后续的过程评分和 AI 建议。</p></CardHeader>
-            <CardContent>
-              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
-                <div className="rounded-lg border p-4"><p className="text-xs text-muted-foreground">PnL</p>{trade.status === 'closed' ? <PnlText value={m.pnl} currency={account?.currency} className="mt-1 text-lg font-semibold" /> : <p className="mt-1 text-lg font-semibold text-muted-foreground">持仓中</p>}</div>
-                <div className="rounded-lg border p-4"><p className="text-xs text-muted-foreground">R 倍数</p><RText value={m.rMultiple} className="mt-1 text-lg font-semibold" /></div>
-                <div className="rounded-lg border p-4"><p className="text-xs text-muted-foreground">Execution</p><p className="mt-1 font-mono text-lg font-semibold">{trade.executions.length}</p></div>
-                <div className="rounded-lg border p-4"><p className="text-xs text-muted-foreground">持仓时长</p><p className="mt-1 font-mono text-lg font-semibold">{fmtDuration(m.durationMs)}</p></div>
-              </div>
-              <p className="mt-6 rounded-lg bg-muted px-4 py-3 text-sm text-muted-foreground">过程评分和 AI 建议将在后续 Stage 加入。</p>
-            </CardContent>
-          </Card>
+          <div className="flex flex-col gap-6">
+            <Card>
+              <CardHeader><CardTitle className="text-base">结果事实</CardTitle><p className="text-sm text-muted-foreground">结果只记录，不参与过程评分。</p></CardHeader>
+              <CardContent>
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                  <div className="rounded-lg border p-4"><p className="text-xs text-muted-foreground">PnL</p>{trade.status === 'closed' ? <PnlText value={m.pnl} currency={account?.currency} className="mt-1 text-lg font-semibold" /> : <p className="mt-1 text-lg font-semibold text-muted-foreground">持仓中</p>}</div>
+                  <div className="rounded-lg border p-4"><p className="text-xs text-muted-foreground">R 倍数</p><RText value={m.rMultiple} className="mt-1 text-lg font-semibold" /></div>
+                  <div className="rounded-lg border p-4"><p className="text-xs text-muted-foreground">Execution</p><p className="mt-1 font-mono text-lg font-semibold">{trade.executions.length}</p></div>
+                  <div className="rounded-lg border p-4"><p className="text-xs text-muted-foreground">持仓时长</p><p className="mt-1 font-mono text-lg font-semibold">{fmtDuration(m.durationMs)}</p></div>
+                </div>
+              </CardContent>
+            </Card>
+            <TradeProcessScoreCard trade={trade} rMultiple={m.rMultiple} />
+          </div>
         </TabsContent>
       </Tabs>
     </div>

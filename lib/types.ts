@@ -204,6 +204,31 @@ export interface TradeEvent {
   note?: string
 }
 
+/** 过程分：人评字段 + 判断覆盖；memo 完整、止损只收紧等机械项实时推导，保存时快照 computed。 */
+export interface TradeProcessScore {
+  /** 结构成立（判断项，0-2，人评，建议对着入场 BAR 冻结图打分） */
+  structureValid?: number
+  /** 计划盈亏比过线（0/1；缺省时按推导 plannedRR ≥ 阈值判定） */
+  riskRewardPass?: number
+  /** 入场纪律（0/1，人评：计划区域内非追单） */
+  entryDiscipline?: number
+  /** 持仓期间计划外动作次数（得分 = max(0, 2 - n)） */
+  unplannedActions?: number
+  /** 出场按计划（0/1，人评） */
+  exitPerPlan?: number
+  /** 保存时的推导快照（价格、RR、memo 缺失、止损序列） */
+  computed?: {
+    entryPrice?: number | null
+    exitPrice?: number | null
+    stopPrice?: number | null
+    targetPrice?: number | null
+    plannedRR?: number | null
+    memoMissing?: string[] | null
+    stopOnlyTightened?: boolean
+  }
+  updatedAt?: number
+}
+
 export interface Trade {
   id: string
   /** 全局自增编号（解决 TradingView 每次从 1 开始的问题） */
@@ -229,6 +254,7 @@ export interface Trade {
   chartData?: Partial<Record<ChartTimeframe, ChartBar[]>>
   tags: string[]
   note?: string
+  processScore?: TradeProcessScore
   createdAt: number
 }
 
