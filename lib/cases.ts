@@ -30,6 +30,15 @@ export const caseStatusLabel = Object.fromEntries(CASE_STATUS_OPTIONS.map((optio
 export const caseProvenanceLabel = Object.fromEntries(CASE_PROVENANCE_OPTIONS.map((option) => [option.value, option.label])) as Record<CaseProvenance, string>
 export const caseEntryDecisionLabel = Object.fromEntries(CASE_ENTRY_DECISION_OPTIONS.map((option) => [option.value, option.label])) as Record<CaseEntryDecision, string>
 
+/** memo direction 值（AI 规范为 "long"/"short"）→ 做多/做空；无法识别返回 null */
+export function memoDirectionLabel(value: string | number | undefined): '做多' | '做空' | null {
+  if (value == null) return null
+  const text = String(value).toLowerCase()
+  if (text.includes('short') || text.includes('空')) return '做空'
+  if (text.includes('long') || text.includes('多')) return '做多'
+  return null
+}
+
 export const CASE_PHASE_PROMPTS: Record<CaseCardPhase, string[]> = {
   'pre-entry': ['现在是什么市场状态？', '哪些位置或结构值得观察？', '出现什么条件才会考虑入场？'],
   entry: ['是哪一根 BAR 触发了想法？', '方向、入场计划、止损和目标是什么？', '什么情况会让这个想法失效？'],

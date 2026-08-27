@@ -6,10 +6,11 @@ import { Save } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { RelativeTime } from '@/components/relative-time'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { CASE_MEMO_FIELD_LABEL } from '@/lib/cases'
-import { PROCESS_RR_THRESHOLD, deriveProcessFacts } from '@/lib/process-score'
+import { PROCESS_RR_THRESHOLD, deriveProcessFacts, savedProcessScoreTotal } from '@/lib/process-score'
 import { useCairn } from '@/lib/store'
 import type { Trade, TradeProcessScore } from '@/lib/types'
 
@@ -107,6 +108,9 @@ export function TradeProcessScoreCard({ trade, rMultiple }: { trade: Trade; rMul
   const total = rows.reduce((sum, row) => sum + (row.score ?? 0), 0)
   const scored = rows.filter((row) => row.score != null).length
 
+  // 已保存评分的总分：机械项用 computed 快照（评分锚定当时），判断项用保存值
+  const savedTotal = savedProcessScoreTotal(saved)
+
   const memoHint = !binding
     ? '未绑定 Case；在 Trade 的 Case 面板绑定后自动推导'
     : facts.memoMissing == null
@@ -149,10 +153,24 @@ export function TradeProcessScoreCard({ trade, rMultiple }: { trade: Trade; rMul
   return (
     <Card>
       <CardHeader>
-        <CardTitle className="text-base">过程分</CardTitle>
-        <CardDescription>
-          只用决策时刻可得的信息评分；R（{rMultiple == null ? '—' : `${rMultiple.toFixed(2)}R`}）只记录，不进标签。
-        </CardDescription>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <CardTitle className="text-base">过程分</CardTitle>
+            <CardDescription>
+              只用决策时刻可得的信息评分；R（{rMultiple == null ? '—' : `${rMultiple.toFixed(2)}R`}）只记录，不进标签。
+            </CardDescription>
+          </div>
+          {saved && savedTotal != null && (
+            <div className="text-right">
+              <p className="font-mono text-2xl font-semibold tabular-nums leading-none">
+                {savedTotal}<span className="text-sm font-normal text-muted-foreground">/10</span>
+              </p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                已评分{saved.updatedAt != null && <> · <RelativeTime ms={saved.updatedAt} /></>}
+              </p>
+            </div>
+          )}
+        </div>
       </CardHeader>
       <CardContent className="flex flex-col gap-4">
         <div className="flex flex-col gap-2">

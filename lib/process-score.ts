@@ -6,7 +6,7 @@
  */
 
 import { isPositionExecutionAction } from './executions'
-import type { CaseCard, Trade } from './types'
+import type { CaseCard, Trade, TradeProcessScore } from './types'
 
 /** 计划盈亏比过线阈值（过程分「盈亏比过线」项的判定线） */
 export const PROCESS_RR_THRESHOLD = 2
@@ -78,4 +78,23 @@ export function deriveProcessFacts(trade: Trade, cards: CaseCard[]): ProcessScor
   }
 
   return { entryPrice, exitPrice, stopPrice, targetPrice, plannedRR, memoMissing, memoScore, stopOnlyTightened, stopSequence }
+}
+
+/** 已保存过程分的总分（十分制）：机械项用保存时的 computed 快照，判断项用保存值。 */
+export function savedProcessScoreTotal(saved: TradeProcessScore | undefined): number | null {
+  if (!saved) return null
+  const snapshot = saved.computed
+  const rr = saved.riskRewardPass ?? (snapshot?.plannedRR == null ? null : snapshot.plannedRR >= PROCESS_RR_THRESHOLD ? 1 : 0)
+  const memo = snapshot?.memoMissing == null ? null : Math.max(0, 2 - snapshot.memoMissing.length)
+  const improv = saved.unplannedActions == null ? null : Math.max(0, 2 - saved.unplannedActions)
+  const parts: Array<number | null> = [
+    saved.structureValid ?? null,
+    memo,
+    rr,
+    saved.entryDiscipline ?? null,
+    improv,
+    snapshot?.stopOnlyTightened ? 1 : 0,
+    saved.exitPerPlan ?? null,
+  ]
+  return parts.reduce<number>((sum, value) => sum + (value ?? 0), 0)
 }
