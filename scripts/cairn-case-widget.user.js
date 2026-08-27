@@ -191,6 +191,53 @@
   }
   #widget-header:active { cursor: grabbing; }
   #widget-header .grip { color: var(--text-dim); font-size: 14px; letter-spacing: -1px; }
+  .case-current {
+    flex: 1; min-width: 0;
+    display: flex; align-items: center; gap: 6px;
+    background: var(--panel-2);
+    border: 1px solid transparent;
+    border-radius: 8px;
+    padding: 5px 8px;
+    font-size: 13px;
+    font-family: inherit;
+    color: var(--text);
+    cursor: pointer;
+    text-align: left;
+  }
+  .case-current:hover, .case-current:focus { border-color: var(--border); outline: none; }
+  .case-current #case-current-name {
+    flex: 1; min-width: 0;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .case-current .chev { color: var(--text-dim); font-size: 10px; flex-shrink: 0; }
+  #case-menu {
+    position: absolute;
+    top: 44px; left: 8px; right: 8px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    box-shadow: 0 10px 28px rgba(0,0,0,.5);
+    display: none;
+    flex-direction: column;
+    max-height: 224px;
+    overflow-y: auto;
+    padding: 4px;
+    z-index: 5;
+  }
+  #case-menu.show { display: flex; animation: pop .14s ease; }
+  .case-menu-item {
+    padding: 7px 10px;
+    border-radius: 7px;
+    font-size: 12.5px;
+    color: var(--text);
+    cursor: pointer;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    background: none; border: none; font-family: inherit; text-align: left;
+  }
+  .case-menu-item:hover { background: var(--panel-2); }
+  .case-menu-item.active { color: var(--accent); background: rgba(41,98,255,.12); }
+  .case-menu-item.empty { color: var(--text-dim); cursor: default; }
+  .case-menu-item.empty:hover { background: none; }
   .cw-select {
     background: var(--panel-2);
     color: var(--text);
@@ -203,7 +250,6 @@
     min-width: 0;
   }
   .cw-select:hover, .cw-select:focus { border-color: var(--border); outline: none; }
-  #case-select { flex: 1; }
   .icon-btn {
     background: var(--panel-2); border: none; color: var(--text-dim);
     width: 26px; height: 26px; border-radius: 7px;
@@ -422,8 +468,12 @@
     <div id="widget">
       <div id="widget-header">
         <span class="grip">⠿</span>
-        <select id="case-select" class="cw-select"></select>
-        <button class="icon-btn" id="new-case-btn" title="新建 Case">＋</button>
+        <button id="case-current" type="button" title="切换 Case">
+          <span id="case-current-name">—</span>
+          <span class="chev">▾</span>
+        </button>
+        <div id="case-menu"></div>
+        <button class="icon-btn" id="new-case-btn" title="开新 Case">＋</button>
         <button class="icon-btn" id="settings-btn" title="连接设置">⚙</button>
       </div>
 
@@ -557,6 +607,7 @@
     d.classList.remove('open');
     d.classList.add('unread');
     setBallMode(false);
+    closeCaseMenu();
   }
 
   function toggleWidget() {
@@ -667,22 +718,47 @@
   /* ================= 渲染 ================= */
 
   function renderCaseOptions() {
-    const sel = $('case-select');
-    sel.textContent = '';
+    const current = state.cases.find((c) => c.id === state.caseId)
+    $('case-current-name').textContent = current ? (current.title || current.id) : '（无 Case）'
+
+    const menu = $('case-menu')
+    menu.textContent = ''
     if (!state.cases.length) {
-      const opt = document.createElement('option');
-      opt.value = '';
-      opt.textContent = '（无 Case，点 ＋ 新建）';
-      sel.appendChild(opt);
-      return;
+      const el = document.createElement('button')
+      el.type = 'button'
+      el.className = 'case-menu-item empty'
+      el.textContent = '（无 Case，点 ＋ 开新）'
+      menu.appendChild(el)
+      return
     }
-    for (const c of state.cases) {
-      const opt = document.createElement('option');
-      opt.value = c.id;
-      opt.textContent = c.title || c.id;
-      sel.appendChild(opt);
+    for (const c of state.cases.slice(0, 8)) {
+      const el = document.createElement('button')
+      el.type = 'button'
+      el.className = 'case-menu-item' + (c.id === state.caseId ? ' active' : '')
+      el.textContent = c.title || c.id
+      el.title = c.title || c.id
+      el.addEventListener('click', () => pickCase(c.id))
+      menu.appendChild(el)
     }
-    sel.value = state.caseId;
+  }
+
+  function openCaseMenu() {
+    renderCaseOptions()
+    $('case-menu').classList.add('show')
+  }
+
+  function closeCaseMenu() {
+    $('case-menu').classList.remove('show')
+  }
+
+  function pickCase(id) {
+    closeCaseMenu()
+    if (id === state.caseId) return
+    state.caseId = id
+    store.set('caseId', id)
+    renderCaseOptions()
+    renderContext()
+    refreshCards()
   }
 
   function renderContext() {
@@ -945,12 +1021,9 @@
       this.textContent = expanded ? '收起' : '展开全部';
     });
 
-    $('case-select').addEventListener('change', (e) => {
-      state.caseId = e.target.value;
-      store.set('caseId', state.caseId);
-      renderContext();
-      refreshCards();
-    });
+    $('case-current').addEventListener('click', () => {
+      $('case-menu').classList.contains('show') ? closeCaseMenu() : openCaseMenu()
+    })
 
     $('new-case-btn').addEventListener('click', () => {
       if (!state.accounts.length) { showToast('先在 ⚙ 里连接 Cairn', 'err'); showSettings(true); return; }
@@ -978,13 +1051,19 @@
       if (e.key === 'Enter') { e.preventDefault(); saveSettings(); }
     });
 
-    // Esc 收起面板（事件源自浮窗内部时不影响 TradingView 自身快捷键）
+    // Esc：先收 Case 菜单，再收面板（事件源自浮窗内部时不影响 TradingView 自身快捷键）
     root.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape' && dock().classList.contains('open')) {
-        e.stopPropagation();
-        collapseWidget();
-      }
+      if (e.key !== 'Escape' || !dock().classList.contains('open')) return;
+      e.stopPropagation();
+      if ($('case-menu').classList.contains('show')) closeCaseMenu();
+      else collapseWidget();
     });
+
+    // 点浮窗外部：收起 Case 菜单
+    document.addEventListener('pointerdown', (e) => {
+      if (!$('case-menu').classList.contains('show')) return;
+      if (!e.composedPath().includes(host)) closeCaseMenu();
+    }, true);
   }
 
   /* ================= 拖动（单一 dock 定位） ================= */
