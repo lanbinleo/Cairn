@@ -112,7 +112,7 @@
 
 ## Stage 5：AI
 
-状态：基础设施已开始；provider 配置已交付（Settings 新增 AI 分区：OpenAI compatible 多 provider、`/models` 模型获取与连接测试、国内外 presets、默认 Provider 标记；凭证存本机 `ai-providers.json`，不进备份）。识别、检查单与版本化派生结果未开始。
+状态：第一刀已落地（2026-08-27）。`ai.rs` 新增 `chat_completion`（POST /chat/completions，temperature 0，90s 超时，不带 response_format 以兼容全 provider）与 Card 结构化提取：prompt v1（`0.2.0-prompt-1`）+ schema v1（`0.2.0-schema-1`），真实 glm-5.3-flash 联调一次通过（六字段 memo、span quote 标签、barRef 提议、missingFields 机械推导）。CaseCard 新增 `aiAnalysis` 版本化派生字段与"AI 整理"按钮（标签下划线高亮原文、memo 网格、缺失提示）；`AiRetryButton` 支持直重试与带补充要求重试；rawText 错字修正开放（自动历史 + 过期标记）。Provider 配置见前：Settings AI tab（多 provider + presets + `/models`），凭证存本机 `ai-providers.json` 不进备份。
 
 计划：
 

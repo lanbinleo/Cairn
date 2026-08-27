@@ -167,7 +167,9 @@ Current source of truth: `docs/software-design.md`.
 - Trade tag color is categorical. Display Trade tag groups in red-to-purple color order, then by name within the same color.
 - Notes are Markdown with encoded mentions: `[[trade:ID]]` and `[[image:URL_OR_PATH]]`.
 - Case can exist before Trade import. Active CaseTradeBinding is one-to-one for both Case and Trade.
-- CaseCard raw text is immutable after submission. AI and mechanical parsing results must not rewrite it.
+- CaseCard raw text is permanent but correctable: typo edits push the previous wording into `rawTextHistory` and stamp `rawTextEditedAt` (enforced by `save_case_card`). AI and mechanical parsing results must never rewrite raw text, and the REST API still rejects raw-text changes (idempotent replay).
+- AI results on a Card live in `aiAnalysis` as versioned derived data (`schemaVersion`/`promptVersion`/`model`/`analyzedAt`); quotes must be verbatim substrings of the raw text, unknown labels are dropped, and `missingFields` is derived mechanically from the six-field memo, not trusted from the model.
+- Every AI recognition surface ships `components/ai-retry-button.tsx`: direct click retries; the hover-revealed caret opens a menu for a user instruction that is appended to the retry request.
 - CaseCard membership is repairable: a Card can be moved to another Case from the Case detail page; only `caseId` changes, raw text does not.
 - The capture widget follows the current-Case session model: the panel header states the destination Case, switching is on demand, and starting a new Case is the primary organizational action.
 - Trade evaluation keeps process score and R decoupled: the process score uses only decision-time information (design in `docs/case-recording-0.2.0.md` §7.1); R is recorded but never labels a trade.

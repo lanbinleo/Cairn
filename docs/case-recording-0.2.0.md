@@ -306,7 +306,9 @@ The capture widget does not present a Case picker as the primary control. Browsi
 - Starting a new observation is the primary organizational action: one tap on ＋. The title may stay empty (AI can title it later from the first Cards); account and period are pre-filled from the last choice and only matter at this moment.
 - The current Case, phase, and widget position persist across opens.
 
-Cards can land in the wrong Case (a boundary misjudged, a new Case forgotten). Membership is repairable in the Cairn Case detail page: any Card can be moved to another Case. The raw text stays immutable; only `caseId` changes.
+Cards can land in the wrong Case (a boundary misjudged, a new Case forgotten). Membership is repairable in the Cairn Case detail page: any Card can be moved to another Case. Only `caseId` changes.
+
+Raw text can contain transcription typos. Corrections are allowed: the previous wording is versioned automatically into `rawTextHistory` with a `rawTextEditedAt` stamp, so the record stays auditable while remaining fixable. AI analyses older than an edit are marked stale and can be re-run; every AI surface has a retry control that accepts an optional correction instruction from the user.
 
 ### 6.2 Local connection direction
 

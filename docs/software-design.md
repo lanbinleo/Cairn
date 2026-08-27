@@ -100,7 +100,7 @@ New manual trade-management records should be stored as Executions. TradeEvent r
 
 ### Case And CaseCard
 
-A Case is a continuous reasoning record created under an Account and Period. It can exist before a Trade is imported. CaseCard stores one immutable raw text entry in one of five phases: `pre-entry`, `entry`, `intermediate`, `closing`, or `reflection`. Each Card maps to at most one `barRef`; a Card never represents multiple BARs.
+A Case is a continuous reasoning record created under an Account and Period. It can exist before a Trade is imported. CaseCard stores one raw text entry in one of five phases: `pre-entry`, `entry`, `intermediate`, `closing`, or `reflection`. Each Card maps to at most one `barRef`; a Card never represents multiple BARs. Raw text is permanent but not frozen: typo corrections (for example speech-transcription errors) are allowed, and every change automatically appends the previous wording to `rawTextHistory` and stamps `rawTextEditedAt`; AI output never rewrites raw text, and the local REST API still rejects raw-text changes to keep idempotent replay semantics.
 
 Recording is thinking-first: users speak or type free text only. BAR numbers mentioned in the text (`BAR41`, `第 42 根 K 线`) are extracted mechanically into `barRef`; AI extraction and completeness checklists arrive in Stage 5. `barRef` may stay missing on a Card until extraction or a later manual backfill—the thinking layer never blocks on form filling.
 
@@ -248,6 +248,15 @@ Cairn talks to OpenAI-compatible chat APIs through user-configured providers. Im
 - One provider is marked default; AI features (Stage 5 card extraction and completeness checks) will use it.
 - Credentials are configuration, not data: they are stored in `app_data_dir/ai-providers.json` (atomic writes) and are excluded from backups and restores.
 - The client is a thin reqwest layer rather than an SDK; chat calls stay a `chat(provider, messages, schema)`-style function so requests and responses remain fully recordable for provenance (model/prompt/schema versions).
+
+### Card AI Analysis
+
+The first Stage 5 slice runs on each CaseCard ("AI 整理"): the default provider receives the Card phase and raw text and returns structured JSON that is validated and stored on the Card as `aiAnalysis` — a versioned derived record (`schemaVersion`, `promptVersion`, `model`, `providerId`, `analyzedAt`). Raw text is never rewritten; re-running replaces the analysis.
+
+- Extraction targets: `barRef` proposal (backfills a missing Card `barRef`), span-quote `labels` across eleven fixed categories, and for Entry Cards the six-field memo (direction, stop-loss, target, confidence, invalidation, rejected alternatives, plus optional emotion). Every quote must be a verbatim substring of the raw text; anything else is dropped during validation, and `missingFields` is derived mechanically from the memo rather than trusted from the model.
+- Validation is defensive: markdown fences are stripped, unknown label types and non-verbatim quotes are dropped, `direction` normalizes to long/short, `confidence` clamps to 0–100. The UI renders label-colored underlines directly on the original text, the memo grid with quotes, and missing-field hints.
+- Every AI surface ships with a retry control (`components/ai-retry-button.tsx`): clicking retries immediately; a hover-revealed caret opens a menu where the user can type a correction instruction (appended as an extra user message) and retry with it.
+- If the raw text was edited after an analysis (`analyzedAt` older than `rawTextEditedAt`), the UI marks the analysis stale and suggests a re-run.
 
 ## Backup
 
