@@ -106,24 +106,29 @@ export function CaseCardAnalysisView({ card }: { card: CaseCard }) {
           >
             详情
           </PopoverTrigger>
-          <PopoverContent className="w-96">
-            <div className="grid grid-cols-2 gap-2">
+          <PopoverContent className="w-96 p-0">
+            <div className="flex items-center justify-between border-b px-3 py-2">
+              <span className="text-xs font-medium text-muted-foreground">入场 memo · 原文引用</span>
+              <span className="font-mono text-xs text-muted-foreground">{analysis.model}</span>
+            </div>
+            <div className="flex max-h-80 flex-col divide-y divide-border overflow-y-auto">
               {['direction', 'stopLoss', 'target', 'confidence', 'invalidation', 'rejectedAlternatives', 'emotion'].map((key) => {
                 const field = (memo as Record<string, { value: string | number; quote?: string } | undefined>)[key]
                 const missing = analysis.missingFields.includes(key)
                 if (!field && !missing) return null
                 return (
-                  <div
-                    key={key}
-                    className={cn('rounded-md border px-2.5 py-1.5', missing ? 'border-dashed border-amber-500/40' : 'border-border')}
-                  >
-                    <div className="flex items-baseline justify-between gap-2">
-                      <span className="text-xs text-muted-foreground">{CASE_MEMO_FIELD_LABEL[key] ?? key}</span>
-                      <span className={cn('text-sm', missing && 'text-amber-600 dark:text-amber-400')}>
+                  <div key={key} className="flex gap-3 px-3 py-2">
+                    <span className="w-16 shrink-0 pt-0.5 text-xs text-muted-foreground">{CASE_MEMO_FIELD_LABEL[key] ?? key}</span>
+                    <div className="min-w-0 flex-1">
+                      <p className={cn('break-words text-sm', missing && 'text-amber-600 dark:text-amber-400')}>
                         {field ? field.value : '未提到'}
-                      </span>
+                      </p>
+                      {field?.quote && (
+                        <p className="mt-1 break-words border-l-2 border-border pl-2 text-xs italic leading-5 text-muted-foreground">
+                          {field.quote}
+                        </p>
+                      )}
                     </div>
-                    {field?.quote && <p className="mt-0.5 text-xs italic text-muted-foreground">「{field.quote}」</p>}
                   </div>
                 )
               })}

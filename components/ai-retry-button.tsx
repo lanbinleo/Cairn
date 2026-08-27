@@ -39,7 +39,7 @@ export function AiRetryButton({ onRetry, busy = false, label = '重新识别' }:
   }
 
   return (
-    <div ref={rootRef} className="group relative inline-flex items-stretch">
+    <div ref={rootRef} className="relative inline-flex items-stretch">
       <Button
         variant="outline"
         size="sm"
@@ -53,7 +53,7 @@ export function AiRetryButton({ onRetry, busy = false, label = '重新识别' }:
       <Button
         variant="outline"
         size="sm"
-        className="h-7 rounded-l-none border-l-0 px-1.5 opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100 aria-expanded:opacity-100"
+        className="h-7 rounded-l-none border-l-0 px-1.5"
         aria-expanded={menuOpen}
         title="带要求重试"
         disabled={busy}
