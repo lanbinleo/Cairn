@@ -9,10 +9,9 @@ export const EXECUTION_ACTION_OPTIONS: Array<{ value: ExecutionAction; label: st
   { value: 'scale-in', label: 'Scale in' },
   { value: 'scale-out', label: 'Scale out' },
   { value: 'exit', label: 'Exit' },
-  { value: 'stop', label: 'Stop' },
-  { value: 'target-set', label: 'Set target' },
+  { value: 'stop', label: 'Move stop' },
   { value: 'target-moved', label: 'Move target' },
-  { value: 'order-edit', label: 'Edit order' },
+  { value: 'order-edit', label: 'Add / edit order' },
 ]
 
 export const ORDER_TYPE_OPTIONS: Array<{ value: OrderType; label: string }> = [
@@ -30,6 +29,7 @@ export const executionActionLabel: Record<ExecutionAction, string> = Object.from
     ...EXECUTION_ACTION_OPTIONS,
     { value: 'stop-set' as const, label: 'Set stop' },
     { value: 'stop-moved' as const, label: 'Move stop' },
+    { value: 'target-set' as const, label: 'Set target' },
   ].map((option) => [option.value, option.label]),
 ) as Record<ExecutionAction, string>
 

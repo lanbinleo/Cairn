@@ -68,6 +68,96 @@ export interface TagDef {
   createdAt: number
 }
 
+export type CaseStatus = 'active' | 'closed' | 'archived'
+export type CaseProvenance = 'forward' | 'retrospective'
+export type CaseCardPhase = 'pre-entry' | 'entry' | 'intermediate' | 'closing' | 'reflection'
+export type CaseEntryDecision = 'pending' | 'executed' | 'continue-observing'
+export type CaseBindingSource = 'manual' | 'import' | 'api'
+
+export interface CaseTagDef {
+  id: string
+  name: string
+  color: TagColor
+  createdAt: number
+}
+
+/** 一段围绕潜在或已完成 Trade 的连续决策记录。 */
+export interface TradeCase {
+  id: string
+  accountId: string
+  periodId: string
+  title: string
+  status: CaseStatus
+  provenance: CaseProvenance
+  tagIds: string[]
+  createdAt: number
+  updatedAt: number
+}
+
+/** AI 秘书对一段原文的 span 引用标签。quote 必须逐字来自原文。 */
+export interface CaseCardLabel {
+  type: string
+  quote: string
+}
+
+/** memo 单字段：value 为规范化值，quote 为原文证据。 */
+export interface CaseMemoField {
+  value: string | number
+  quote?: string
+}
+
+/** 入场前三分钟 memo：六字段 + 可选情绪。缺省字段代表原文没提到。 */
+export interface CaseCardMemo {
+  direction?: CaseMemoField
+  stopLoss?: CaseMemoField
+  target?: CaseMemoField
+  confidence?: CaseMemoField
+  invalidation?: CaseMemoField
+  rejectedAlternatives?: CaseMemoField
+  emotion?: CaseMemoField
+}
+
+/** Card 的版本化 AI 派生结果。绝不改写 rawText；重跑整体替换。 */
+export interface CaseCardAnalysis {
+  schemaVersion: string
+  promptVersion: string
+  model: string
+  providerId: string
+  analyzedAt: number
+  barRef: { bar: number; quote?: string } | null
+  labels: CaseCardLabel[]
+  memo: CaseCardMemo | null
+  missingFields: string[]
+}
+
+/** Case 内的一条原始记录。rawText 可修正错字，旧值自动进 rawTextHistory。 */
+export interface CaseCard {
+  id: string
+  caseId: string
+  phase: CaseCardPhase
+  rawText: string
+  entryDecision?: CaseEntryDecision
+  /** Card 对应的唯一 BAR。机械提取或 AI 回填，允许缺失。 */
+  barRef?: number
+  /** 0.2.0 早期数据兼容字段；读取时只采用第一项。 */
+  barRefs?: number[]
+  /** 每次修改 rawText 前的旧值，按时间顺序累积。 */
+  rawTextHistory?: string[]
+  /** 最近一次 rawText 修改时间；晚于此的分析视为过期。 */
+  rawTextEditedAt?: number
+  createdAt: number
+  aiAnalysis?: CaseCardAnalysis
+}
+
+/** Case 与 Trade 的有效关系为一对一。 */
+export interface CaseTradeBinding {
+  id: string
+  caseId: string
+  tradeId: string
+  source: CaseBindingSource
+  boundAt: number
+}
+
 export type ExecutionAction =
   | 'undecided'
   | 'entry'
@@ -114,6 +204,31 @@ export interface TradeEvent {
   note?: string
 }
 
+/** 过程分：人评字段 + 判断覆盖；memo 完整、止损只收紧等机械项实时推导，保存时快照 computed。 */
+export interface TradeProcessScore {
+  /** 结构成立（判断项，0-2，人评，建议对着入场 BAR 冻结图打分） */
+  structureValid?: number
+  /** 计划盈亏比过线（0/1；缺省时按推导 plannedRR ≥ 阈值判定） */
+  riskRewardPass?: number
+  /** 入场纪律（0/1，人评：计划区域内非追单） */
+  entryDiscipline?: number
+  /** 持仓期间计划外动作次数（得分 = max(0, 2 - n)） */
+  unplannedActions?: number
+  /** 出场按计划（0/1，人评） */
+  exitPerPlan?: number
+  /** 保存时的推导快照（价格、RR、memo 缺失、止损序列） */
+  computed?: {
+    entryPrice?: number | null
+    exitPrice?: number | null
+    stopPrice?: number | null
+    targetPrice?: number | null
+    plannedRR?: number | null
+    memoMissing?: string[] | null
+    stopOnlyTightened?: boolean
+  }
+  updatedAt?: number
+}
+
 export interface Trade {
   id: string
   /** 全局自增编号（解决 TradingView 每次从 1 开始的问题） */
@@ -139,6 +254,7 @@ export interface Trade {
   chartData?: Partial<Record<ChartTimeframe, ChartBar[]>>
   tags: string[]
   note?: string
+  processScore?: TradeProcessScore
   createdAt: number
 }
 
@@ -197,9 +313,9 @@ export interface Note {
 
 export interface Attachment {
   id: string
-  ownerType: 'trade' | 'note' | 'import-batch'
+  ownerType: 'trade' | 'note' | 'import-batch' | 'case' | 'case-card'
   ownerId: string
-  kind: 'reference-image' | 'raw-export' | 'note-image'
+  kind: 'reference-image' | 'raw-export' | 'note-image' | 'case-image'
   fileName: string
   relativePath: string
   mimeType?: string
@@ -231,8 +347,18 @@ export interface TradeMetrics {
   avgExit: number
   /** 总仓位数量 */
   totalQuantity: number
-  /** R 倍数（需 initialStopLoss，否则为 null） */
+  /** R 倍数（实际 PnL ÷ 初始风险；需 initialStopLoss，否则为 null） */
   rMultiple: number | null
+  /** 实际 R（实际 PnL ÷ 实际风险分段累加；需 initialStopLoss，否则为 null） */
+  rActual: number | null
+  /** 初始风险：|首笔入场价 − 初始止损| × 首笔数量（计划的 1R）；缺初始止损为 null */
+  initialRisk: number | null
+  /** 实际风险：Σ 每笔入场 fill × |fill 价 − 当时生效止损| × 数量；缺初始止损为 null */
+  actualRisk: number | null
+  /** 首笔入场价（初始风险与 R 的基准；无成交为 0） */
+  firstEntryPrice: number
+  /** 最终止损：出场时生效的止损价（从未动过则等于 initialStopLoss）；无止损记录为 null */
+  finalStop: number | null
   /** 持仓时长 ms */
   durationMs: number
   entryTime: number

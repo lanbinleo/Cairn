@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Cairn 浮窗 — 油猴脚本本地测试页</title>
+<style>
+  body {
+    margin: 0;
+    min-height: 100vh;
+    background: #131722;
+    font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+    color: #787b86;
+    font-size: 13px;
+  }
+  #note {
+    position: fixed;
+    top: 16px;
+    left: 16px;
+    background: rgba(41, 98, 255, 0.1);
+    border: 1px solid rgba(41, 98, 255, 0.4);
+    border-radius: 10px;
+    padding: 10px 14px;
+    line-height: 1.6;
+    max-width: 420px;
+    z-index: 10;
+  }
+  #note code { color: #d1d4dc; font-family: Consolas, monospace; }
+  #fake-chart {
+    position: fixed;
+    inset: 90px 0 0 0;
+    background:
+      repeating-linear-gradient(0deg, transparent 0 79px, rgba(54,58,69,.35) 79px 80px),
+      repeating-linear-gradient(90deg, transparent 0 79px, rgba(54,58,69,.35) 79px 80px),
+      #161b27;
+  }
+</style>
+</head>
+<body>
+<div id="note">
+  油猴脚本测试页：GM_* 以 localStorage 模拟，网络直接 fetch 真实本地 API（<code>127.0.0.1:8787</code>）。<br>
+  先启动 Cairn（<code>pnpm tauri:dev:isolated</code>），Token 从 设置 → 本地 API 复制。
+</div>
+<div id="err" style="position:fixed;top:140px;left:16px;z-index:20;max-width:460px;color:#ef5350;font-family:Consolas,monospace;font-size:12px;white-space:pre-wrap;"></div>
+<div id="fake-chart"></div>
+
+<script>
+  // 捕获脚本错误，显示在页面上便于自动化诊断
+  (function () {
+    var box = document.getElementById('err');
+    function log(msg) { box.textContent += msg + '\n'; }
+    window.addEventListener('error', function (e) { log('ERROR ' + e.message + ' @' + (e.filename || '') + ':' + e.lineno); });
+    window.addEventListener('unhandledrejection', function (e) { log('REJECT ' + (e.reason && e.reason.message || e.reason)); });
+    window.__cairnLog = log;
+  })();
+
+  // 模拟 Tampermonkey 环境（存储用同 key 规则，网络走 fetch 兜底）
+  window.GM_getValue = function (k) { return localStorage.getItem('cairn.widget.' + k); };
+  window.GM_setValue = function (k, v) { localStorage.setItem('cairn.widget.' + k, String(v)); };
+  window.GM_registerMenuCommand = function () {};
+</script>
+<script src="./cairn-case-widget.user.js"></script>
+</body>
+</html>

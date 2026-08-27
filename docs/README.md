@@ -7,6 +7,8 @@ Cairn is a local-first desktop app for personal trade journaling and review. It 
 | Document | Purpose |
 | --- | --- |
 | [Software Design](./software-design.md) | Product scope, architecture, domain model, storage, import rules, metrics, backup, and packaging |
+| [0.2.0 Case Recording Discussion](./case-recording-0.2.0.md) | Working design for TradingView capture cards, Case-to-Trade binding, raw-text preservation, and AI-assisted labeling |
+| [0.2.0 Development Plan](./development-plan-0.2.0.md) | Staged implementation and acceptance checklist for Cases, Trade integration, AI, and the local REST API |
 | [Development Workflow](./development-workflow.md) | Branching, commits, verification, version surfaces, local data paths, and release process |
 | [0.1.2 Release Notes](./release-0.1.2.md) | Trade execution management, chart-data coverage, tag normalization, and dialog safety |
 | [0.1.1 Release Notes](./release-0.1.1.md) | Logo refresh, automatic local backups, release metadata, and operational notes |

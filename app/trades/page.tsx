@@ -6,6 +6,7 @@ import { AlertTriangle, ClipboardPaste, Plus, X } from 'lucide-react'
 
 import { PageHeader } from '@/components/page-header'
 import { TradesTable } from '@/components/trades-table'
+import { TradeFilterChips, TradeFilterMenu } from '@/components/trade-filter-menu'
 import { ManageTagsDialog } from '@/components/manage-tags-dialog'
 import { tagColorClasses, tagDotClasses } from '@/components/tag-badge'
 import { Button } from '@/components/ui/button'
@@ -21,7 +22,15 @@ import {
 } from '@/components/ui/select'
 import { computeTradeMetrics } from '@/lib/metrics'
 import { useCairn } from '@/lib/store'
-import { findTagByName, tagNameKey, tagNamesEqual, uniqueTagNames } from '@/lib/tags'
+import {
+  EMPTY_TRADE_FILTER,
+  loadTradeFilterPresets,
+  matchesTradeFilter,
+  saveTradeFilterPresets,
+  type TradeFilterConditions,
+  type TradeFilterPreset,
+} from '@/lib/trade-filters'
+import { findTagByName, sortTagDefsByColor, tagNameKey, tagNamesEqual, uniqueTagNames } from '@/lib/tags'
 import { getPossibleDuplicateTrade } from '@/lib/trade-duplicates'
 import { parseTradeTransferPayload, type TradeTransferPayload } from '@/lib/trade-transfer'
 import type { Execution, Trade, TradeEvent } from '@/lib/types'
@@ -47,11 +56,14 @@ export default function TradesPage() {
   const [targetAccountId, setTargetAccountId] = useState('')
   const [targetPeriodId, setTargetPeriodId] = useState('')
   const [targetSymbolId, setTargetSymbolId] = useState('')
+  const [advancedFilter, setAdvancedFilter] = useState<TradeFilterConditions>(EMPTY_TRADE_FILTER)
+  const [filterPresets, setFilterPresets] = useState<TradeFilterPreset[]>(() => loadTradeFilterPresets())
 
   const periodOptions = useMemo(
     () => (accountId === ALL ? periods : periods.filter((p) => p.accountId === accountId)),
     [accountId, periods],
   )
+  const sortedTagDefs = useMemo(() => sortTagDefsByColor(tagDefs), [tagDefs])
 
   function toggleTag(name: string) {
     setActiveTags((prev) => {
@@ -78,9 +90,10 @@ export default function TradesPage() {
           (periodId === ALL || t.periodId === periodId) &&
           (symbolId === ALL || t.symbolId === symbolId) &&
           (direction === ALL || t.direction === direction) &&
-          (activeTags.length === 0 || activeTags.every((tag) => t.tags.some((tradeTag) => tagNamesEqual(tradeTag, tag)))),
+          (activeTags.length === 0 || activeTags.every((tag) => t.tags.some((tradeTag) => tagNamesEqual(tradeTag, tag)))) &&
+          matchesTradeFilter(t, advancedFilter),
       ),
-    [trades, accountId, periodId, symbolId, direction, activeTags],
+    [trades, accountId, periodId, symbolId, direction, activeTags, advancedFilter],
   )
   const targetPeriodOptions = useMemo(
     () => periods.filter((p) => p.accountId === targetAccountId),
@@ -107,7 +120,20 @@ export default function TradesPage() {
 
   useEffect(() => {
     setPage(1)
-  }, [accountId, periodId, symbolId, direction, activeTags, pageSize])
+  }, [accountId, periodId, symbolId, direction, activeTags, advancedFilter, pageSize])
+
+  function savePreset(name: string, conditions: TradeFilterConditions) {
+    const preset: TradeFilterPreset = { id: makeId('filter-preset'), name, conditions, createdAt: Date.now() }
+    const next = [...filterPresets, preset]
+    setFilterPresets(next)
+    saveTradeFilterPresets(next)
+  }
+
+  function deletePreset(id: string) {
+    const next = filterPresets.filter((preset) => preset.id !== id)
+    setFilterPresets(next)
+    saveTradeFilterPresets(next)
+  }
 
   useEffect(() => {
     if (page > totalPages) setPage(totalPages)
@@ -152,7 +178,7 @@ export default function TradesPage() {
               <ClipboardPaste data-icon="inline-start" />
               粘贴 JSON
             </Button>
-            <Button render={<Link to="/trades/new" />}>
+            <Button nativeButton={false} render={<Link to="/trades/new" />}>
               <Plus data-icon="inline-start" />
               手动录入
             </Button>
@@ -256,6 +282,13 @@ export default function TradesPage() {
 
         <div className="ml-auto flex flex-wrap items-center gap-2">
           <span className="text-sm text-muted-foreground">{filtered.length} 笔交易</span>
+          <TradeFilterMenu
+            conditions={advancedFilter}
+            onChange={setAdvancedFilter}
+            presets={filterPresets}
+            onSavePreset={savePreset}
+            onDeletePreset={deletePreset}
+          />
           <Select
             items={[
               { value: '20', label: '20 / 页' },
@@ -277,9 +310,11 @@ export default function TradesPage() {
         </div>
       </div>
 
+      <TradeFilterChips conditions={advancedFilter} onChange={setAdvancedFilter} />
+
       {tagDefs.length > 0 && (
         <div className="flex flex-wrap items-center gap-1.5" role="group" aria-label="按标签筛选">
-          {tagDefs.map((tag) => {
+          {sortedTagDefs.map((tag) => {
             const active = activeTags.includes(tag.name)
             return (
               <button

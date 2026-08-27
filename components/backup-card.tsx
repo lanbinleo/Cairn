@@ -14,6 +14,18 @@ function isSnapshot(value: unknown): value is CairnStateSnapshot {
   return ['accounts', 'periods', 'trades', 'symbols', 'notes', 'tagDefs', 'importBatches', 'attachments'].every((key) => Array.isArray(obj[key]))
 }
 
+function withCaseCollections(snapshot: CairnStateSnapshot): CairnStateSnapshot {
+  return {
+    ...snapshot,
+    cases: snapshot.cases ?? [],
+    caseCards: snapshot.caseCards ?? [],
+    caseBindings: snapshot.caseBindings ?? [],
+    caseTagDefs: snapshot.caseTagDefs ?? [],
+    chartImports: snapshot.chartImports ?? [],
+    chartCandles: snapshot.chartCandles ?? [],
+  }
+}
+
 export function BackupCard() {
   const inputRef = useRef<HTMLInputElement>(null)
   const { exportBackup, restoreState } = useCairn()
@@ -37,7 +49,7 @@ export function BackupCard() {
       setMessage('备份文件格式不正确。')
       return
     }
-    await restoreState(state)
+    await restoreState(withCaseCollections(state))
     setMessage(`已从 ${file.name} 恢复。`)
   }
 

@@ -59,6 +59,30 @@ const CHART_EVENT_FIELD_ALIASES = {
   takeProfit: ['TP', 'Take Profit', 'TakeProfit', 'take_profit', '止盈', '止盈价', '移动止盈'],
 }
 
+const POSITION_EPS = 1e-9
+
+interface IndexedImportRow {
+  row: RawImportRow
+  index: number
+}
+
+interface SourceTradeFragment {
+  sourceTradeNo: string
+  direction: TradeDirection
+  rows: IndexedImportRow[]
+  start: number
+  end: number
+  warning?: string
+}
+
+interface DraftGroupedTrade {
+  id: string
+  direction: TradeDirection
+  rows: IndexedImportRow[]
+  openUntil: number
+  warning?: string
+}
+
 function valueByAliases(row: Record<string, unknown>, aliases: string[]) {
   for (const alias of aliases) {
     if (row[alias] != null && String(row[alias]).trim() !== '') return row[alias]
@@ -126,6 +150,49 @@ function isEntry(type: string) {
 function isExit(type: string) {
   const lower = type.toLowerCase()
   return type.includes('出场') || type.includes('平仓') || type.includes('平多') || type.includes('平空') || lower.includes('exit') || lower.includes('close')
+}
+
+function compareSourceTradeNo(a: string, b: string) {
+  const an = Number(a)
+  const bn = Number(b)
+  if (Number.isFinite(an) && Number.isFinite(bn) && an !== bn) return an - bn
+  return a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' })
+}
+
+function compareRowsForPositionSimulation(a: IndexedImportRow, b: IndexedImportRow) {
+  const timeDiff = a.row.time - b.row.time
+  if (timeDiff !== 0) return timeDiff
+
+  const sameSourceTrade = a.row.sourceTradeNo != null && a.row.sourceTradeNo === b.row.sourceTradeNo
+  const aEntry = isEntry(a.row.type)
+  const bEntry = isEntry(b.row.type)
+  const aExit = isExit(a.row.type)
+  const bExit = isExit(b.row.type)
+
+  if (sameSourceTrade && aEntry !== bEntry && (aExit || bExit)) {
+    return aEntry ? -1 : 1
+  }
+  if (!sameSourceTrade && aExit !== bExit && (aEntry || bEntry)) {
+    return aExit ? -1 : 1
+  }
+  return a.index - b.index
+}
+
+function compareRowsWithinSourceTrade(a: IndexedImportRow, b: IndexedImportRow) {
+  const timeDiff = a.row.time - b.row.time
+  if (timeDiff !== 0) return timeDiff
+
+  const aEntry = isEntry(a.row.type)
+  const bEntry = isEntry(b.row.type)
+  const aExit = isExit(a.row.type)
+  const bExit = isExit(b.row.type)
+  if (aEntry !== bEntry && (aExit || bExit)) return aEntry ? -1 : 1
+  return a.index - b.index
+}
+
+function appendWarning(existing: string | undefined, next: string | undefined) {
+  if (!next) return existing
+  return existing ? `${existing} ${next}` : next
 }
 
 export function inferOrderType(signal?: string, rawOrderType?: string): OrderType {
@@ -249,60 +316,132 @@ export function readFileAsDataUrl(file: File): Promise<string> {
   })
 }
 
-function buildTradeFromRows(rows: RawImportRow[], id: string): ProposedTrade {
-  const sorted = [...rows].sort((a, b) => a.time - b.time)
-  const firstDirection = sorted.map((row) => inferDirection(row.type, row.signal)).find((direction) => direction != null)
+function finalizeGroupedTrade(draft: DraftGroupedTrade): ProposedTrade {
+  const sorted = [...draft.rows].sort(compareRowsForPositionSimulation)
   const trade: ProposedTrade = {
-    id,
-    direction: firstDirection ?? 'long',
+    id: draft.id,
+    direction: draft.direction,
     executions: [],
-    warning: firstDirection ? undefined : `无法识别方向：${sorted[0]?.type ?? ''}`,
+    warning: draft.warning,
   }
   let position = 0
 
-  for (const row of sorted) {
+  for (const { row } of sorted) {
     const direction = inferDirection(row.type, row.signal)
-    if (direction && direction !== trade.direction) {
-      trade.warning = '同一 TradingView 交易编号内检测到方向不一致，请确认。'
+    if (!direction) {
+      trade.warning = appendWarning(trade.warning, `无法识别方向：${row.type}`)
+    } else if (direction !== trade.direction) {
+      trade.warning = appendWarning(trade.warning, '同一归组内检测到方向不一致，请确认。')
     }
+
     const entry = isEntry(row.type)
     const exit = isExit(row.type)
-    const action: Execution['action'] = entry
-      ? position === 0 ? 'entry' : 'scale-in'
-      : exit
-        ? row.quantity >= position ? 'exit' : 'scale-out'
-        : position === 0 ? 'entry' : 'scale-in'
+    const shouldEnter = entry || !exit
 
-    trade.executions.push({ ...row, action })
-    if (action === 'entry' || action === 'scale-in') {
+    if (shouldEnter) {
+      const action: Execution['action'] = position <= POSITION_EPS ? 'entry' : 'scale-in'
+      trade.executions.push({ ...row, action })
       position += row.quantity
-    } else {
-      position = Math.max(0, position - row.quantity)
+      continue
     }
+
+    if (position <= POSITION_EPS) {
+      trade.warning = appendWarning(trade.warning, '检测到没有对应持仓的离场记录，请确认归组。')
+      trade.executions.push({ ...row, action: 'exit' })
+      continue
+    }
+
+    const action: Execution['action'] = row.quantity >= position - POSITION_EPS ? 'exit' : 'scale-out'
+    trade.executions.push({ ...row, action })
+    if (row.quantity > position + POSITION_EPS) {
+      trade.warning = appendWarning(trade.warning, '检测到离场数量大于当前模拟持仓，请确认数量或归组。')
+    }
+    position = Math.max(0, position - row.quantity)
   }
 
   return trade
 }
 
-export function groupRows(rows: RawImportRow[]): ProposedTrade[] {
-  const rowsWithTradeNo = rows.filter((row) => row.sourceTradeNo)
-  if (rows.length > 0 && rowsWithTradeNo.length === rows.length) {
-    const groups = new Map<string, RawImportRow[]>()
-    for (const row of rows) {
-      const key = row.sourceTradeNo as string
-      groups.set(key, [...(groups.get(key) ?? []), row])
-    }
-    return [...groups.entries()]
-      .map(([tradeNo, group]) => buildTradeFromRows(group, `tv-${tradeNo}`))
-      .sort((a, b) => a.executions[0].time - b.executions[0].time)
+function buildSourceTradeFragment(sourceTradeNo: string, rows: IndexedImportRow[]): SourceTradeFragment {
+  const sorted = [...rows].sort(compareRowsWithinSourceTrade)
+  const directions = sorted.map(({ row }) => inferDirection(row.type, row.signal)).filter((direction): direction is TradeDirection => direction != null)
+  const direction = directions[0] ?? 'long'
+  const entries = sorted.filter(({ row }) => isEntry(row.type))
+  const exits = sorted.filter(({ row }) => isExit(row.type))
+  const start = (entries[0] ?? sorted[0]).row.time
+  const end = exits.length > 0 ? Math.max(...exits.map(({ row }) => row.time)) : Number.POSITIVE_INFINITY
+  let warning: string | undefined
+
+  if (directions.length === 0) {
+    warning = appendWarning(warning, `无法识别 TV 编号 ${sourceTradeNo} 的方向。`)
+  } else if (directions.some((item) => item !== direction)) {
+    warning = appendWarning(warning, `TV 编号 ${sourceTradeNo} 内检测到方向不一致。`)
+  }
+  if (entries.length === 0) {
+    warning = appendWarning(warning, `TV 编号 ${sourceTradeNo} 缺少进场记录。`)
+  }
+  if (exits.length === 0) {
+    warning = appendWarning(warning, `TV 编号 ${sourceTradeNo} 缺少离场记录。`)
   }
 
-  const sorted = [...rows].sort((a, b) => a.time - b.time)
-  const proposed: ProposedTrade[] = []
-  let current: ProposedTrade | null = null
-  let position = 0
+  return {
+    sourceTradeNo,
+    direction,
+    rows: sorted,
+    start,
+    end,
+    warning,
+  }
+}
 
-  for (const row of sorted) {
+function groupRowsBySourceTrades(indexedRows: IndexedImportRow[]): ProposedTrade[] {
+  const bySourceTrade = new Map<string, IndexedImportRow[]>()
+  for (const item of indexedRows) {
+    const sourceTradeNo = item.row.sourceTradeNo as string
+    bySourceTrade.set(sourceTradeNo, [...(bySourceTrade.get(sourceTradeNo) ?? []), item])
+  }
+
+  const fragments = [...bySourceTrade.entries()]
+    .map(([sourceTradeNo, sourceRows]) => buildSourceTradeFragment(sourceTradeNo, sourceRows))
+    .sort((a, b) => a.start - b.start || compareSourceTradeNo(a.sourceTradeNo, b.sourceTradeNo))
+
+  const drafts: DraftGroupedTrade[] = []
+  const activeByDirection: Record<TradeDirection, DraftGroupedTrade | null> = {
+    long: null,
+    short: null,
+  }
+
+  for (const fragment of fragments) {
+    let draft = activeByDirection[fragment.direction]
+    const overlapsActiveTrade = draft != null && fragment.start < draft.openUntil - POSITION_EPS
+    if (!overlapsActiveTrade || draft == null) {
+      draft = {
+        id: `group-${drafts.length + 1}`,
+        direction: fragment.direction,
+        rows: [],
+        openUntil: fragment.end,
+      }
+      drafts.push(draft)
+      activeByDirection[fragment.direction] = draft
+    }
+
+    draft.rows.push(...fragment.rows)
+    draft.openUntil = Math.max(draft.openUntil, fragment.end)
+    draft.warning = appendWarning(draft.warning, fragment.warning)
+  }
+
+  return drafts.map(finalizeGroupedTrade)
+}
+
+function groupRowsByNetPosition(indexedRows: IndexedImportRow[]): ProposedTrade[] {
+  const sorted = [...indexedRows].sort(compareRowsForPositionSimulation)
+  const proposed: ProposedTrade[] = []
+  const activeByDirection: Record<TradeDirection, { trade: ProposedTrade | null; position: number }> = {
+    long: { trade: null, position: 0 },
+    short: { trade: null, position: 0 },
+  }
+
+  for (const { row } of sorted) {
     const direction = inferDirection(row.type, row.signal)
     if (!direction) {
       proposed.push({
@@ -314,42 +453,56 @@ export function groupRows(rows: RawImportRow[]): ProposedTrade[] {
       continue
     }
 
-    if (!current || position <= 0) {
-      current = {
-        id: `group-${proposed.length + 1}`,
-        direction,
-        executions: [],
-      }
-      proposed.push(current)
-      position = 0
-    }
-
-    if (current.direction !== direction && position > 0) {
-      current.warning = '检测到未平仓时方向切换，请确认归组。'
-      current = {
-        id: `group-${proposed.length + 1}`,
-        direction,
-        executions: [],
-      }
-      proposed.push(current)
-      position = 0
-    }
-
+    const state = activeByDirection[direction]
     const entry = isEntry(row.type)
     const exit = isExit(row.type)
-    const action: Execution['action'] = entry
-      ? position === 0 ? 'entry' : 'scale-in'
-      : exit
-        ? row.quantity >= position ? 'exit' : 'scale-out'
-        : position === 0 ? 'entry' : 'scale-in'
+    const shouldEnter = entry || !exit
 
-    current.executions.push({ ...row, action })
-    if (action === 'entry' || action === 'scale-in') {
-      position += row.quantity
-    } else {
-      position = Math.max(0, position - row.quantity)
+    if (shouldEnter) {
+      if (!state.trade || state.position <= POSITION_EPS) {
+        state.trade = {
+          id: `group-${proposed.length + 1}`,
+          direction,
+          executions: [],
+        }
+        proposed.push(state.trade)
+        state.position = 0
+      }
+      const action: Execution['action'] = state.position <= POSITION_EPS ? 'entry' : 'scale-in'
+      state.trade.executions.push({ ...row, action })
+      state.position += row.quantity
+      continue
     }
+
+    if (!state.trade || state.position <= POSITION_EPS) {
+      const trade: ProposedTrade = {
+        id: `group-${proposed.length + 1}`,
+        direction,
+        executions: [],
+        warning: '检测到没有对应持仓的离场记录，请确认归组。',
+      }
+      trade.executions.push({ ...row, action: 'exit' })
+      proposed.push(trade)
+      continue
+    }
+
+    const action: Execution['action'] = row.quantity >= state.position - POSITION_EPS ? 'exit' : 'scale-out'
+    state.trade.executions.push({ ...row, action })
+    if (row.quantity > state.position + POSITION_EPS) {
+      state.trade.warning = '检测到离场数量大于当前模拟持仓，请确认数量或归组。'
+    }
+    state.position = Math.max(0, state.position - row.quantity)
+    if (state.position <= POSITION_EPS) state.trade = null
   }
 
   return proposed
+}
+
+export function groupRows(rows: RawImportRow[]): ProposedTrade[] {
+  const indexedRows = rows.map((row, index) => ({ row, index }))
+  const rowsWithTradeNo = indexedRows.filter(({ row }) => row.sourceTradeNo)
+  if (indexedRows.length > 0 && rowsWithTradeNo.length === indexedRows.length) {
+    return groupRowsBySourceTrades(indexedRows)
+  }
+  return groupRowsByNetPosition(indexedRows)
 }

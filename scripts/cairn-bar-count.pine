@@ -1,0 +1,38 @@
+//@version=4
+// Cairn Bar Count：与 Cairn barRef 约定一致的 K 线序号指标。
+// bar 1 = UTC 00:00 开始的第一根 K 线（lib/bar-time.ts 同规则），
+// 口述/记录 "BAR38" 时以此为准。
+// 注意：日界判断必须显式用 UTC——dayofweek/dayofmonth 默认跟图表时区走，
+// 图表时区不是 UTC 时序号会和 Cairn 对不上。
+study("Bar Count (UTC)", overlay=true, max_labels_count=500)
+
+sizeOption = input(title="Label Size", type=input.string,
+     options=["Auto", "Huge", "Large", "Normal", "Small", "Tiny"],
+     defval="Normal")
+
+labelSize = (sizeOption == "Huge") ? size.huge :
+     (sizeOption == "Large") ? size.large :
+     (sizeOption == "Small") ? size.small :
+     (sizeOption == "Tiny") ? size.tiny :
+     (sizeOption == "Auto") ? size.auto :
+         size.normal
+
+color c_labelColor = input(color.orange, "Text Color", input.color)
+c_contador = input(title="Display at every X bars", type=input.integer, defval=2, minval=1)
+
+is_new_day() =>
+    d = dayofmonth(time, "UTC")
+    na(d[1]) or d != d[1]
+
+var count = 1
+
+if is_new_day()
+    count := 1
+else
+    count := count + 1
+
+if count % c_contador == 0
+    label1 = label.new(bar_index, 0, style=label.style_none, text=tostring(count))
+    label.set_textcolor(label1, c_labelColor)
+    label.set_yloc(label1, yloc.belowbar)
+    label.set_size(label1, labelSize)

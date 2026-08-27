@@ -72,3 +72,23 @@ export function fmtDuration(ms: number): string {
 export function fmtDateRange(start: number, end: number): string {
   return `${fmtUtcDate(start)} → ${fmtUtcDate(end)}`
 }
+
+function startOfLocalDay(ms: number): number {
+  const d = new Date(ms)
+  d.setHours(0, 0, 0, 0)
+  return d.getTime()
+}
+
+/** 本地时区可读相对时间：数秒前 / N 分钟前 / N 小时前 / 昨天 / 前天 / MM-DD / YYYY-MM-DD */
+export function fmtRelativeTime(ms: number, now = Date.now()): string {
+  const diff = now - ms
+  if (diff < 60_000) return '数秒前'
+  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)} 分钟前`
+  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)} 小时前`
+  const days = Math.round((startOfLocalDay(now) - startOfLocalDay(ms)) / 86_400_000)
+  if (days === 1) return '昨天'
+  if (days === 2) return '前天'
+  const d = new Date(ms)
+  const monthDay = `${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+  return d.getFullYear() === new Date(now).getFullYear() ? monthDay : `${d.getFullYear()}-${monthDay}`
+}

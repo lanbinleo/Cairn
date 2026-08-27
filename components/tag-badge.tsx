@@ -2,6 +2,7 @@
 
 import { Badge } from '@/components/ui/badge'
 import { useCairn } from '@/lib/store'
+import { TAG_COLOR_ORDER } from '@/lib/tags'
 import type { TagColor } from '@/lib/types'
 import { cn } from '@/lib/utils'
 
@@ -37,7 +38,7 @@ export const tagColorNames: Record<TagColor, string> = {
   purple: '紫',
 }
 
-export const TAG_COLORS: TagColor[] = ['red', 'orange', 'yellow', 'green', 'cyan', 'blue', 'purple']
+export const TAG_COLORS: TagColor[] = TAG_COLOR_ORDER
 
 /** 按标签名渲染彩色徽章；未注册的标签名回退为 outline 样式 */
 export function TagBadge({ name, className }: { name: string; className?: string }) {

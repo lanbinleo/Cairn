@@ -20,7 +20,7 @@ import {
 import { Textarea } from '@/components/ui/textarea'
 import { EXECUTION_ACTION_OPTIONS, ORDER_TYPE_OPTIONS } from '@/lib/executions'
 import { useCairn } from '@/lib/store'
-import { uniqueTagNames } from '@/lib/tags'
+import { sortTagNamesByColor } from '@/lib/tags'
 import type { Execution, ExecutionAction, OrderType, Trade, TradeDirection, TradeStatus } from '@/lib/types'
 
 interface DraftExecution {
@@ -51,11 +51,37 @@ function numberOrUndefined(value: string) {
   return Number.isFinite(parsed) ? parsed : undefined
 }
 
+const MANUAL_ORDER_TYPES: OrderType[] = ['limit', 'stop', 'stop-limit']
+const POSITION_ORDER_TYPES: OrderType[] = ['market', 'limit', 'stop', 'stop-limit']
+
+function orderTypeForAction(action: ExecutionAction, current: OrderType): OrderType {
+  if (action === 'stop') return 'stop-loss'
+  if (action === 'target-moved') return 'take-profit'
+  if (action === 'order-edit') return MANUAL_ORDER_TYPES.includes(current) ? current : 'limit'
+  if (['entry', 'scale-in', 'scale-out', 'exit'].includes(action)) return POSITION_ORDER_TYPES.includes(current) ? current : 'market'
+  return current
+}
+
+function orderOptionsForAction(action: ExecutionAction, current: OrderType) {
+  const allowed =
+    action === 'stop' ? ['stop-loss']
+      : action === 'target-moved' ? ['take-profit']
+        : action === 'order-edit' ? MANUAL_ORDER_TYPES
+          : ['entry', 'scale-in', 'scale-out', 'exit'].includes(action) ? POSITION_ORDER_TYPES
+            : ORDER_TYPE_OPTIONS.map((option) => option.value)
+  const options = ORDER_TYPE_OPTIONS.filter((option) => allowed.includes(option.value))
+  if (!options.some((option) => option.value === current)) {
+    const currentOption = ORDER_TYPE_OPTIONS.find((option) => option.value === current)
+    if (currentOption) return [currentOption, ...options]
+  }
+  return options
+}
+
 function newDraftExecution(action: ExecutionAction = 'entry'): DraftExecution {
   return {
     id: makeId('exec-draft'),
     action,
-    orderType: 'market',
+    orderType: orderTypeForAction(action, 'market'),
     time: utcInputValue(),
     price: '',
     quantity: '',
@@ -65,7 +91,7 @@ function newDraftExecution(action: ExecutionAction = 'entry'): DraftExecution {
 
 export default function NewTradePage() {
   const navigate = useNavigate()
-  const { accounts, periods, symbols, trades, createTrades } = useCairn()
+  const { accounts, periods, symbols, trades, tagDefs, createTrades } = useCairn()
   const [accountId, setAccountId] = useState(accounts[0]?.id ?? '')
   const periodOptions = useMemo(() => periods.filter((period) => period.accountId === accountId), [accountId, periods])
   const [periodId, setPeriodId] = useState(periodOptions[0]?.id ?? '')
@@ -91,7 +117,14 @@ export default function NewTradePage() {
   }, [periodId, periodOptions])
 
   function updateExecution(id: string, patch: Partial<DraftExecution>) {
-    setExecutions((prev) => prev.map((execution) => (execution.id === id ? { ...execution, ...patch } : execution)))
+    setExecutions((prev) =>
+      prev.map((execution) => {
+        if (execution.id !== id) return execution
+        const next = { ...execution, ...patch }
+        if (patch.action) next.orderType = orderTypeForAction(patch.action, execution.orderType)
+        return next
+      }),
+    )
   }
 
   function addExecution() {
@@ -107,7 +140,7 @@ export default function NewTradePage() {
         id: makeId('exe'),
         tradeId,
         action: execution.action,
-        orderType: execution.orderType,
+        orderType: orderTypeForAction(execution.action, execution.orderType),
         time: parseUtcInput(execution.time),
         price: numberOrUndefined(execution.price),
         quantity: numberOrUndefined(execution.quantity),
@@ -129,7 +162,7 @@ export default function NewTradePage() {
       executions: normalizedExecutions,
       events: [],
       referenceImages: [],
-      tags: uniqueTagNames(tags.split(',')),
+      tags: sortTagNamesByColor(tags.split(','), tagDefs),
       note: note.trim() === '' ? undefined : note.trim(),
       createdAt: now,
     }
@@ -189,8 +222,9 @@ export default function NewTradePage() {
                 <Field>
                   <FieldLabel>Order</FieldLabel>
                   <Select
-                    items={ORDER_TYPE_OPTIONS}
+                    items={orderOptionsForAction(execution.action, execution.orderType)}
                     value={execution.orderType}
+                    disabled={execution.action === 'stop' || execution.action === 'target-moved'}
                     onValueChange={(value) => updateExecution(execution.id, { orderType: value as OrderType })}
                   >
                     <SelectTrigger>
@@ -198,7 +232,7 @@ export default function NewTradePage() {
                     </SelectTrigger>
                     <SelectContent>
                       <SelectGroup>
-                        {ORDER_TYPE_OPTIONS.map((option) => (
+                        {orderOptionsForAction(execution.action, execution.orderType).map((option) => (
                           <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
                         ))}
                       </SelectGroup>

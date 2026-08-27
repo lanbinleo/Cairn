@@ -4,16 +4,19 @@ import { invoke } from '@tauri-apps/api/core'
 import { relaunch } from '@tauri-apps/plugin-process'
 import { check } from '@tauri-apps/plugin-updater'
 import { useTheme } from 'next-themes'
+import { Pencil, Plus, Star, Trash2 } from 'lucide-react'
 import type { ReactNode } from 'react'
 import { useEffect, useState } from 'react'
-import { Check, Copy, RefreshCw, Trash2 } from 'lucide-react'
+import { Check, Copy, RefreshCw } from 'lucide-react'
 
 import { PageHeader } from '@/components/page-header'
 import { CreateSymbolDialog } from '@/components/create-symbol-dialog'
 import { BackupCard } from '@/components/backup-card'
+import { AiProviderBadge, AiProviderDialog } from '@/components/ai-provider-dialog'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import {
   Select,
@@ -23,6 +26,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
+import { Switch } from '@/components/ui/switch'
 import {
   Table,
   TableBody,
@@ -32,6 +36,7 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { deleteAiProvider, getApiStatus, listAiProviders, regenerateApiToken, setApiConfig, type AiProvider, type ApiStatus } from '@/lib/local-db'
 import { useCairn } from '@/lib/store'
 
 const categoryLabel: Record<string, string> = {
@@ -75,6 +80,15 @@ export default function SettingsPage() {
   const [appVersion, setAppVersion] = useState('0.1.3')
   const [updateStatus, setUpdateStatus] = useState('尚未检查更新')
   const [checkingUpdate, setCheckingUpdate] = useState(false)
+  const [apiStatus, setApiStatus] = useState<ApiStatus | null>(null)
+  const [apiEnabledDraft, setApiEnabledDraft] = useState(true)
+  const [apiPortDraft, setApiPortDraft] = useState('8787')
+  const [apiMessage, setApiMessage] = useState('')
+  const [copiedToken, setCopiedToken] = useState(false)
+  const [savingApi, setSavingApi] = useState(false)
+  const [aiProviders, setAiProviders] = useState<AiProvider[]>([])
+  const [aiDialogOpen, setAiDialogOpen] = useState(false)
+  const [editingProvider, setEditingProvider] = useState<AiProvider | null>(null)
 
   useEffect(() => setMounted(true), [])
 
@@ -82,7 +96,57 @@ export default function SettingsPage() {
     if (!isTauriRuntime()) return
     void invoke<string>('get_app_version').then(setAppVersion).catch(() => undefined)
     void invoke<string>('get_log_path').then(setLogPath).catch(() => undefined)
+    void getApiStatus()
+      .then((status) => {
+        setApiStatus(status)
+        setApiEnabledDraft(status.enabled)
+        setApiPortDraft(String(status.port))
+      })
+      .catch(() => undefined)
+    void listAiProviders().then(setAiProviders).catch(() => undefined)
   }, [])
+
+  function applyApiStatus(status: ApiStatus) {
+    setApiStatus(status)
+    setApiEnabledDraft(status.enabled)
+    setApiPortDraft(String(status.port))
+  }
+
+  async function saveApiConfig() {
+    const port = Number.parseInt(apiPortDraft, 10)
+    if (!Number.isInteger(port) || port < 1 || port > 65535) {
+      setApiMessage('端口必须是 1-65535 的整数。')
+      return
+    }
+    setSavingApi(true)
+    try {
+      const status = await setApiConfig(apiEnabledDraft, port)
+      applyApiStatus(status)
+      setApiMessage('配置已保存；重启应用后生效。')
+    } catch (error) {
+      setApiMessage(`保存失败：${String(error)}`)
+    } finally {
+      setSavingApi(false)
+    }
+  }
+
+  async function refreshApiToken() {
+    if (!window.confirm('重新生成 token 后，现有脚本需要更新为新 token 才能继续写入。确定重新生成？')) return
+    try {
+      const status = await regenerateApiToken()
+      applyApiStatus(status)
+      setApiMessage('token 已重新生成。')
+    } catch (error) {
+      setApiMessage(`重新生成失败：${String(error)}`)
+    }
+  }
+
+  async function copyToken() {
+    if (!apiStatus) return
+    await navigator.clipboard?.writeText(apiStatus.token)
+    setCopiedToken(true)
+    window.setTimeout(() => setCopiedToken(false), 1200)
+  }
 
   async function loadLogs() {
     if (!isTauriRuntime()) {
@@ -128,6 +192,8 @@ export default function SettingsPage() {
           <TabsTrigger value="general" className="px-4">通用</TabsTrigger>
           <TabsTrigger value="data" className="px-4">数据</TabsTrigger>
           <TabsTrigger value="docs" className="px-4">文档</TabsTrigger>
+          <TabsTrigger value="api" className="px-4">本地 API</TabsTrigger>
+          <TabsTrigger value="ai" className="px-4">AI</TabsTrigger>
           <TabsTrigger value="logs" className="px-4">日志</TabsTrigger>
           <TabsTrigger value="about" className="px-4">关于</TabsTrigger>
         </TabsList>
@@ -339,6 +405,196 @@ export default function SettingsPage() {
           </Card>
         </TabsContent>
 
+        <TabsContent value="api" className="flex flex-col gap-6">
+          <Card>
+            <CardHeader>
+              <CardTitle>本地 REST API</CardTitle>
+              <CardDescription>仅供本机脚本（如 TradingView 浮窗）写入 Case 数据；不提供任何下单或仓位修改能力</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="flex max-w-2xl flex-col">
+                <SettingRow title="启用本地 API" description="只监听 127.0.0.1，修改后需重启应用生效">
+                  <Switch checked={apiEnabledDraft} onCheckedChange={(checked) => setApiEnabledDraft(checked === true)} />
+                </SettingRow>
+                <SettingRow title="端口" description="默认 8787；被占用时启动失败，可在日志中查看原因">
+                  <div className="flex items-center gap-2">
+                    <Input
+                      className="w-24 font-mono"
+                      value={apiPortDraft}
+                      onChange={(event) => setApiPortDraft(event.target.value)}
+                      inputMode="numeric"
+                    />
+                    <Button variant="outline" size="sm" disabled={savingApi || !isTauriRuntime()} onClick={saveApiConfig}>
+                      保存配置
+                    </Button>
+                  </div>
+                </SettingRow>
+                <SettingRow title="运行状态" description="服务随应用常驻（托盘），关闭窗口不影响">
+                  <span className="flex items-center gap-2 text-sm text-muted-foreground">
+                    {apiStatus?.running && apiStatus.boundPort > 0 ? (
+                      <>
+                        <span className="size-2 rounded-full bg-emerald-500" />
+                        运行中 · 127.0.0.1:{apiStatus.boundPort}
+                      </>
+                    ) : apiStatus?.enabled ? (
+                      <>
+                        <span className="size-2 rounded-full bg-amber-500" />
+                        已启用但未运行
+                      </>
+                    ) : (
+                      '未启用'
+                    )}
+                  </span>
+                </SettingRow>
+                <SettingRow title="访问 Token" description="脚本请求需携带 Authorization: Bearer &lt;token&gt;">
+                  <div className="flex items-center gap-2">
+                    <Button variant="outline" size="sm" disabled={!apiStatus?.token} onClick={copyToken}>
+                      {copiedToken ? <Check data-icon="inline-start" /> : <Copy data-icon="inline-start" />}
+                      {copiedToken ? '已复制' : '复制 Token'}
+                    </Button>
+                    <Button variant="outline" size="sm" disabled={!isTauriRuntime()} onClick={refreshApiToken}>
+                      重新生成
+                    </Button>
+                  </div>
+                </SettingRow>
+                {apiStatus?.token && (
+                  <div className="break-all rounded-md bg-muted px-3 py-2 font-mono text-xs text-muted-foreground">{apiStatus.token}</div>
+                )}
+                {apiMessage && <div className="text-xs text-muted-foreground">{apiMessage}</div>}
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>端点速查</CardTitle>
+              <CardDescription>供编写配套脚本使用；除 health 外均需 Bearer token</CardDescription>
+            </CardHeader>
+            <CardContent className="flex flex-col gap-4">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead className="w-24">方法</TableHead>
+                    <TableHead className="w-80">路径</TableHead>
+                    <TableHead>说明</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {[
+                    ['GET', '/api/v1/health', '探测服务，无需 token'],
+                    ['GET', '/api/v1/accounts', '账户列表（含嵌套 Period），浮窗选择记录上下文'],
+                    ['GET', '/api/v1/cases', 'Case 列表'],
+                    ['POST', '/api/v1/cases', '创建 Case；title / accountId / periodId 必填；同 id 同内容幂等'],
+                    ['GET', '/api/v1/cases/:id/cards', '该 Case 的 Card 列表'],
+                    ['POST', '/api/v1/cases/:id/cards', '提交 Card；phase / rawText 必填，barRef 选填（缺省从原文提取 BAR 引用）；原文不可变，重复提交幂等'],
+                    ['POST', '/api/v1/bindings', '建立 Case↔Trade 绑定；双向一对一'],
+                    ['DELETE', '/api/v1/bindings/:id', '解除绑定'],
+                    ['GET / POST', '/api/v1/case-tags', 'Case 标签查询与创建'],
+                  ].map(([method, path, desc]) => (
+                    <TableRow key={path}>
+                      <TableCell className="font-mono text-xs">{method}</TableCell>
+                      <TableCell className="font-mono text-xs">{path}</TableCell>
+                      <TableCell className="text-muted-foreground">{desc}</TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+              <div className="flex flex-col gap-2">
+                <h3 className="font-medium">请求示例</h3>
+                <pre className="overflow-auto rounded-lg bg-muted p-4 font-mono text-xs leading-relaxed text-muted-foreground">
+{`curl -X POST http://127.0.0.1:8787/api/v1/cases/case-1/cards \\
+  -H "Authorization: Bearer <token>" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "id": "card-2026-0826-001",
+    "phase": "intermediate",
+    "rawText": "BAR41 出现顶部结构，走弱则离场",
+    "barRef": 41
+  }'`}
+                </pre>
+              </div>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="ai">
+          <Card>
+            <CardHeader>
+              <CardTitle>AI Providers</CardTitle>
+              <CardDescription>OpenAI compatible 接口配置；AI 识别与完整性检查将使用默认 Provider</CardDescription>
+              <CardAction>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={!isTauriRuntime()}
+                  onClick={() => {
+                    setEditingProvider(null)
+                    setAiDialogOpen(true)
+                  }}
+                >
+                  <Plus data-icon="inline-start" />
+                  添加 Provider
+                </Button>
+              </CardAction>
+            </CardHeader>
+            <CardContent>
+              {aiProviders.length === 0 ? (
+                <div className="flex min-h-[120px] flex-col items-center justify-center gap-2 text-sm text-muted-foreground">
+                  <span>还没有配置 AI Provider。</span>
+                </div>
+              ) : (
+                <div className="flex flex-col">
+                  {aiProviders.map((provider) => (
+                    <div key={provider.id} className="flex items-center gap-3 border-b py-3.5 last:border-b-0">
+                      <AiProviderBadge presetId={provider.presetId} />
+                      <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+                        <div className="flex items-center gap-2">
+                          <span className="truncate text-sm font-medium">{provider.name}</span>
+                          {provider.isDefault && (
+                            <Badge variant="secondary" className="gap-1">
+                              <Star className="size-3" />
+                              默认
+                            </Badge>
+                          )}
+                        </div>
+                        <span className="truncate font-mono text-xs text-muted-foreground">
+                          {provider.baseUrl}
+                          {provider.defaultModel ? ` · ${provider.defaultModel}` : ''}
+                        </span>
+                      </div>
+                      <div className="flex shrink-0 items-center gap-1">
+                        <Button
+                          variant="ghost"
+                          size="icon-sm"
+                          aria-label={`编辑 ${provider.name}`}
+                          onClick={() => {
+                            setEditingProvider(provider)
+                            setAiDialogOpen(true)
+                          }}
+                        >
+                          <Pencil />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="icon-sm"
+                          aria-label={`删除 ${provider.name}`}
+                          onClick={() => {
+                            if (window.confirm(`删除 AI Provider「${provider.name}」？`)) {
+                              void deleteAiProvider(provider.id).then(setAiProviders)
+                            }
+                          }}
+                        >
+                          <Trash2 />
+                        </Button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </TabsContent>
+
         <TabsContent value="logs">
           <Card>
             <CardHeader>
@@ -389,6 +645,16 @@ export default function SettingsPage() {
           </Card>
         </TabsContent>
       </Tabs>
+
+      <AiProviderDialog
+        open={aiDialogOpen}
+        onOpenChange={setAiDialogOpen}
+        provider={editingProvider}
+        onSaved={(providers) => {
+          setAiProviders(providers)
+          setAiDialogOpen(false)
+        }}
+      />
     </div>
   )
 }

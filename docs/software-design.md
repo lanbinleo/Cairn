@@ -39,10 +39,14 @@ Account
     Trade
       Execution
       TradeEvent
+    Case
+      CaseCard
 
 Shared:
   Symbol
   TagDef
+  CaseTagDef
+  CaseTradeBinding
   Note
   Attachment
   ImportBatch
@@ -67,14 +71,19 @@ Execution is an atomic trade action. It can be a position-changing fill or a tra
 
 - Pending action: `undecided`
 - Position-changing actions: `entry`, `scale-in`, `scale-out`, `exit`
-- Trade-management actions: `stop`, `target-set`, `target-moved`, `order-edit`
-- Legacy stop actions `stop-set` and `stop-moved` may still appear in restored/imported data. New manual UI records use `stop`; the app displays Set Stop or Move Stop from context.
+- Trade-management actions: `stop`, `target-moved`, `order-edit`
+- The manual UI labels `stop` as Move Stop. It records a stop-loss level change; if no previous stop exists, the first Move Stop establishes the active stop level.
+- The manual UI labels `target-moved` as Move Target. It records a take-profit level change; if no previous target exists, the first Move Target establishes the active target level.
+- Legacy actions `stop-set`, `stop-moved`, and `target-set` may still appear in restored/imported data. Editing and saving a trade may normalize them to `stop` or `target-moved`.
+- `order-edit` records ordinary pending-order creation or modification, such as limit, stop, or stop-limit order changes. It should not be used for normal stop-loss or take-profit movement.
 - `orderType`: `market`, `limit`, `stop`, `stop-limit`, `stop-loss`, `take-profit`, `trailing-stop`
+- Manual Move Stop defaults to `stop-loss`; manual Move Target defaults to `take-profit`; manual Add / Edit Order defaults to `limit`.
+- `trailing-stop` is retained for compatibility with imported or historical records. Manual trailing behavior is represented as Move Stop with a Reason such as Trail / protect profit, not as a trailing-stop order type by default.
 - `price` is the fill price for position-changing actions, or the stop/target/order price for management actions.
 - `quantity` is required for position-changing actions and may be empty for management actions.
 - `anchorPrice` is an optional manual anchor used to draw risk/reward zones for management stages.
 - Buy/sell meaning is derived from `Trade.direction` and position-changing `Execution.action`.
-- `signal` preserves TradingView text.
+- `signal` preserves TradingView text for position-changing records. For trade-management records, the UI presents it as Reason, for example Trail / protect profit, Break even, Reduce risk, Widen stop / hold through, Structure changed, Target update, Manual order update, or Other.
 - `sourceRef` preserves imported row identity.
 
 ### TradeEvent
@@ -88,6 +97,24 @@ TradeEvent is retained for imported chart annotations and legacy data:
 - `note`
 
 New manual trade-management records should be stored as Executions. TradeEvent records may still be rendered on the timeline and chart for compatibility.
+
+### Case And CaseCard
+
+A Case is a continuous reasoning record created under an Account and Period. It can exist before a Trade is imported. CaseCard stores one raw text entry in one of five phases: `pre-entry`, `entry`, `intermediate`, `closing`, or `reflection`. Each Card maps to at most one `barRef`; a Card never represents multiple BARs. Raw text is permanent but not frozen: typo corrections (for example speech-transcription errors) are allowed, and every change automatically appends the previous wording to `rawTextHistory` and stamps `rawTextEditedAt`; AI output never rewrites raw text, and the local REST API still rejects raw-text changes to keep idempotent replay semantics.
+
+Recording is thinking-first: users speak or type free text only. BAR numbers mentioned in the text (`BAR41`, `第 42 根 K 线`) are extracted mechanically into `barRef`; AI extraction and completeness checklists arrive in Stage 5. `barRef` may stay missing on a Card until extraction or a later manual backfill—the thinking layer never blocks on form filling.
+
+`barRef` follows the TradingView Bar Count indicator convention: bar 1 is the first bar opening at UTC 00:00 of the day, incrementing by one per bar. `lib/bar-time.ts` converts between `barRef` and UTC time by pure arithmetic, which matches gapless 24/7 markets. Markets with session gaps will later need bar positioning from imported candles instead of time arithmetic.
+
+A Case spans from the end of the previous Trade to the next executed Trade. Pre-entry observation and non-executed Entry ideas stay in the same Case while the trader keeps observing. A Case that never leads to an executed Trade remains as an observation-only record.
+
+An Entry CaseCard can be marked `pending`, `executed`, or `continue-observing`. A non-executed Entry remains an Entry in stored data but is displayed with Pre-entry observations. Explicit BAR references are mechanically extracted without rewriting the raw text.
+
+Case and Trade use a separate CaseTradeBinding. Active bindings are one-to-one in both directions. Case Tags use CaseTagDef and are independent from Trade TagDef.
+
+**Auto-close** (`lib/case-auto-close.ts`): an `active` Case flips to `closed` automatically, once, after data-change events (card create/move, binding create, trade create/status/execution updates). Conditions: the bound Trade is fully closed (exit quantity ≥ entry quantity) and a Closing Card exists; or, with no binding at all, a Reflection Card exists (observation-only Cases). A closed Trade without a Closing Card keeps the Case `active` on purpose — the open Case is the reminder that the exit record is missing. Manual status edits never trigger the derivation, so reopening a Case sticks.
+
+Trade detail separates `Overview`, `Case`, and `Trade` views. Overview keeps the chart and trade result summary, shows the Case summary below the result card, renders extracted BAR references as Case Card markers, and combines Executions, legacy TradeEvents, and Case Cards into one Timeline. Chart markers expose their event or Card summary on hover; Case markers can open the corresponding Card. Case shows the same immutable Card text as the Case page and supports creating, selecting, binding, unbinding, and rebinding Cases. Trade contains numeric analysis and is the future home of process scoring and AI suggestions.
 
 ### ImportBatch
 
@@ -110,6 +137,11 @@ The Rust layer stores app data in entity tables:
 - `chart_data`
 - `notes`
 - `tag_defs`
+- `cases`
+- `case_cards`
+- `case_trade_bindings`
+- `case_tag_defs`
+- `case_tag_links`
 - `attachments`
 - `import_batches`
 
@@ -123,8 +155,13 @@ TradingView import supports:
 
 - Chinese and English field names.
 - Workbook sheet auto-selection by required trade columns.
-- TradingView `交易编号` / `Trade #` grouping when present.
-- Net-position grouping when trade number is unavailable.
+- When every imported row has TradingView `交易编号` / `Trade #`, Cairn first restores each TradingView entry/exit pair, then merges overlapping same-direction pairs into one Cairn Trade.
+- When TradingView trade numbers are unavailable or incomplete, Cairn falls back to position simulation by Account, Period, Symbol, and direction.
+- Within one Cairn Trade, repeated entries are stored as `scale-in` executions until the simulated position is closed.
+- Long and short positions are tracked independently and never offset each other.
+- TradingView trade numbers are preserved as source references, but overlapping TradingView pairs may share one Cairn Trade.
+- Partial exits become `scale-out`; the exit that closes the simulated position becomes `exit`.
+- Import preview warns when an exit has no matching simulated position or exits more quantity than the current simulated position.
 - UTC time parsing from Excel serials, ISO strings, Unix seconds, or Unix milliseconds.
 - Order type inference from order type + signal text.
 - Source row preservation through `sourceRef`.
@@ -132,6 +169,16 @@ TradingView import supports:
 - Chart SL/TP level changes become TradeEvents if the chart time overlaps the trade. Manual stop/target/order changes are stored as trade-management Executions.
 
 If trade export and chart CSV time ranges do not overlap, chart data is not attached to that trade.
+
+### Import Case Matching
+
+After a batch is imported, `lib/case-import-matching.ts` proposes Case bindings per imported Trade (Cases and Cards do not store a symbol, so matching uses account plus time windows):
+
+- **Exact (green, auto-bound)**: same account; the Trade's first entry fill is within ±15 min of an executed Entry Card's record time, and the last exit fill is within ±15 min of a Closing Card's time; the Case is unbound. Exact matches bind automatically with `source: 'import'`; each Case is consumed once so two Trades cannot claim it.
+- **Suggest (yellow)**: entry-only matches, multiple exact candidates, or any Card overlapping the holding period ±60 min — listed as candidates for one-click manual confirmation.
+- **None (red)**: no candidate Case at all, surfaced so missing recordings are visible.
+
+The import result page renders one row per Trade with the color dot, both summaries, and candidate confirmation. Batch rollback also removes the bindings created during that import.
 
 ## Metrics
 
@@ -148,6 +195,17 @@ Metrics are computed from position-changing Executions only:
 
 Trade status is stored for workflow, but closed-trade metrics still derive from position-changing execution data. Trade detail editing can update executions, tags, initial stop loss, optional initial take profit, notes, and reference images.
 
+### Risk And R Decomposition
+
+R keeps a single meaning — the plan's risk unit — and the Trade tab shows the decomposition instead of redefining R:
+
+- **Initial risk (planned 1R)** = |first entry fill price − `initialStopLoss`| × first entry quantity. `rMultiple` = realized PnL ÷ initial risk, anchored to the first entry so scaling in does not dilute the denominator. For single-entry trades this equals the historical average-entry formula.
+- **Actual risk** = Σ over every entry/scale-in fill of |fill price − stop in effect at that fill| × fill quantity. "Stop in effect" is the latest stop-action Execution (`stop`/`stop-set`/`stop-moved`, which carry the new stop price) before the fill; if none, `initialStopLoss`. Stop widens or tightens made before an add therefore land in that add's segment. `rActual` = PnL ÷ actual risk.
+- **Final stop** = the stop price in effect at the last fill (equals `initialStopLoss` when never moved).
+- No user input: everything derives mechanically from Executions plus `initialStopLoss`. Both R numbers display side by side without judgment; scale-out does not change either denominator, and gap/slippage losses beyond the stop surface as `rActual` < −1.
+
+The Trade tab also renders a 计划 vs 实际 comparison table: plan direction/stop/target from the bound Case's Entry Card memo (Trade's `initialStopLoss`/`initialTakeProfit` take precedence) against actual direction, final stop, and average exit — facts side by side, no verdicts.
+
 ## Trade Chart Overlays
 
 Trade charts can render execution management stages:
@@ -156,11 +214,11 @@ Trade charts can render execution management stages:
 - `Entry line`: an entry/average-entry reference line.
 - `Zones`: retained as an optional visual aid for risk/reward areas between an execution's `anchorPrice` and the active stop/target price.
 
-A management stage begins at a `stop`, `target-set`, `target-moved`, or `order-edit` execution and ends at the next stop/target/order-edit execution. If a field is not changed, the previous active stop or target continues through the next stage.
+A management stage begins at a `stop`, `target-moved`, `target-set`, or `order-edit` execution and ends at the next stop/target/order-edit execution. If a field is not changed, the previous active stop or target continues through the next stage.
 
 ## Tags
 
-TagDef is global. Trade tags reference tag names. Tag names are trimmed, whitespace-normalized, and unique by case-insensitive comparison. Renaming a TagDef updates all Trade tag references. Deleting a TagDef removes that tag from referencing trades after user confirmation. Trade list filtering uses AND semantics across selected tags.
+TagDef is global. Trade tags reference tag names. Tag names are trimmed, whitespace-normalized, and unique by case-insensitive comparison. Tag color is categorical, not decorative. Trade-tag groups should be displayed in color order from red to purple, with name order inside the same color. Renaming a TagDef updates all Trade tag references. Deleting a TagDef removes that tag from referencing trades after user confirmation. Trade list filtering uses AND semantics across selected tags. Tag management lists tags by localized name order and supports filtering by color.
 
 Note tags are text tags and are independent from Trade tags. Note tag input uses the same trimming and de-duplication behavior.
 
@@ -189,6 +247,45 @@ Imported source files are copied into the app data directory under `attachments/
 Data coverage is organized around the selected timeframe. The Data page prioritizes missing symbol/month combinations so the user can work through incomplete data first. Coverage summaries are derived from expected bar timestamps for the timeframe and the candles already present in `chart_candles`.
 
 Chart candle imports are persisted in batches through a native command so a multi-thousand-row CSV does not issue one frontend-to-Rust write per candle.
+
+## Local REST API
+
+Cairn runs a local HTTP service for companion scripts (the TradingView capture widget) to write Case data without opening the main window. Implementation lives in `src-tauri/src/api.rs` and reuses the same SQLite write path as the app UI, so raw-text immutability and one-to-one binding constraints behave identically.
+
+- The capture widget is a Tampermonkey userscript at `scripts/cairn-case-widget.user.js`: a Shadow-DOM floating ball and panel over the TradingView chart. It matches the approved HTML mock (drag with a 4px misfire threshold, persistent ball that toggles to a collapse button, five phase pills, entry decision, optional BAR input, entry-phase completeness hints, card timeline), with a current-Case session header: the panel states where Cards go, switching Cases is an on-demand recent-cases menu, and ＋ starts a new Case (account/period remembered from last time). It talks to this API with `GM_xmlhttpRequest` (an https page cannot `fetch` http localhost directly), remembers token/port/selected Case/phase/widget position, and can create Cases inline with account and period picked from `GET /api/v1/accounts`. `scripts/cairn-case-widget.test.html` is a GM-shim harness page that runs the same userscript against the isolated dev environment for testing without Tampermonkey.
+
+- The server binds to `127.0.0.1` only and starts with the app; closing the window hides to tray and the API keeps running.
+- Configuration and a 32-byte random token are stored in `app_data_dir/api-config.json` (atomic tmp+rename writes). Default port is 8787. Port and enabled flag changes apply after restart; token regeneration applies immediately.
+- All endpoints except `GET /api/v1/health` require `Authorization: Bearer <token>`. Responses include permissive CORS headers and handle OPTIONS preflight so both `GM_xmlhttpRequest` and plain `fetch` clients work.
+- Endpoints: `GET /api/v1/health`, `GET/POST /api/v1/cases`, `GET /api/v1/cases/:id`, `GET/POST /api/v1/cases/:id/cards`, `POST /api/v1/bindings`, `DELETE /api/v1/bindings/:id`, `GET/POST /api/v1/case-tags`, `GET /api/v1/accounts` (with nested periods for capture context).
+- Card creation requires `phase` and `rawText`. `barRef` is optional; when omitted the server mechanically extracts the first explicit BAR reference from the raw text (`BAR41`, `bar #38`, `第 42 根 K 线`), and the Card may be stored without one. Creation is idempotent: clients submit a stable `id`; replaying the same content returns the stored record, while replaying the same id with different raw text is rejected with 409.
+- The API never accepts order placement, position modification, or Trade writes.
+- Successful writes emit a `cairn://data-changed` Tauri event; the React store debounces and rehydrates so the UI reflects external writes without polling.
+
+## AI Providers
+
+Cairn talks to OpenAI-compatible chat APIs through user-configured providers. Implementation lives in `src-tauri/src/ai.rs`; the Settings page has a dedicated AI tab.
+
+- Providers are OpenAI-compatible endpoints with a name, base URL, optional API key, and an optional default model. Common presets (OpenAI, Anthropic, OpenRouter, Gemini, Groq, DeepSeek, Zhipu GLM, Kimi, Qwen, SiliconFlow, local Ollama, custom) prefill the base URL and show a branded badge.
+- Model discovery uses `GET {base_url}/models` with Bearer auth (omitted for keyless local endpoints). A successful fetch doubles as a connection test.
+- One provider is marked default; AI features (Stage 5 card extraction and completeness checks) will use it.
+- Credentials are configuration, not data: they are stored in `app_data_dir/ai-providers.json` (atomic writes) and are excluded from backups and restores.
+- The client is a thin reqwest layer rather than an SDK; chat calls stay a `chat(provider, messages, schema)`-style function so requests and responses remain fully recordable for provenance (model/prompt/schema versions).
+
+### Card AI Analysis
+
+The first Stage 5 slice runs on each CaseCard ("AI 整理"): the default provider receives the Card phase and raw text and returns structured JSON that is validated and stored on the Card as `aiAnalysis` — a versioned derived record (`schemaVersion`, `promptVersion`, `model`, `providerId`, `analyzedAt`). Raw text is never rewritten; re-running replaces the analysis.
+
+- Extraction targets: `barRef` proposal (backfills a missing Card `barRef`), span-quote `labels` across eleven fixed categories, and for Entry Cards the six-field memo (direction, stop-loss, target, confidence, invalidation, rejected alternatives, plus optional emotion). Every quote must be a verbatim substring of the raw text; anything else is dropped during validation, and `missingFields` is derived mechanically from the memo rather than trusted from the model.
+- Validation is defensive: markdown fences are stripped, unknown label types and non-verbatim quotes are dropped, `direction` normalizes to long/short, `confidence` clamps to 0–100. The UI renders label-colored underlines directly on the original text, the memo grid with quotes, and missing-field hints.
+- Every AI surface ships with a retry control (`components/ai-retry-button.tsx`): clicking retries immediately; a hover-revealed caret opens a menu where the user can type a correction instruction (appended as an extra user message) and retry with it.
+- If the raw text was edited after an analysis (`analyzedAt` older than `rawTextEditedAt`), the UI marks the analysis stale and suggests a re-run.
+- The analysis footer is deliberately compact — legend, missing fields, model, and time on one muted line; the memo grid with verbatim quotes lives behind a popover. "全部 AI 整理" analyzes every Card of the Case in parallel with per-card busy and error state.
+- The same chat layer drafts Case titles (`draft_case_title`): it reads all Card raw texts of a Case and returns a short title suggestion (≤20 chars) that the user applies from the Case page. Naming is the secretary's job; recording stays untitled until then.
+
+### Process Score (Trade 分析)
+
+The Trade tab hosts the ten-point process scorecard (`lib/process-score.ts`, `components/trade-process-score.tsx`). Mechanical items derive live: memo completeness from the bound Case's Entry Card analysis (missing fields count), planned risk-reward from entry/stop/target prices (memo strings, `initialStopLoss`/`initialTakeProfit` fallbacks), and stop-only-tightened from the stop Execution sequence (direction-aware). Judgment items (structure valid, entry discipline, exit per plan, unplanned-action count) are human inputs; saved scores snapshot the derivation into `Trade.processScore.computed` so the evaluation stays anchored to decision-time facts. R is displayed beside the score and never contributes to it.
 
 ## Backup
 

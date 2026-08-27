@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useTheme } from 'next-themes'
 import {
   createChart,
@@ -10,13 +10,32 @@ import {
   LineType,
   LineStyle,
   type IChartApi,
+  type MouseEventParams,
   type UTCTimestamp,
   type SeriesMarker,
 } from 'lightweight-charts'
 import { executionActionLabel, hasPositionFill, isEntryExecution, isManagementExecutionAction } from '@/lib/executions'
-import type { ChartBar, Trade } from '@/lib/types'
+import { aggregateDisplayExecutions, inferChartBarIntervalMs } from '@/lib/execution-display'
+import type { CaseCardPhase, ChartBar, Trade } from '@/lib/types'
 
 export type TradeChartOverlayStyle = 'zones' | 'lines' | 'both'
+
+export interface TradeChartCaseMarker {
+  cardId: string
+  barNumber: number
+  time: number
+  phase: CaseCardPhase
+  label?: string
+  detail?: string
+}
+
+const CASE_MARKER_COLORS: Record<CaseCardPhase, string> = {
+  'pre-entry': '#3b82f6',
+  entry: '#10b981',
+  intermediate: '#f59e0b',
+  closing: '#f43f5e',
+  reflection: '#8b5cf6',
+}
 
 const palettes = {
   light: {
@@ -145,6 +164,13 @@ function averageEntryPrice(trade: Trade) {
   return quantity > 0 ? cost / quantity : undefined
 }
 
+function nearestBarTime(bars: ChartBar[], targetTime: number) {
+  return bars.reduce<ChartBar | undefined>((nearest, bar) => {
+    if (!nearest) return bar
+    return Math.abs(bar.time - targetTime) < Math.abs(nearest.time - targetTime) ? bar : nearest
+  }, undefined)?.time
+}
+
 export function TradeChart({
   bars,
   trade,
@@ -152,6 +178,8 @@ export function TradeChart({
   overlayStyle = 'lines',
   showTrailLines = true,
   showEntryLine = true,
+  caseMarkers = [],
+  onCaseMarkerClick,
 }: {
   bars: ChartBar[]
   trade: Trade
@@ -159,12 +187,15 @@ export function TradeChart({
   overlayStyle?: TradeChartOverlayStyle
   showTrailLines?: boolean
   showEntryLine?: boolean
+  caseMarkers?: TradeChartCaseMarker[]
+  onCaseMarkerClick?: (cardId: string) => void
 }) {
   const containerRef = useRef<HTMLDivElement>(null)
   const chartContainerRef = useRef<HTMLDivElement>(null)
   const overlayRef = useRef<HTMLCanvasElement>(null)
   const chartRef = useRef<IChartApi | null>(null)
   const { resolvedTheme } = useTheme()
+  const [hoveredMarker, setHoveredMarker] = useState<{ items: Array<{ title: string; detail?: string; tone: 'trade' | 'case' }>; x: number; y: number } | null>(null)
 
   useEffect(() => {
     const wrapper = containerRef.current
@@ -272,7 +303,8 @@ export function TradeChart({
     }
 
     /* Execution 标记 */
-    const execMarkers: SeriesMarker<UTCTimestamp>[] = [...trade.executions]
+    const displayExecutions = aggregateDisplayExecutions(trade.executions, inferChartBarIntervalMs(bars))
+    const execMarkers: SeriesMarker<UTCTimestamp>[] = displayExecutions
       .filter((execution) => execution.action !== 'undecided')
       .sort((a, b) => a.time - b.time)
       .map((e) => {
@@ -300,12 +332,13 @@ export function TradeChart({
         }
         const isBuy = (trade.direction === 'long' && isEntryExecution(e)) || (trade.direction === 'short' && !isEntryExecution(e))
         const label = executionActionLabel[e.action] ?? e.action
+        const countText = e.aggregateCount > 1 ? ` (${e.aggregateCount})` : ''
         return {
           time: toTs(e.time),
           position: isBuy ? ('belowBar' as const) : ('aboveBar' as const),
           shape: isBuy ? ('arrowUp' as const) : ('arrowDown' as const),
           color: isBuy ? p.up : p.down,
-          text: `${label} ${e.quantity}@${e.price}`,
+          text: `${label} ${e.quantity}@${e.price}${countText}`,
         }
       })
 
@@ -321,10 +354,51 @@ export function TradeChart({
       size: 0.6,
     }))
 
+    const caseMarkerByTime = new Map<number, TradeChartCaseMarker>()
+    const caseChartMarkers: SeriesMarker<UTCTimestamp>[] = caseMarkers.flatMap((marker) => {
+      const barTime = nearestBarTime(bars, marker.time)
+      if (barTime == null) return []
+      const chartTime = toTs(barTime)
+      caseMarkerByTime.set(Number(chartTime), marker)
+      return [{
+        time: chartTime,
+        position: 'aboveBar' as const,
+        shape: 'square' as const,
+        color: CASE_MARKER_COLORS[marker.phase],
+        text: `BAR ${marker.barNumber}`,
+        size: 0.8,
+      }]
+    })
+
     createSeriesMarkers(
       candles,
-      [...execMarkers, ...eventMarkers].sort((a, b) => (a.time as number) - (b.time as number)),
+      [...execMarkers, ...eventMarkers, ...caseChartMarkers].sort((a, b) => (a.time as number) - (b.time as number)),
     )
+
+    const hoverItemsByTime = new Map<number, Array<{ title: string; detail?: string; tone: 'trade' | 'case' }>>()
+    const addHoverItem = (time: number, item: { title: string; detail?: string; tone: 'trade' | 'case' }) => hoverItemsByTime.set(time, [...(hoverItemsByTime.get(time) ?? []), item])
+    for (const execution of displayExecutions) {
+      addHoverItem(Number(toTs(execution.time)), {
+        title: executionActionLabel[execution.action] ?? execution.action,
+        detail: `${execution.quantity ?? '—'} @ ${execution.price ?? '—'}${execution.signal ? ` · ${execution.signal}` : ''}`,
+        tone: 'trade',
+      })
+    }
+    for (const event of trade.events) addHoverItem(Number(toTs(event.time)), { title: event.type, detail: event.note ?? (event.price == null ? undefined : String(event.price)), tone: 'trade' })
+    for (const [time, marker] of caseMarkerByTime) addHoverItem(time, { title: `BAR ${marker.barNumber}${marker.label ? ` · ${marker.label}` : ''}`, detail: marker.detail, tone: 'case' })
+
+    const handleChartClick = (param: MouseEventParams) => {
+      if (typeof param.time !== 'number') return
+      const marker = caseMarkerByTime.get(param.time)
+      if (marker) onCaseMarkerClick?.(marker.cardId)
+    }
+    chart.subscribeClick(handleChartClick)
+    const handleCrosshairMove = (param: MouseEventParams) => {
+      if (typeof param.time !== 'number' || !param.point) { setHoveredMarker(null); return }
+      const items = hoverItemsByTime.get(param.time)
+      setHoveredMarker(items?.length ? { items, x: param.point.x, y: param.point.y } : null)
+    }
+    chart.subscribeCrosshairMove(handleCrosshairMove)
 
     /* 初始止损价格线 */
     if (trade.initialStopLoss != null) {
@@ -391,10 +465,12 @@ export function TradeChart({
     return () => {
       ro.disconnect()
       chart.timeScale().unsubscribeVisibleTimeRangeChange(handleVisibleRangeChange)
+      chart.unsubscribeClick(handleChartClick)
+      chart.unsubscribeCrosshairMove(handleCrosshairMove)
       chart.remove()
       chartRef.current = null
     }
-  }, [bars, trade, height, resolvedTheme, overlayStyle, showTrailLines, showEntryLine])
+  }, [bars, caseMarkers, height, onCaseMarkerClick, resolvedTheme, overlayStyle, showTrailLines, showEntryLine, trade])
 
   if (bars.length === 0) {
     return (
@@ -411,6 +487,11 @@ export function TradeChart({
     <div ref={containerRef} className="relative w-full" style={{ height }}>
       <canvas ref={overlayRef} className="pointer-events-none absolute inset-0 z-0" aria-hidden="true" />
       <div ref={chartContainerRef} className="relative z-10 h-full w-full" />
+      {hoveredMarker && (
+        <div className="pointer-events-none absolute z-20 w-72 max-w-[calc(100%-1rem)] rounded-md border bg-background/95 px-3 py-2 text-xs shadow-lg" style={{ left: Math.min(Math.max(8, hoveredMarker.x + 12), Math.max(8, (containerRef.current?.clientWidth ?? 400) - 296)), top: Math.max(8, hoveredMarker.y - 12) }}>
+          {hoveredMarker.items.map((item, index) => <div key={`${item.title}-${index}`} className={index > 0 ? 'mt-2 border-t pt-2' : undefined}><div className={item.tone === 'case' ? 'font-medium text-amber-600 dark:text-amber-300' : 'font-medium'}>{item.title}</div>{item.detail && <div className="mt-1 line-clamp-4 whitespace-pre-wrap text-muted-foreground">{item.detail}</div>}</div>)}
+        </div>
+      )}
     </div>
   )
 }
