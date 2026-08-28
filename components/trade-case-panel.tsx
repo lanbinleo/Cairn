@@ -5,33 +5,16 @@ import { Link } from 'react-router-dom'
 import { ArrowRight, Link2, Plus, Unlink } from 'lucide-react'
 
 import { CaseTagBadge } from '@/components/case-tag-badge'
+import { CaseCardTimeline } from '@/components/case-card-timeline'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Field, FieldDescription, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import {
-  CASE_PHASE_OPTIONS,
-  CASE_PROVENANCE_OPTIONS,
-  caseEntryDecisionLabel,
-  casePhaseLabel,
-  caseProvenanceLabel,
-  caseStatusLabel,
-  displayPhaseForCaseCard,
-} from '@/lib/cases'
-import { fmtUtcDateTime } from '@/lib/format'
+import { CASE_PROVENANCE_OPTIONS, caseProvenanceLabel, caseStatusLabel } from '@/lib/cases'
 import { useCairn } from '@/lib/store'
-import type { CaseCardPhase, CaseProvenance, Trade } from '@/lib/types'
-import { cn } from '@/lib/utils'
-
-const PHASE_TONES: Record<CaseCardPhase, string> = {
-  'pre-entry': 'border-blue-500/25 bg-blue-500/5',
-  entry: 'border-emerald-500/25 bg-emerald-500/5',
-  intermediate: 'border-amber-500/25 bg-amber-500/5',
-  closing: 'border-rose-500/25 bg-rose-500/5',
-  reflection: 'border-violet-500/25 bg-violet-500/5',
-}
+import type { CaseProvenance, Trade } from '@/lib/types'
 
 export function TradeCaseSummaryCard({ trade, onOpenCaseTab }: { trade: Trade; onOpenCaseTab: () => void }) {
   const { cases, caseCards, caseBindings } = useCairn()
@@ -103,28 +86,10 @@ export function TradeCasePanel({ trade, targetCardId }: { trade: Trade; targetCa
     [occupiedCaseIds, relatedCases],
   )
   const occupiedCount = relatedCases.length - availableCases.length
-  const groupedCards = useMemo(() => {
-    const groups: Record<CaseCardPhase, typeof cards> = {
-      'pre-entry': [],
-      entry: [],
-      intermediate: [],
-      closing: [],
-      reflection: [],
-    }
-    for (const card of cards) groups[displayPhaseForCaseCard(card)].push(card)
-    return groups
-  }, [cards])
 
   useEffect(() => {
     if (!availableCases.some((item) => item.id === selectedCaseId)) setSelectedCaseId(availableCases[0]?.id ?? '')
   }, [availableCases, selectedCaseId])
-
-  useEffect(() => {
-    if (!targetCardId || !caseRecord) return
-    requestAnimationFrame(() => {
-      document.getElementById(`trade-case-card-${targetCardId}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
-    })
-  }, [caseRecord, targetCardId])
 
   async function bindExistingCase() {
     if (!selectedCaseId) return
@@ -278,50 +243,7 @@ export function TradeCasePanel({ trade, targetCardId }: { trade: Trade; targetCa
         {error && <p className="px-6 pb-4 text-sm text-destructive" role="alert">{error}</p>}
       </Card>
 
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">心路历程</CardTitle>
-          <CardDescription>与 Case 页面使用同一组原始 Cards；文字修正通过新增说明保存。</CardDescription>
-        </CardHeader>
-        <CardContent className="flex flex-col gap-6">
-          {cards.length === 0 ? (
-            <div className="rounded-lg border border-dashed py-10 text-center text-sm text-muted-foreground">这个 Case 还没有 Card。</div>
-          ) : CASE_PHASE_OPTIONS.map((option) => {
-            const phaseCards = groupedCards[option.value]
-            if (phaseCards.length === 0) return null
-            return (
-              <section key={option.value} className="flex flex-col gap-3">
-                <div className="flex items-center gap-2">
-                  <h2 className="font-medium">{option.label}</h2>
-                  <Badge variant="outline">{phaseCards.length}</Badge>
-                </div>
-                {phaseCards.map((card) => (
-                  <article
-                    id={`trade-case-card-${card.id}`}
-                    key={card.id}
-                    className={cn(
-                      'scroll-mt-28 rounded-lg border p-4 transition-shadow',
-                      PHASE_TONES[option.value],
-                      targetCardId === card.id && 'ring-2 ring-primary ring-offset-2 ring-offset-background',
-                    )}
-                  >
-                    <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <Badge variant="outline">{casePhaseLabel[card.phase]}</Badge>
-                        {card.entryDecision && <Badge variant="secondary">{caseEntryDecisionLabel[card.entryDecision]}</Badge>}
-                        {card.phase !== option.value && <span className="text-xs text-muted-foreground">展示于 {option.label}</span>}
-                        {card.barRef != null && <Badge variant="outline">BAR {card.barRef}</Badge>}
-                      </div>
-                      <time className="font-mono text-xs text-muted-foreground">{fmtUtcDateTime(card.createdAt)}</time>
-                    </div>
-                    <p className="whitespace-pre-wrap text-sm leading-6">{card.rawText}</p>
-                  </article>
-                ))}
-              </section>
-            )
-          })}
-        </CardContent>
-      </Card>
+      <CaseCardTimeline cards={cards} showMoveToCase={false} targetCardId={targetCardId} />
     </div>
   )
 }
