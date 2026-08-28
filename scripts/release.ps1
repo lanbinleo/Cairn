@@ -22,6 +22,13 @@ function Require-CleanWorktree {
     }
 }
 
+function Invoke-Checked($Executable, $Arguments) {
+    & $Executable @Arguments
+    if ($LASTEXITCODE -ne 0) {
+        throw "$Executable exited with $LASTEXITCODE."
+    }
+}
+
 function Read-Json($Path) {
     Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json
 }
@@ -54,14 +61,14 @@ if (!(Test-Path -LiteralPath $releaseNotes)) {
 }
 
 Step "Running frontend build"
-pnpm build
+Invoke-Checked "pnpm" @("build")
 
 Step "Running Rust checks"
-cargo check --manifest-path src-tauri/Cargo.toml
-cargo test --manifest-path src-tauri/Cargo.toml
+Invoke-Checked "cargo" @("check", "--manifest-path", "src-tauri/Cargo.toml")
+Invoke-Checked "cargo" @("test", "--manifest-path", "src-tauri/Cargo.toml")
 
 Step "Building release executable"
-cargo build --manifest-path src-tauri/Cargo.toml --release --features tauri/custom-protocol
+Invoke-Checked "cargo" @("build", "--manifest-path", "src-tauri/Cargo.toml", "--release", "--features", "tauri/custom-protocol")
 
 $exe = "src-tauri/target/release/cairn.exe"
 if (!(Test-Path -LiteralPath $exe)) {
@@ -74,13 +81,14 @@ if ($BuildInstaller) {
     if (!(Test-Path -LiteralPath $updaterKey)) {
         throw "Updater signing key not found: $updaterKey. Generate with: pnpm tauri signer generate -w $updaterKey (and update the pubkey in src-tauri/tauri.conf.json)."
     }
-    # 密钥为无密码生成；签名公钥内嵌于 tauri.conf.json 与已发布版本
-    $env:TAURI_SIGNING_PRIVATE_KEY_PATH = $updaterKey
+    # 密钥为无密码生成；签名公钥内嵌于 tauri.conf.json 与已发布版本。
+    # bundler 只认 TAURI_SIGNING_PRIVATE_KEY（密钥内容），不认 _PATH 变体。
+    $env:TAURI_SIGNING_PRIVATE_KEY = (Get-Content -LiteralPath $updaterKey -Raw).Trim()
     $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = ""
 
     Step "Building Tauri installers (signed updater artifacts)"
     # 主配置（非 tauri.local.conf.json）：createUpdaterArtifacts 需要 true 才会生成 .sig
-    pnpm tauri build
+    Invoke-Checked "pnpm" @("tauri", "build")
 
     $artifacts = @(
         "src-tauri/target/release/bundle/nsis/Cairn_${Version}_x64-setup.exe",
