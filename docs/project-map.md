@@ -79,7 +79,7 @@ Dialogs live under `components/*-dialog.tsx` (edit-trade, manage-tags, create-sy
 ## Scripts & Docs
 
 - `scripts/dev-isolated.ps1`: isolated dev data dir (`CAIRN_DATA_DIR` → `%LOCALAPPDATA%/Cairn/dev-profile`). `release.ps1`: release helper.
-- `scripts/cairn-case-widget.user.js`: Tampermonkey widget (Shadow DOM, GM_xmlhttpRequest, current-Case session header, per-phase checklist hint 「这张卡可以覆盖：…」, window-capture key isolation so TradingView shortcuts never fire while typing in the panel). `cairn-case-widget.test.html`: GM-shim harness.
+- `scripts/cairn-case-widget.user.js`: Tampermonkey widget (light DOM under `#cairn-cw-wrap` with scoped styles, GM_xmlhttpRequest, current-Case session header, per-phase checklist hint 「这张卡可以覆盖：…」, window-capture key isolation so TradingView shortcuts never fire while typing in the panel). `cairn-case-widget.test.html`: GM-shim harness.
 - `docs/software-design.md`: product/data/API/AI design. `docs/development-plan-0.2.0.md`, `docs/case-recording-0.2.0.md`: plan + feature design. `docs/development-workflow.md`: release checklist. `docs/user-guide.md`: end-user tutorial (setup, widget install, workflow). `docs/release-0.1.x.md`, `docs/mock/` (widget mock), `reference/legacy/` (historical only).
 
 ## Storage Collections (SQLite ↔ store keys)

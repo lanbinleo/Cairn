@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Cairn 记一笔
 // @namespace    cairn
-// @version      0.2.2
+// @version      0.2.3
 // @description  TradingView 悬浮记录浮窗：口述或打字记录交易思考，实时写入本地 Cairn（127.0.0.1 本地 API）
 // @author       Cairn
 // @match        https://*.tradingview.com/*
@@ -107,19 +107,18 @@
   /* ================= Shadow DOM 骨架 ================= */
 
   const host = document.createElement('div');
-  host.id = 'cairn-case-widget-host';
-  const root = host.attachShadow({ mode: 'open' });
-  root.innerHTML = `
+  host.id = 'cairn-cw-wrap';
+  host.innerHTML = `
 <style>
-  :host { all: initial; }
-  * { box-sizing: border-box; margin: 0; padding: 0; scrollbar-width: thin; scrollbar-color: #363a45 transparent; }
-  *::-webkit-scrollbar { width: 8px; height: 8px; }
-  *::-webkit-scrollbar-track { background: transparent; }
-  *::-webkit-scrollbar-thumb { background: #363a45; border-radius: 4px; }
-  *::-webkit-scrollbar-thumb:hover { background: #4a4f5c; }
-  *::-webkit-scrollbar-corner { background: transparent; }
+  #cairn-cw-wrap { all: initial; }
+  #cairn-cw-wrap * { box-sizing: border-box; margin: 0; padding: 0; scrollbar-width: thin; scrollbar-color: #363a45 transparent; }
+  #cairn-cw-wrap *::-webkit-scrollbar { width: 8px; height: 8px; }
+  #cairn-cw-wrap *::-webkit-scrollbar-track { background: transparent; }
+  #cairn-cw-wrap *::-webkit-scrollbar-thumb { background: #363a45; border-radius: 4px; }
+  #cairn-cw-wrap *::-webkit-scrollbar-thumb:hover { background: #4a4f5c; }
+  #cairn-cw-wrap *::-webkit-scrollbar-corner { background: transparent; }
 
-  .cw-root {
+  #cairn-cw-wrap .cw-root {
     --bg: #131722;
     --panel: #1e222d;
     --panel-2: #2a2e39;
@@ -139,14 +138,14 @@
   }
 
   /* ---------- Dock：悬浮球 + 面板一体化 ---------- */
-  #dock {
+  #cairn-cw-wrap #cw-dock {
     position: fixed;
     right: 28px; bottom: 96px;
     z-index: 2147483000;
     touch-action: none;
   }
 
-  #float-ball {
+  #cairn-cw-wrap #cw-float-ball {
     width: 52px; height: 52px;
     border-radius: 50%;
     background: var(--accent);
@@ -157,18 +156,18 @@
     box-shadow: 0 6px 20px rgba(41, 98, 255, 0.45);
     transition: transform .12s ease, background .15s ease;
   }
-  #float-ball:hover { transform: scale(1.07); }
-  #float-ball:active { cursor: grabbing; }
-  #float-ball .fb-icon { font-size: 17px; line-height: 1; }
-  #float-ball .fb-label { font-size: 10px; line-height: 1; opacity: .9; }
-  #float-ball .fb-dot {
+  #cairn-cw-wrap #cw-float-ball:hover { transform: scale(1.07); }
+  #cairn-cw-wrap #cw-float-ball:active { cursor: grabbing; }
+  #cairn-cw-wrap #cw-float-ball .fb-icon { font-size: 17px; line-height: 1; }
+  #cairn-cw-wrap #cw-float-ball .fb-label { font-size: 10px; line-height: 1; opacity: .9; }
+  #cairn-cw-wrap #cw-float-ball .fb-dot {
     position: absolute; top: 2px; right: 2px;
     width: 11px; height: 11px; border-radius: 50%;
     background: var(--green); border: 2px solid var(--bg);
     display: none;
   }
-  #dock.unread #float-ball .fb-dot { display: block; }
-  #dock.open #float-ball {
+  #cairn-cw-wrap #cw-dock.unread #cw-float-ball .fb-dot { display: block; }
+  #cairn-cw-wrap #cw-dock.open #cw-float-ball {
     background: var(--panel-2);
     box-shadow: 0 4px 14px rgba(0,0,0,.45);
     border: 1px solid var(--border);
@@ -176,7 +175,7 @@
   }
 
   /* ---------- 面板 ---------- */
-  #widget {
+  #cairn-cw-wrap #cw-widget {
     position: absolute;
     bottom: 64px; right: 0;
     width: 340px;
@@ -189,18 +188,18 @@
     flex-direction: column;
     overflow: hidden;
   }
-  #dock.open #widget { display: flex; animation: pop .16s ease; }
-  @keyframes pop { from { opacity: 0; transform: translateY(8px) scale(.97); } }
+  #cairn-cw-wrap #cw-dock.open #cw-widget { display: flex; animation: cw-pop .16s ease; }
+  @keyframes cw-pop { from { opacity: 0; transform: translateY(8px) scale(.97); } }
 
-  #widget-header {
+  #cairn-cw-wrap #cw-widget-header {
     display: flex; align-items: center; gap: 8px;
     padding: 10px 12px 8px;
     cursor: grab;
     border-bottom: 1px solid var(--border);
   }
-  #widget-header:active { cursor: grabbing; }
-  #widget-header .grip { color: var(--text-dim); font-size: 14px; letter-spacing: -1px; }
-  .case-current {
+  #cairn-cw-wrap #cw-widget-header:active { cursor: grabbing; }
+  #cairn-cw-wrap #cw-widget-header .grip { color: var(--text-dim); font-size: 14px; letter-spacing: -1px; }
+  #cairn-cw-wrap .case-current {
     flex: 1; min-width: 0;
     display: flex; align-items: center; gap: 6px;
     background: var(--panel-2);
@@ -213,13 +212,13 @@
     cursor: pointer;
     text-align: left;
   }
-  .case-current:hover, .case-current:focus { border-color: var(--border); outline: none; }
-  .case-current #case-current-name {
+  #cairn-cw-wrap .case-current:hover, #cairn-cw-wrap .case-current:focus { border-color: var(--border); outline: none; }
+  #cairn-cw-wrap .case-current #cw-case-current-name {
     flex: 1; min-width: 0;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
-  .case-current .chev { color: var(--text-dim); font-size: 10px; flex-shrink: 0; }
-  #case-menu {
+  #cairn-cw-wrap .case-current .chev { color: var(--text-dim); font-size: 10px; flex-shrink: 0; }
+  #cairn-cw-wrap #cw-case-menu {
     position: absolute;
     top: 44px; left: 8px; right: 8px;
     background: var(--bg);
@@ -233,8 +232,8 @@
     padding: 4px;
     z-index: 5;
   }
-  #case-menu.show { display: flex; animation: pop .14s ease; }
-  .case-menu-item {
+  #cairn-cw-wrap #cw-case-menu.show { display: flex; animation: cw-pop .14s ease; }
+  #cairn-cw-wrap .case-menu-item {
     padding: 7px 10px;
     border-radius: 7px;
     font-size: 12.5px;
@@ -243,11 +242,11 @@
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     background: none; border: none; font-family: inherit; text-align: left;
   }
-  .case-menu-item:hover { background: var(--panel-2); }
-  .case-menu-item.active { color: var(--accent); background: rgba(41,98,255,.12); }
-  .case-menu-item.empty { color: var(--text-dim); cursor: default; }
-  .case-menu-item.empty:hover { background: none; }
-  .cw-select {
+  #cairn-cw-wrap .case-menu-item:hover { background: var(--panel-2); }
+  #cairn-cw-wrap .case-menu-item.active { color: var(--accent); background: rgba(41,98,255,.12); }
+  #cairn-cw-wrap .case-menu-item.empty { color: var(--text-dim); cursor: default; }
+  #cairn-cw-wrap .case-menu-item.empty:hover { background: none; }
+  #cairn-cw-wrap .cw-select {
     background: var(--panel-2);
     color: var(--text);
     border: 1px solid transparent;
@@ -258,60 +257,60 @@
     cursor: pointer;
     min-width: 0;
   }
-  .cw-select:hover, .cw-select:focus { border-color: var(--border); outline: none; }
-  .icon-btn {
+  #cairn-cw-wrap .cw-select:hover, #cairn-cw-wrap .cw-select:focus { border-color: var(--border); outline: none; }
+  #cairn-cw-wrap .icon-btn {
     background: var(--panel-2); border: none; color: var(--text-dim);
     width: 26px; height: 26px; border-radius: 7px;
     cursor: pointer; font-size: 13px;
     display: inline-flex; align-items: center; justify-content: center;
     flex-shrink: 0;
   }
-  .icon-btn:hover { color: var(--text); }
+  #cairn-cw-wrap .icon-btn:hover { color: var(--text); }
 
   /* ---------- 新建 Case 行内表单 ---------- */
-  #new-case-form {
+  #cairn-cw-wrap #cw-new-case-form {
     display: none;
     padding: 10px 12px;
     border-bottom: 1px solid var(--border);
     flex-direction: column; gap: 8px;
   }
-  #new-case-form.show { display: flex; }
-  #new-case-form input, .cw-input {
+  #cairn-cw-wrap #cw-new-case-form.show { display: flex; }
+  #cairn-cw-wrap #cw-new-case-form input, #cairn-cw-wrap .cw-input {
     background: var(--bg); border: 1px solid var(--border); color: var(--text);
     border-radius: 8px; padding: 7px 10px; font-size: 13px; font-family: inherit;
     width: 100%;
   }
-  #new-case-form input:focus, .cw-input:focus { outline: none; border-color: var(--accent); }
-  .nc-selects { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
-  .nc-selects .cw-select { font-size: 12.5px; }
-  .nc-row { display: flex; gap: 6px; justify-content: flex-end; align-items: center; }
-  .nc-create {
+  #cairn-cw-wrap #cw-new-case-form input:focus, #cairn-cw-wrap .cw-input:focus { outline: none; border-color: var(--accent); }
+  #cairn-cw-wrap .nc-selects { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+  #cairn-cw-wrap .nc-selects .cw-select { font-size: 12.5px; }
+  #cairn-cw-wrap .nc-row { display: flex; gap: 6px; justify-content: flex-end; align-items: center; }
+  #cairn-cw-wrap .nc-create {
     background: var(--accent); border: none; color: #fff;
     border-radius: 7px; padding: 5px 12px; font-size: 12px; cursor: pointer;
   }
-  .nc-create:hover { filter: brightness(1.12); }
+  #cairn-cw-wrap .nc-create:hover { filter: brightness(1.12); }
 
   /* ---------- 设置视图 ---------- */
-  #cw-settings {
+  #cairn-cw-wrap #cw-settings {
     display: none;
     padding: 12px;
     flex-direction: column; gap: 10px;
     overflow-y: auto;
   }
-  #dock.settings #cw-settings { display: flex; }
-  #dock.settings #widget-context,
-  #dock.settings #widget-body,
-  #dock.settings #cards-section { display: none; }
-  #cw-settings .set-title { font-size: 13px; font-weight: 600; }
-  #cw-settings label { font-size: 11px; color: var(--text-dim); display: block; margin-bottom: 4px; }
-  #cw-settings .set-row + .set-row { margin-top: 2px; }
-  #set-token { font-family: Consolas, monospace; font-size: 12px; }
-  #set-port { width: 90px; }
-  #set-status { font-size: 12px; line-height: 1.5; min-height: 18px; }
-  #set-status.ok { color: var(--green); }
-  #set-status.err { color: var(--red); }
+  #cairn-cw-wrap #cw-dock.settings #cw-settings { display: flex; }
+  #cairn-cw-wrap #cw-dock.settings #cw-widget-context,
+  #cairn-cw-wrap #cw-dock.settings #cw-widget-body,
+  #cairn-cw-wrap #cw-dock.settings #cw-cards-section { display: none; }
+  #cairn-cw-wrap #cw-settings .set-title { font-size: 13px; font-weight: 600; }
+  #cairn-cw-wrap #cw-settings label { font-size: 11px; color: var(--text-dim); display: block; margin-bottom: 4px; }
+  #cairn-cw-wrap #cw-settings .set-row + .set-row { margin-top: 2px; }
+  #cairn-cw-wrap #cw-set-token { font-family: Consolas, monospace; font-size: 12px; }
+  #cairn-cw-wrap #cw-set-port { width: 90px; }
+  #cairn-cw-wrap #cw-set-status { font-size: 12px; line-height: 1.5; min-height: 18px; }
+  #cairn-cw-wrap #cw-set-status.ok { color: var(--green); }
+  #cairn-cw-wrap #cw-set-status.err { color: var(--red); }
 
-  #widget-context {
+  #cairn-cw-wrap #cw-widget-context {
     padding: 6px 12px;
     font-size: 11px;
     color: var(--text-dim);
@@ -319,12 +318,12 @@
     display: flex; gap: 6px; align-items: center;
     white-space: nowrap; overflow: hidden;
   }
-  #widget-context .live { color: var(--green); }
+  #cairn-cw-wrap #cw-widget-context .live { color: var(--green); }
 
-  #widget-body { padding: 10px 12px 12px; display: flex; flex-direction: column; gap: 10px; overflow-y: auto; }
+  #cairn-cw-wrap #cw-widget-body { padding: 10px 12px 12px; display: flex; flex-direction: column; gap: 10px; overflow-y: auto; }
 
-  .phase-row { display: flex; gap: 4px; }
-  .phase-pill {
+  #cairn-cw-wrap .phase-row { display: flex; gap: 4px; }
+  #cairn-cw-wrap .phase-pill {
     flex: 1;
     background: var(--panel-2);
     border: 1px solid transparent;
@@ -337,16 +336,16 @@
     text-align: center;
     transition: all .1s ease;
   }
-  .phase-pill:hover { color: var(--text); }
-  .phase-pill.active { background: rgba(41,98,255,.18); border-color: var(--accent); color: #fff; }
+  #cairn-cw-wrap .phase-pill:hover { color: var(--text); }
+  #cairn-cw-wrap .phase-pill.active { background: rgba(41,98,255,.18); border-color: var(--accent); color: #fff; }
 
-  #phase-checklist { font-size: 11px; line-height: 1.55; color: var(--text-dim); padding: 0 2px; margin-top: -4px; }
+  #cairn-cw-wrap #cw-phase-checklist { font-size: 11px; line-height: 1.55; color: var(--text-dim); padding: 0 2px; margin-top: -4px; }
 
-  #entry-decision { display: none; flex-direction: column; gap: 6px; }
-  #entry-decision.show { display: flex; }
-  #entry-decision .ed-title { font-size: 11px; color: var(--text-dim); }
-  .ed-row { display: flex; gap: 4px; }
-  .ed-btn {
+  #cairn-cw-wrap #cw-entry-decision { display: none; flex-direction: column; gap: 6px; }
+  #cairn-cw-wrap #cw-entry-decision.show { display: flex; }
+  #cairn-cw-wrap #cw-entry-decision .ed-title { font-size: 11px; color: var(--text-dim); }
+  #cairn-cw-wrap .ed-row { display: flex; gap: 4px; }
+  #cairn-cw-wrap .ed-btn {
     flex: 1;
     background: var(--panel-2);
     border: 1px solid transparent;
@@ -357,12 +356,12 @@
     font-family: inherit;
     cursor: pointer;
   }
-  .ed-btn:hover { color: var(--text); }
-  .ed-btn.active[data-v="executed"] { background: rgba(38,166,154,.16); border-color: var(--green); color: var(--green); }
-  .ed-btn.active[data-v="continue-observing"] { background: rgba(255,152,0,.14); border-color: var(--bar-num); color: var(--bar-num); }
-  .ed-btn.active[data-v="pending"] { background: rgba(41,98,255,.16); border-color: var(--accent); color: #fff; }
+  #cairn-cw-wrap .ed-btn:hover { color: var(--text); }
+  #cairn-cw-wrap .ed-btn.active[data-v="executed"] { background: rgba(38,166,154,.16); border-color: var(--green); color: var(--green); }
+  #cairn-cw-wrap .ed-btn.active[data-v="continue-observing"] { background: rgba(255,152,0,.14); border-color: var(--bar-num); color: var(--bar-num); }
+  #cairn-cw-wrap .ed-btn.active[data-v="pending"] { background: rgba(41,98,255,.16); border-color: var(--accent); color: #fff; }
 
-  #card-input {
+  #cairn-cw-wrap #cw-card-input {
     width: 100%;
     min-height: 96px;
     resize: vertical;
@@ -376,11 +375,11 @@
     font-family: inherit;
     user-select: text;
   }
-  #card-input:focus { outline: none; border-color: var(--accent); }
-  #card-input::placeholder { color: var(--text-dim); }
+  #cairn-cw-wrap #cw-card-input:focus { outline: none; border-color: var(--accent); }
+  #cairn-cw-wrap #cw-card-input::placeholder { color: var(--text-dim); }
 
-  #input-row { display: flex; gap: 6px; align-items: center; }
-  #bar-input {
+  #cairn-cw-wrap #cw-input-row { display: flex; gap: 6px; align-items: center; }
+  #cairn-cw-wrap #cw-bar-input {
     width: 82px;
     background: var(--bg);
     border: 1px solid var(--border);
@@ -391,18 +390,18 @@
     padding: 7px 9px;
     text-align: center;
   }
-  #bar-input:focus { outline: none; border-color: var(--bar-num); }
-  #bar-input::placeholder { color: var(--text-dim); opacity: .7; }
-  #submit-btn {
+  #cairn-cw-wrap #cw-bar-input:focus { outline: none; border-color: var(--bar-num); }
+  #cairn-cw-wrap #cw-bar-input::placeholder { color: var(--text-dim); opacity: .7; }
+  #cairn-cw-wrap #cw-submit-btn {
     margin-left: auto;
     background: var(--accent); color: #fff; border: none;
     border-radius: 8px; padding: 7px 14px;
     font-size: 12.5px; font-family: inherit; cursor: pointer; white-space: nowrap;
   }
-  #submit-btn:hover { filter: brightness(1.12); }
-  #submit-btn:disabled { opacity: .55; cursor: default; filter: none; }
+  #cairn-cw-wrap #cw-submit-btn:hover { filter: brightness(1.12); }
+  #cairn-cw-wrap #cw-submit-btn:disabled { opacity: .55; cursor: default; filter: none; }
 
-  #completeness-tip {
+  #cairn-cw-wrap #cw-completeness-tip {
     display: none;
     background: rgba(255,182,72,.1);
     border: 1px solid rgba(255,182,72,.4);
@@ -412,25 +411,25 @@
     line-height: 1.6;
     color: var(--warn);
   }
-  #completeness-tip.show { display: block; animation: pop .2s ease; }
-  #completeness-tip button {
+  #cairn-cw-wrap #cw-completeness-tip.show { display: block; animation: cw-pop .2s ease; }
+  #cairn-cw-wrap #cw-completeness-tip button {
     background: none; border: none; color: var(--text-dim);
     cursor: pointer; font-size: 12px; padding: 0; float: right;
   }
-  #completeness-tip button:hover { color: var(--text); }
+  #cairn-cw-wrap #cw-completeness-tip button:hover { color: var(--text); }
 
-  #cards-section { border-top: 1px solid var(--border); padding: 10px 12px 12px; }
-  #cards-section .cs-head {
+  #cairn-cw-wrap #cw-cards-section { border-top: 1px solid var(--border); padding: 10px 12px 12px; }
+  #cairn-cw-wrap #cw-cards-section .cs-head {
     display: flex; align-items: center; justify-content: space-between;
     font-size: 11px; color: var(--text-dim); margin-bottom: 8px;
   }
-  #cards-section .cs-head button {
+  #cairn-cw-wrap #cw-cards-section .cs-head button {
     background: none; border: none; color: var(--text-dim);
     font-size: 11px; cursor: pointer; padding: 0; font-family: inherit;
   }
-  #cards-section .cs-head button:hover { color: var(--text); }
-  #card-list { display: flex; flex-direction: column; gap: 6px; overflow-y: auto; max-height: 168px; }
-  .cw-card {
+  #cairn-cw-wrap #cw-cards-section .cs-head button:hover { color: var(--text); }
+  #cairn-cw-wrap #cw-card-list { display: flex; flex-direction: column; gap: 6px; overflow-y: auto; max-height: 168px; }
+  #cairn-cw-wrap .cw-card {
     background: var(--bg);
     border: 1px solid var(--border);
     border-left: 3px solid var(--pc, var(--text-dim));
@@ -441,20 +440,20 @@
     color: var(--text);
     user-select: text;
   }
-  .cw-card .mc-meta { display: flex; gap: 8px; margin-bottom: 3px; align-items: baseline; }
-  .cw-card .mc-phase { color: var(--pc, var(--text-dim)); font-size: 11px; }
-  .cw-card .mc-bar { font-family: Consolas, monospace; color: var(--bar-num); font-size: 11px; }
-  .cw-card .mc-time { color: var(--text-dim); font-size: 10.5px; margin-left: auto; }
-  .cw-card .mc-text {
+  #cairn-cw-wrap .cw-card .mc-meta { display: flex; gap: 8px; margin-bottom: 3px; align-items: baseline; }
+  #cairn-cw-wrap .cw-card .mc-phase { color: var(--pc, var(--text-dim)); font-size: 11px; }
+  #cairn-cw-wrap .cw-card .mc-bar { font-family: Consolas, monospace; color: var(--bar-num); font-size: 11px; }
+  #cairn-cw-wrap .cw-card .mc-time { color: var(--text-dim); font-size: 10.5px; margin-left: auto; }
+  #cairn-cw-wrap .cw-card .mc-text {
     color: var(--text);
     display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
     overflow: hidden;
   }
-  #card-list.expanded .cw-card .mc-text { -webkit-line-clamp: unset; }
-  .cw-card.fresh { animation: fresh .5s ease; }
-  @keyframes fresh { from { background: rgba(38,166,154,.14); } }
+  #cairn-cw-wrap #cw-card-list.expanded .cw-card .mc-text { -webkit-line-clamp: unset; }
+  #cairn-cw-wrap .cw-card.fresh { animation: cw-fresh .5s ease; }
+  @keyframes cw-fresh { from { background: rgba(38,166,154,.14); } }
 
-  #toast {
+  #cairn-cw-wrap #cw-toast {
     position: fixed;
     left: 50%; bottom: 36px;
     transform: translateX(-50%) translateY(16px);
@@ -470,59 +469,59 @@
     transition: all .22s ease;
     z-index: 2147483100;
   }
-  #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
-  #toast.err { background: var(--red); color: #2b0a09; }
+  #cairn-cw-wrap #cw-toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+  #cairn-cw-wrap #cw-toast.err { background: var(--red); color: #2b0a09; }
 </style>
 
 <div class="cw-root">
-  <div id="dock">
-    <div id="widget">
-      <div id="widget-header">
+  <div id="cw-dock">
+    <div id="cw-widget">
+      <div id="cw-widget-header">
         <span class="grip">⠿</span>
-        <button id="case-current" type="button" title="切换 Case">
-          <span id="case-current-name">—</span>
+        <button id="cw-case-current" type="button" title="切换 Case">
+          <span id="cw-case-current-name">—</span>
           <span class="chev">▾</span>
         </button>
-        <div id="case-menu"></div>
-        <button class="icon-btn" id="new-case-btn" title="开新 Case">＋</button>
-        <button class="icon-btn" id="settings-btn" title="连接设置">⚙</button>
+        <div id="cw-case-menu"></div>
+        <button class="icon-btn" id="cw-new-case-btn" title="开新 Case">＋</button>
+        <button class="icon-btn" id="cw-settings-btn" title="连接设置">⚙</button>
       </div>
 
-      <div id="new-case-form">
-        <input id="new-case-title" placeholder="新 Case 标题（可留空）" spellcheck="false">
+      <div id="cw-new-case-form">
+        <input id="cw-new-case-title" placeholder="新 Case 标题（可留空）" spellcheck="false">
         <div class="nc-selects">
-          <select id="nc-account" class="cw-select"></select>
-          <select id="nc-period" class="cw-select"></select>
+          <select id="cw-nc-account" class="cw-select"></select>
+          <select id="cw-nc-period" class="cw-select"></select>
         </div>
         <div class="nc-row">
-          <button class="icon-btn" id="nc-cancel" title="取消">✕</button>
-          <button class="nc-create" id="nc-create">创建并切换</button>
+          <button class="icon-btn" id="cw-nc-cancel" title="取消">✕</button>
+          <button class="nc-create" id="cw-nc-create">创建并切换</button>
         </div>
       </div>
 
       <div id="cw-settings">
         <div class="set-title">连接 Cairn</div>
         <div class="set-row">
-          <label for="set-token">API Token</label>
-          <input id="set-token" class="cw-input" placeholder="Cairn 设置 → 本地 API → 复制" spellcheck="false" autocomplete="off">
+          <label for="cw-set-token">API Token</label>
+          <input id="cw-set-token" class="cw-input" placeholder="Cairn 设置 → 本地 API → 复制" spellcheck="false" autocomplete="off">
         </div>
         <div class="set-row">
-          <label for="set-port">端口</label>
-          <input id="set-port" class="cw-input" inputmode="numeric" placeholder="8787">
+          <label for="cw-set-port">端口</label>
+          <input id="cw-set-port" class="cw-input" inputmode="numeric" placeholder="8787">
         </div>
         <div class="nc-row" style="justify-content:flex-start">
-          <button class="nc-create" id="set-save">保存并连接</button>
+          <button class="nc-create" id="cw-set-save">保存并连接</button>
         </div>
-        <div id="set-status"></div>
+        <div id="cw-set-status"></div>
       </div>
 
-      <div id="widget-context">
-        <span id="ctx-text">—</span>
+      <div id="cw-widget-context">
+        <span id="cw-ctx-text">—</span>
         <span class="live">● forward（盘中）</span>
       </div>
 
-      <div id="widget-body">
-        <div class="phase-row" id="phase-row">
+      <div id="cw-widget-body">
+        <div class="phase-row" id="cw-phase-row">
           <button class="phase-pill" data-phase="pre-entry">观察</button>
           <button class="phase-pill" data-phase="entry">入场</button>
           <button class="phase-pill" data-phase="intermediate">过程</button>
@@ -530,9 +529,9 @@
           <button class="phase-pill" data-phase="reflection">复盘</button>
         </div>
 
-        <div id="phase-checklist"></div>
+        <div id="cw-phase-checklist"></div>
 
-        <div id="entry-decision">
+        <div id="cw-entry-decision">
           <div class="ed-title">这张入场卡的实际执行情况：</div>
           <div class="ed-row">
             <button class="ed-btn" data-v="pending">待确认</button>
@@ -541,40 +540,41 @@
           </div>
         </div>
 
-        <textarea id="card-input" placeholder="想到什么说什么……" spellcheck="false"></textarea>
+        <textarea id="cw-card-input" placeholder="想到什么说什么……" spellcheck="false"></textarea>
 
-        <div id="input-row">
-          <input id="bar-input" inputmode="numeric" placeholder="BAR №">
-          <button id="submit-btn">提交 ⌘↵</button>
+        <div id="cw-input-row">
+          <input id="cw-bar-input" inputmode="numeric" placeholder="BAR №">
+          <button id="cw-submit-btn">提交 ⌘↵</button>
         </div>
 
-        <div id="completeness-tip">
-          <button id="ct-close" title="知道了">✕</button>
-          <div id="ct-body"></div>
+        <div id="cw-completeness-tip">
+          <button id="cw-ct-close" title="知道了">✕</button>
+          <div id="cw-ct-body"></div>
         </div>
       </div>
 
-      <div id="cards-section">
+      <div id="cw-cards-section">
         <div class="cs-head">
-          <span id="cs-count">本次 Case 已有 0 张卡</span>
-          <button id="cards-expand">展开全部</button>
+          <span id="cw-cs-count">本次 Case 已有 0 张卡</span>
+          <button id="cw-cards-expand">展开全部</button>
         </div>
-        <div id="card-list"></div>
+        <div id="cw-card-list"></div>
       </div>
     </div>
 
-    <div id="float-ball">
+    <div id="cw-float-ball">
       <span class="fb-dot"></span>
       <span class="fb-icon">✎</span>
       <span class="fb-label">记一笔</span>
     </div>
   </div>
 
-  <div id="toast"></div>
+  <div id="cw-toast"></div>
 </div>
 `;
+  document.head.appendChild(host.querySelector('style'));
 
-  const $ = (id) => root.getElementById(id);
+  const $ = (id) => host.querySelector('#' + (id.startsWith('cw-') ? id : 'cw-' + id));
   const dock = () => $('dock');
 
   /* ================= 工具 ================= */
@@ -812,12 +812,12 @@
   }
 
   function renderPhasePills() {
-    root.querySelectorAll('.phase-pill').forEach((pill) => {
+    host.querySelectorAll('.phase-pill').forEach((pill) => {
       pill.classList.toggle('active', pill.dataset.phase === state.phase);
     });
     $('phase-checklist').textContent = PHASE_PROMPTS[state.phase] || '';
     $('entry-decision').classList.toggle('show', state.phase === 'entry');
-    root.querySelectorAll('.ed-btn').forEach((btn) => {
+    host.querySelectorAll('.ed-btn').forEach((btn) => {
       btn.classList.toggle('active', btn.dataset.v === state.entryDecision);
     });
   }
@@ -1013,7 +1013,7 @@
       $('card-input').focus();
     });
 
-    root.querySelector('.ed-row').addEventListener('click', (e) => {
+    host.querySelector('.ed-row').addEventListener('click', (e) => {
       const b = e.target.closest('.ed-btn');
       if (!b) return;
       state.entryDecision = b.dataset.v;
@@ -1053,14 +1053,13 @@
     });
     $('set-save').addEventListener('click', saveSettings);
 
-    // 键盘隔离：TradingView 不认得 Shadow DOM 内的焦点（键盘事件的 target 被重定向为宿主
-    // div，light-DOM 输入框则会被它自动跳过），且它的快捷键可能在 document/window 捕获阶段
-    // 监听，Shadow Root 内冒泡截断拦不住。因此任何源自浮窗内部的按键改在 window 捕获阶段
-    // （早于一切 document 监听）截断，浮窗自身的按键行为（提交/保存/Esc）由这一层代答。
+    // 键盘隔离（双保险）：浮窗 UI 直接挂在页面 DOM 上（非 Shadow DOM），TradingView 对聚焦的
+    // input/textarea 会自行跳过快捷键；这里再兜一层——任何源自浮窗内部的按键在 window 捕获
+    // 阶段（早于一切 document 监听）截断，浮窗自身的按键行为（提交/保存/Esc）由这一层代答。
     // 只 stopPropagation，除提交/保存键外不 preventDefault：打字/粘贴/IME 组字不受影响。
     function widgetKeydown(e) {
       if (!e.composedPath().includes(host)) return;
-      const inner = root.activeElement;
+      const inner = document.activeElement;
       if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && inner === $('card-input')) {
         e.preventDefault();
         submitCard();
@@ -1147,7 +1146,7 @@
   /* ================= 启动 ================= */
 
   function start() {
-    (document.documentElement || document.body).appendChild(host);
+    document.body.appendChild(host);
     renderPhasePills();
     renderCaseOptions();
     renderCards();
