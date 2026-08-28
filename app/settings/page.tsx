@@ -36,7 +36,7 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { deleteAiProvider, getApiStatus, listAiProviders, regenerateApiToken, setApiConfig, type AiProvider, type ApiStatus } from '@/lib/local-db'
+import { deleteAiProvider, getAiSettings, getApiStatus, listAiProviders, regenerateApiToken, saveAiSettings, setApiConfig, type AiProvider, type ApiStatus } from '@/lib/local-db'
 import { useCairn } from '@/lib/store'
 
 const categoryLabel: Record<string, string> = {
@@ -89,6 +89,7 @@ export default function SettingsPage() {
   const [aiProviders, setAiProviders] = useState<AiProvider[]>([])
   const [aiDialogOpen, setAiDialogOpen] = useState(false)
   const [editingProvider, setEditingProvider] = useState<AiProvider | null>(null)
+  const [aiAutoAnalyze, setAiAutoAnalyze] = useState(true)
 
   useEffect(() => setMounted(true), [])
 
@@ -104,6 +105,9 @@ export default function SettingsPage() {
       })
       .catch(() => undefined)
     void listAiProviders().then(setAiProviders).catch(() => undefined)
+    void getAiSettings()
+      .then((settings) => setAiAutoAnalyze(settings.autoAnalyze))
+      .catch(() => undefined)
   }, [])
 
   function applyApiStatus(status: ApiStatus) {
@@ -519,6 +523,24 @@ export default function SettingsPage() {
 
         <TabsContent value="ai">
           <Card>
+            <CardHeader>
+              <CardTitle>AI 行为</CardTitle>
+              <CardDescription>自动化触发时机；AI 调用失败都会自动重试一次</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <SettingRow title="自动 AI 整理" description="浮窗/本地 API 提交新 Card 后自动在后台识别；失败重试一次后记日志，不打扰录制">
+                <Switch
+                  checked={aiAutoAnalyze}
+                  disabled={!isTauriRuntime()}
+                  onCheckedChange={(checked) => {
+                    setAiAutoAnalyze(checked)
+                    void saveAiSettings({ autoAnalyze: checked }).catch(() => undefined)
+                  }}
+                />
+              </SettingRow>
+            </CardContent>
+          </Card>
+          <Card className="mt-6">
             <CardHeader>
               <CardTitle>AI Providers</CardTitle>
               <CardDescription>OpenAI compatible 接口配置；AI 识别与完整性检查将使用默认 Provider</CardDescription>

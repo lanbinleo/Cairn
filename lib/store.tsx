@@ -7,13 +7,13 @@
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import { listen } from '@tauri-apps/api/event'
-import { loadLocalState, saveLocalRecord, saveLocalRecords, deleteLocalRecord, restoreLocalState, exportLocalBackup, saveAttachmentFile, isTauriRuntime, analyzeCaseCard as analyzeCaseCardRemote } from './local-db'
+import { loadLocalState, saveLocalRecord, saveLocalRecords, deleteLocalRecord, restoreLocalState, exportLocalBackup, saveAttachmentFile, isTauriRuntime, analyzeCaseCard as analyzeCaseCardRemote, draftCaseTitle as draftCaseTitleRemote } from './local-db'
 import { deriveAutoCloseCases } from './case-auto-close'
 import type { CairnStateSnapshot } from './seed'
 import { seedState } from './seed'
 import { logFrontendError, logFrontendMessage } from './frontend-log'
 import { parseNoteMentions } from './note-mentions'
-import { extractExplicitBarRef } from './cases'
+import { extractExplicitBarRef, isDefaultCaseTitle } from './cases'
 import { findTagByName, normalizeTagDefs, normalizeTagName, normalizeTradeTagNames, uniqueTagNames, tagNamesEqual } from './tags'
 import type { Account, Attachment, CaseCard, CaseTagDef, CaseTradeBinding, ChartCandle, ChartImport, ChartTimeframe, ImportBatch, Period, Trade, TradeCase, TagDef, TagColor } from './types'
 
@@ -363,6 +363,18 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
     return updated
   }, [])
 
+  /** 绑定 Trade 后自动拟题：只替换默认占位标题，用户起过的名字永不覆盖；失败静默。 */
+  const maybeAutoTitleCase = useCallback(async (caseId: string) => {
+    const caseRecord = cases.find((item) => item.id === caseId)
+    if (!caseRecord || !isDefaultCaseTitle(caseRecord.title)) return
+    try {
+      const title = (await draftCaseTitleRemote(caseId)).trim()
+      if (title) updateCase(caseId, { title })
+    } catch {
+      // 自动拟题失败静默：Case 页的「AI 拟题」按钮仍在
+    }
+  }, [cases, updateCase])
+
   const deleteCase = useCallback((id: string) => {
     const removedCardIds = new Set(caseCards.filter((card) => card.caseId === id).map((card) => card.id))
     setCases((prev) => prev.filter((caseRecord) => caseRecord.id !== id))
@@ -392,8 +404,9 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
     await saveLocalRecord('caseBindings', created)
     setCaseBindings((prev) => [...prev, created])
     requestAutoCloseCheck()
+    void maybeAutoTitleCase(caseId)
     return created
-  }, [caseBindings, makeId, requestAutoCloseCheck])
+  }, [caseBindings, makeId, requestAutoCloseCheck, maybeAutoTitleCase])
 
   const deleteCaseBinding = useCallback(async (id: string) => {
     await deleteLocalRecord('caseBindings', id)

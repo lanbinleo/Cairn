@@ -91,3 +91,17 @@ export const CASE_MEMO_FIELD_LABEL: Record<string, string> = {
   rejectedAlternatives: '放弃的方案',
   emotion: '情绪',
 }
+
+/** 默认占位标题：自动拟题只替换这类标题，用户起过的名字永不覆盖。 */
+export function isDefaultCaseTitle(title: string): boolean {
+  const trimmed = title.trim()
+  if (!trimmed) return true
+  if (trimmed === '未命名 Case') return true
+  // Case 页新建对话框：`Case ${toLocaleDateString('zh-CN')}` → "Case 2026/8/28"
+  if (/^Case \d{4}(\/\d{1,2}){2}$/.test(trimmed)) return true
+  // 浮窗默认：`SYM 观察 HH:MM`
+  if (/ 观察 \d{1,2}:\d{2}$/.test(trimmed)) return true
+  // Trade 页新建并关联：`Trade #001 Case`
+  if (/^Trade #\d+ Case$/.test(trimmed)) return true
+  return false
+}

@@ -218,3 +218,17 @@ export async function draftCaseTitle(caseId: string): Promise<string> {
   }
   return invoke<string>('draft_case_title', { caseId })
 }
+
+export interface AiSettings {
+  autoAnalyze: boolean
+}
+
+export async function getAiSettings(): Promise<AiSettings> {
+  if (!isTauriRuntime()) return { autoAnalyze: true }
+  return invoke<AiSettings>('get_ai_settings')
+}
+
+export async function saveAiSettings(settings: AiSettings): Promise<AiSettings> {
+  if (!isTauriRuntime()) return settings
+  return invoke<AiSettings>('save_ai_settings', { settings })
+}
