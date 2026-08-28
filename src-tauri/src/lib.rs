@@ -114,6 +114,7 @@ const WIDGET_SCRIPT: &str = include_str!("../../scripts/cairn-case-widget.user.j
 /// 浮窗脚本内置分发：脚本内容编译进二进制，应用更新即脚本更新，
 /// 用户从设置页复制即可，无需访问 GitHub。
 #[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 struct WidgetScript {
     version: String,
     script: String,
@@ -174,17 +175,21 @@ fn version_gt(a: &str, b: &str) -> bool {
 }
 
 #[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 struct WidgetScriptRemote {
     version: String,
     script: String,
 }
 
 #[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 struct WidgetScriptUpdate {
     builtin_version: String,
     /// None = 无法访问 GitHub（网络不通等），复制内置版即可。
     remote: Option<WidgetScriptRemote>,
     remote_newer: bool,
+    /// remote 为 None 时的原因，供排障（前端仅 console.warn，不打扰 UI）。
+    remote_error: Option<String>,
 }
 
 /// 浮窗脚本更新检查：内置版本 vs GitHub main 分支。网络失败不报错——
@@ -196,12 +201,17 @@ async fn check_widget_script_update() -> WidgetScriptUpdate {
         Ok(script) => {
             let version = widget_script_version(&script);
             if version == "unknown" {
-                return WidgetScriptUpdate { builtin_version, remote: None, remote_newer: false };
+                return WidgetScriptUpdate {
+                    builtin_version,
+                    remote: None,
+                    remote_newer: false,
+                    remote_error: Some("remote script has no parseable @version".to_string()),
+                };
             }
             let remote_newer = version_gt(&version, &builtin_version);
-            WidgetScriptUpdate { builtin_version, remote: Some(WidgetScriptRemote { version, script }), remote_newer }
+            WidgetScriptUpdate { builtin_version, remote: Some(WidgetScriptRemote { version, script }), remote_newer, remote_error: None }
         }
-        Err(_) => WidgetScriptUpdate { builtin_version, remote: None, remote_newer: false },
+        Err(err) => WidgetScriptUpdate { builtin_version, remote: None, remote_newer: false, remote_error: Some(err) },
     }
 }
 

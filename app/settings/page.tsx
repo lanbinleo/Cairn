@@ -88,7 +88,7 @@ export default function SettingsPage() {
   const [savingApi, setSavingApi] = useState(false)
   const [widgetScript, setWidgetScript] = useState<WidgetScript | null>(null)
   const [widgetUpdate, setWidgetUpdate] = useState<WidgetScriptUpdate | null>(null)
-  const [checkingWidget, setCheckingWidget] = useState(false)
+  const [checkingWidget, setCheckingWidget] = useState(true)
   const [copiedWidgetScript, setCopiedWidgetScript] = useState(false)
   const [aiProviders, setAiProviders] = useState<AiProvider[]>([])
   const [aiDialogOpen, setAiDialogOpen] = useState(false)
@@ -168,10 +168,15 @@ export default function SettingsPage() {
   }
 
   async function runWidgetUpdateCheck() {
-    if (!isTauriRuntime()) return
+    if (!isTauriRuntime()) {
+      setCheckingWidget(false)
+      return
+    }
     setCheckingWidget(true)
     try {
-      setWidgetUpdate(await checkWidgetScriptUpdate())
+      const update = await checkWidgetScriptUpdate()
+      if (update?.remoteError) console.warn('[cairn] widget update check failed:', update.remoteError)
+      setWidgetUpdate(update)
     } catch {
       setWidgetUpdate(null)
     } finally {
@@ -522,8 +527,10 @@ export default function SettingsPage() {
                       <span className="text-emerald-600 dark:text-emerald-400">
                         GitHub 有新版 v{widgetUpdate.remote.version}（应用内置 v{widgetUpdate.builtinVersion}），复制后将安装新版
                       </span>
-                    ) : (
+                    ) : widgetUpdate.remote.version === widgetUpdate.builtinVersion ? (
                       `GitHub 与内置版本一致（v${widgetUpdate.builtinVersion}），已是最新`
+                    ) : (
+                      `GitHub 版本（v${widgetUpdate.remote.version}）尚未跟上应用内置版（v${widgetUpdate.builtinVersion}），复制内置版即可`
                     )
                   ) : (
                     <>

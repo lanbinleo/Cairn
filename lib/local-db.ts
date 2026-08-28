@@ -179,11 +179,12 @@ export async function getWidgetScript(): Promise<WidgetScript | null> {
   return invoke<WidgetScript>('get_widget_script')
 }
 
-/** GitHub main 分支的浮窗脚本；remote 为 null 表示网络不可达，用内置版。 */
+/** GitHub main 分支的浮窗脚本；remote 为 null 表示网络不可达（remoteError 为原因），用内置版。 */
 export interface WidgetScriptUpdate {
   builtinVersion: string
   remote: { version: string; script: string } | null
   remoteNewer: boolean
+  remoteError: string | null
 }
 
 export async function checkWidgetScriptUpdate(): Promise<WidgetScriptUpdate | null> {
