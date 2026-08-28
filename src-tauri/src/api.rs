@@ -712,8 +712,10 @@ fn update_case_card(
             let parsed = value
                 .as_i64()
                 .ok_or_else(|| "invalid barRef: must be an integer or null".to_string())?;
-            if parsed < 1 {
-                return Err("invalid barRef: must be a positive integer".to_string());
+            // 与前端 MAX_BAR_NUMBER（components/case-card-timeline.tsx）同界：
+            // BAR 按 UTC 日重置，最小 1 分钟周期 → 一天最多 1440 根。
+            if !(1..=1440).contains(&parsed) {
+                return Err("invalid barRef: must be between 1 and 1440".to_string());
             }
             data["barRef"] = json!(parsed);
         }
@@ -1169,6 +1171,16 @@ mod tests {
                 "PUT",
                 "/api/v1/cases/case-1/cards/card-1",
                 json!({ "rawText": "x", "barRef": 0 })
+            )
+            .status,
+            400
+        );
+        assert_eq!(
+            call(
+                &conn,
+                "PUT",
+                "/api/v1/cases/case-1/cards/card-1",
+                json!({ "rawText": "x", "barRef": 1441 })
             )
             .status,
             400

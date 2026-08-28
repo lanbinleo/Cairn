@@ -876,7 +876,7 @@
         renderSetStatus({ ok: false, text: '百分比需为 0–100 之间的数字' });
         return;
       }
-      values.push(n);
+      if (!values.includes(n)) values.push(n);
     }
     state.riskPercents = values;
     store.set('riskPercents', values);
@@ -1030,6 +1030,12 @@
 
   function renderCards() {
     const list = $('card-list');
+    // 列表重建（提交新卡会触发刷新）时，正在编辑的草稿先记下来，避免丢掉未保存的修改
+    const editingEl = list.querySelector('.cw-card.editing');
+    const draft = editingEl ? {
+      text: editingEl.querySelector('.ec-text').value,
+      bar: editingEl.querySelector('.ec-bar').value,
+    } : null;
     list.textContent = '';
     for (const card of state.cards) {
       const meta = PHASE_META[card.phase] || { label: card.phase, color: 'var(--text-dim)' };
@@ -1041,14 +1047,16 @@
         const ta = document.createElement('textarea');
         ta.className = 'ec-text';
         ta.spellcheck = false;
-        ta.value = card.rawText || '';
+        ta.value = draft ? draft.text : (card.rawText || '');
         const row = document.createElement('div');
         row.className = 'ec-row';
         row.innerHTML =
           '<input class="ec-bar" inputmode="numeric" placeholder="BAR №（留空清除）">' +
           '<button type="button" class="ec-cancel">取消</button>' +
           '<button type="button" class="ec-save">保存</button>';
-        row.querySelector('.ec-bar').value = card.barRef != null ? String(card.barRef) : '';
+        row.querySelector('.ec-bar').value = draft
+          ? draft.bar
+          : (card.barRef != null ? String(card.barRef) : '');
         row.querySelector('.ec-cancel').addEventListener('click', cancelEditCard);
         row.querySelector('.ec-save').addEventListener('click', () => saveCardEdit(card.id, el));
         el.append(ta, row);
@@ -1233,8 +1241,9 @@
     let barRef = null;
     const barRaw = el.querySelector('.ec-bar').value.trim();
     if (barRaw) {
-      const n = parseInt(barRaw, 10);
-      if (!Number.isInteger(n) || n < 1) { showToast('BAR 需为正整数', 'err'); return; }
+      // Number 而非 parseInt：parseInt('38.5') 会静默截成 38
+      const n = Number(barRaw);
+      if (!Number.isInteger(n) || n < 1 || n > 1440) { showToast('BAR 需为 1–1440 的整数', 'err'); return; }
       barRef = n;
     }
     const prevBar = card.barRef == null ? null : card.barRef;
