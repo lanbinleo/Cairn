@@ -319,6 +319,18 @@
     white-space: nowrap; overflow: hidden;
   }
   #cairn-cw-wrap #cw-widget-context .live { color: var(--green); }
+  #cairn-cw-wrap #cw-risk-strip {
+    padding: 5px 12px;
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+    color: var(--text-dim);
+    border-bottom: 1px solid var(--border);
+    white-space: nowrap; overflow: hidden;
+    display: none;
+  }
+  #cairn-cw-wrap #cw-risk-strip.show { display: block; }
+  #cairn-cw-wrap #cw-risk-strip b { color: var(--text); font-weight: 600; }
+  #cairn-cw-wrap #cw-risk-strip .rs-sep { margin: 0 6px; opacity: .45; }
 
   #cairn-cw-wrap #cw-widget-body { padding: 10px 12px 12px; display: flex; flex-direction: column; gap: 10px; overflow-y: auto; }
 
@@ -519,6 +531,8 @@
         <span id="cw-ctx-text">—</span>
         <span class="live">● forward（盘中）</span>
       </div>
+
+      <div id="cw-risk-strip"></div>
 
       <div id="cw-widget-body">
         <div class="phase-row" id="cw-phase-row">
@@ -778,11 +792,38 @@
     const c = state.cases.find((x) => x.id === state.caseId);
     if (!c) {
       $('ctx-text').textContent = '—';
+      renderRisk(null);
       return;
     }
     const account = state.accounts.find((a) => a.id === c.accountId);
     const period = account && (account.periods || []).find((p) => p.id === c.periodId);
     $('ctx-text').textContent = [account && account.name, period && period.name].filter(Boolean).join(' · ') || '—';
+    renderRisk(account || null);
+  }
+
+  /* 余额与固定风险额（1% / 2%）：权益快照来自 Cairn 账户记录；无快照退回初始资金。 */
+  function renderRisk(account) {
+    const strip = $('risk-strip');
+    if (!strip) return;
+    if (!account) {
+      strip.classList.remove('show');
+      strip.textContent = '';
+      return;
+    }
+    const hasSnapshot = account.equity != null && Number.isFinite(account.equity);
+    const base = hasSnapshot ? account.equity : account.initialBalance;
+    if (base == null || !Number.isFinite(base)) {
+      strip.classList.remove('show');
+      return;
+    }
+    const fmt = (n) => n.toLocaleString('en-US', { maximumFractionDigits: base >= 1000 ? 0 : 2 });
+    const sep = '<span class="rs-sep">·</span>';
+    strip.innerHTML =
+      '余额 <b>' + fmt(base) + '</b>' + (hasSnapshot ? '' : '（初始）') +
+      ' ' + sep + ' 1% <b>' + fmt(base * 0.01) + '</b>' +
+      ' ' + sep + ' 2% <b>' + fmt(base * 0.02) + '</b>';
+    strip.title = account.currency ? '单位 ' + account.currency : '';
+    strip.classList.add('show');
   }
 
   function renderCards() {
