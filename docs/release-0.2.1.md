@@ -33,6 +33,7 @@
 ## 基础设施
 
 - 前端引入 vitest（`pnpm test`）：bar-time 与 execution-display 单测，含生产 25 卡跨天序列全量回放用例。
+- **启用应用内自动更新**：签名私钥其实一直在本机（`%USERPROFILE%\.tauri\cairn-updater.key`，与 v0.1.3 起内嵌的公钥配对），此前缺的只是构建签名与 `latest.json` 清单。现在 `pnpm release:check x.y.z -BuildInstaller` 自动完成签名构建并生成 `latest.json`；发布时上传 setup.exe / msi / latest.json 三个资产后，设置 → 关于 → 检查更新 即可升级。**已安装的 v0.2.0 可以直接应用内更新到 0.2.1。**
 
 ## Fixes（自 0.2.0）
 

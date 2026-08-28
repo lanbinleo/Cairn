@@ -69,8 +69,18 @@ if (!(Test-Path -LiteralPath $exe)) {
 }
 
 if ($BuildInstaller) {
-    Step "Building Tauri installers"
-    pnpm tauri:build
+    Step "Configuring updater signing"
+    $updaterKey = Join-Path $env:USERPROFILE ".tauri\cairn-updater.key"
+    if (!(Test-Path -LiteralPath $updaterKey)) {
+        throw "Updater signing key not found: $updaterKey. Generate with: pnpm tauri signer generate -w $updaterKey (and update the pubkey in src-tauri/tauri.conf.json)."
+    }
+    # 密钥为无密码生成；签名公钥内嵌于 tauri.conf.json 与已发布版本
+    $env:TAURI_SIGNING_PRIVATE_KEY_PATH = $updaterKey
+    $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = ""
+
+    Step "Building Tauri installers (signed updater artifacts)"
+    # 主配置（非 tauri.local.conf.json）：createUpdaterArtifacts 需要 true 才会生成 .sig
+    pnpm tauri build
 
     $artifacts = @(
         "src-tauri/target/release/bundle/nsis/Cairn_${Version}_x64-setup.exe",
@@ -82,6 +92,32 @@ if ($BuildInstaller) {
             throw "Missing release artifact: $artifact"
         }
     }
+
+    Step "Generating update manifest (latest.json)"
+    $nsisSigPath = "src-tauri/target/release/bundle/nsis/Cairn_${Version}_x64-setup.exe.sig"
+    if (!(Test-Path -LiteralPath $nsisSigPath)) {
+        throw "Missing updater signature: $nsisSigPath (signing env not picked up?)"
+    }
+    $signature = (Get-Content -LiteralPath $nsisSigPath -Raw).Trim()
+    $manifest = [ordered]@{
+        version   = $Version
+        notes     = "Cairn $Version. See https://github.com/lanbinleo/Cairn/releases/tag/v$Version"
+        pub_date  = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+        platforms = [ordered]@{
+            "windows-x86_64" = [ordered]@{
+                signature = $signature
+                url       = "https://github.com/lanbinleo/Cairn/releases/download/v$Version/Cairn_${Version}_x64-setup.exe"
+            }
+        }
+    }
+    $manifestPath = "src-tauri/target/release/bundle/latest.json"
+    $manifest | ConvertTo-Json -Depth 5 | Out-File -LiteralPath $manifestPath -Encoding utf8
+
+    Write-Host ""
+    Write-Host "Upload to the GitHub release (tag v$Version):" -ForegroundColor Yellow
+    Write-Host "  - src-tauri/target/release/bundle/nsis/Cairn_${Version}_x64-setup.exe"
+    Write-Host "  - src-tauri/target/release/bundle/msi/Cairn_${Version}_x64_en-US.msi"
+    Write-Host "  - $manifestPath  (updater manifest; endpoint releases/latest/download/latest.json)"
 }
 
 if ($Tag) {

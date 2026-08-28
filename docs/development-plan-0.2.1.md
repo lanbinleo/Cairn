@@ -41,6 +41,14 @@
 - trades 表 PnL% 列（`equityBeforeByTrade`：按平仓顺序倒推入场前权益）。
 - 已平仓 Trade 缺初始止损/止盈的首次访问提醒模态（从 Entry 卡填入/手动填写/待会儿提醒/忽略）。
 
+### S6 发布卫生：启用应用内自动更新（方案 B，含一次结论翻案）
+
+- 起因：`releases/latest/download/latest.json` 404。最初的诊断是"签名私钥从不在本机，latest.json 从未生成"，并按此给出 A（拆除）/ B（补齐）两案；Leo 拍板要内置更新器，选 B。
+- **翻案**：执行 B 时发现 `%USERPROFILE%\.tauri\cairn-updater.key`（2026-07-08 生成，无密码）一直存在，其公钥与 `tauri.conf.json` 内嵌公钥完全一致——私钥从未丢失，v0.1.3/v0.2.0 的内嵌公钥都能验它的签名，**已装版本可以直接应用内更新**。
+- 真正缺口只有两个：① 构建时从未设 `TAURI_SIGNING_PRIVATE_KEY`（打包末尾报错、`.sig` 不生成）；② 发布流程从不生成/上传 `latest.json`。另外 `release.ps1 -BuildInstaller` 误用 `pnpm tauri:build`（local 配置 `createUpdaterArtifacts: false`），即使设了密钥也不会签名。
+- 修复：`release.ps1 -BuildInstaller` 改走主配置 `pnpm tauri build`，自动设 `TAURI_SIGNING_PRIVATE_KEY_PATH`/`TAURI_SIGNING_PRIVATE_KEY_PASSWORD`（指向本机密钥），构建后校验 `.sig` 并生成 `bundle/latest.json`（NSIS 资产 URL + 签名），打印上传清单（setup.exe / msi / latest.json）。发布流程细节见 `docs/development-workflow.md` "In-App Updater"。
+- 注意：重新生成密钥对会让所有已发布版本验签失败（公钥烧在二进制里），除非明确接受"旧版本只能手动升级"，否则永远复用现钥。
+
 ## 验证状态
 
 - `pnpm typecheck` / `pnpm build` / `pnpm test`（11 例）/ `cargo check` / `cargo test`（23 过 2 忽略）全部通过。
