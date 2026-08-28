@@ -60,3 +60,33 @@ export function isValidBarIndex(barIndex: number, timeframeMinutes: number): boo
 export function isValidBarNumber(barNumber: number, timeframeMinutes: number): boolean {
   return Number.isInteger(barNumber) && barNumber >= 1 && barNumber <= barsPerDay(timeframeMinutes)
 }
+
+/**
+ * 按创建顺序把一个 Case 的卡片 barRef 解析为 UTC 时间（防 hindsight，机械推导）。
+ * 规则：卡片创建顺序即时间顺序；首张带 barRef 的卡片锚定自身 createdAt 所在 UTC 日；
+ * 后续卡片若换算结果早于上一张的已解析时间（即序号变小），判定跨了 UTC 日界，日 +1；
+ * 序号相同视为同一根 bar；不带 barRef 的卡片沿用 createdAt，不参与约束。
+ * 用于消除跨天 Case 中每日重置的 bar 序号歧义。
+ */
+export function resolveCaseCardTimes(
+  cards: Array<{ id: string; createdAt: number; barRef?: number | null }>,
+  timeframeMinutes: number,
+): Map<string, number> {
+  const resolved = new Map<string, number>()
+  let prevTime: number | null = null
+  let prevDay: number | null = null
+  const ordered = [...cards].sort((a, b) => a.createdAt - b.createdAt)
+  for (const card of ordered) {
+    if (card.barRef == null) continue
+    let day: number = prevDay ?? utcDayStart(card.createdAt)
+    let time: number = barNumberToTime(day, card.barRef, timeframeMinutes)
+    while (prevTime != null && time < prevTime) {
+      day += 24 * 60 * 60_000
+      time = barNumberToTime(day, card.barRef, timeframeMinutes)
+    }
+    resolved.set(card.id, time)
+    prevTime = time
+    prevDay = day
+  }
+  return resolved
+}

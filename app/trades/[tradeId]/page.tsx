@@ -29,7 +29,7 @@ import { aggregateDisplayExecutions } from '@/lib/execution-display'
 import { computeTradeMetrics } from '@/lib/metrics'
 import { fmtPrice, fmtDuration, fmtUtcDateTime, fmtUtcDate, fmtMoney } from '@/lib/format'
 import { sortTagNamesByColor } from '@/lib/tags'
-import { barNumberToTime, timeToBarNumber, utcDayStart } from '@/lib/bar-time'
+import { resolveCaseCardTimes, timeToBarNumber } from '@/lib/bar-time'
 import { readFileAsDataUrl } from '@/lib/tradingview-import'
 import { createTradeTransferPayload, stringifyTradeTransfer } from '@/lib/trade-transfer'
 import { CHART_TIMEFRAMES, chartTimeframeLabel, chartTimeframeMinutes } from '@/lib/chart-timeframes'
@@ -78,7 +78,8 @@ export default function TradeDetailPage() {
   const m = computeTradeMetrics(trade)
   const tags = sortTagNamesByColor(trade.tags, tagDefs)
   const executionTimes = trade.executions.map((execution) => execution.time)
-  const chartPadding = chartTimeframeMinutes(chartTimeframe) * 60_000 * 80
+  const barMinutes = chartTimeframeMinutes(chartTimeframe)
+  const chartPadding = barMinutes * 60_000 * 80
   const chartStart = executionTimes.length ? Math.min(...executionTimes) - chartPadding : undefined
   const chartEnd = executionTimes.length ? Math.max(...executionTimes) + chartPadding : undefined
   const libraryBars = getChartCandles(trade.symbolId, chartTimeframe, chartStart, chartEnd)
@@ -88,10 +89,11 @@ export default function TradeDetailPage() {
   const boundCase = tradeBinding ? cases.find((caseRecord) => caseRecord.id === tradeBinding.caseId) : undefined
   const boundCaseCards = boundCase ? caseCards.filter((card) => card.caseId === boundCase.id) : []
   const entryMemo = boundCaseCards.find((card) => card.phase === 'entry')?.aiAnalysis?.memo ?? null
+  const cardBarTimes = resolveCaseCardTimes(boundCaseCards, barMinutes)
   const caseMarkers: TradeChartCaseMarker[] = boundCaseCards.flatMap((card) => card.barRef == null ? [] : [{
     cardId: card.id,
     barNumber: card.barRef,
-    time: barNumberToTime(utcDayStart(m.entryTime), card.barRef, chartTimeframeMinutes(chartTimeframe)),
+    time: cardBarTimes.get(card.id) ?? card.createdAt,
     phase: card.phase,
     label: casePhaseLabel[card.phase],
     detail: card.rawText,
@@ -170,7 +172,7 @@ export default function TradeDetailPage() {
         title: isPositionAction ? `${label} ${e.quantity ?? '—'} @ ${priceText || '—'}` : `${label}${priceText ? ` -> ${priceText}` : ''}`,
         detail: `${orderTypeLabel[e.orderType] ?? e.orderType}${e.anchorPrice == null ? '' : ` · anchor ${fmtPrice(e.anchorPrice, symbol?.pricePrecision)}`}${e.signal ? ` · 信号 ${e.signal}` : ''}${aggregateText}`,
         tone: e.action === 'entry' || e.action === 'scale-in' || e.action.startsWith('target') ? 'entry' : 'exit',
-        barNumber: timeToBarNumber(e.time, 5),
+        barNumber: timeToBarNumber(e.time, barMinutes),
       }
     }),
     ...trade.events.map((ev) => ({
@@ -179,11 +181,11 @@ export default function TradeDetailPage() {
       title: ev.price == null ? eventLabel[ev.type] : `${eventLabel[ev.type]} -> ${fmtPrice(ev.price, symbol?.pricePrecision)}`,
       detail: ev.note ?? '',
       tone: ev.type.startsWith('sl') ? 'sl' : 'tp',
-      barNumber: timeToBarNumber(ev.time, 5),
+      barNumber: timeToBarNumber(ev.time, barMinutes),
     })),
     ...boundCaseCards.map((card) => ({
       kind: 'case' as const,
-      time: card.barRef ? barNumberToTime(utcDayStart(m.entryTime), card.barRef, 5) : card.createdAt,
+      time: card.barRef != null ? (cardBarTimes.get(card.id) ?? card.createdAt) : card.createdAt,
       title: casePhaseLabel[card.phase],
       detail: card.rawText,
       tone: 'case' as const,

@@ -106,6 +106,8 @@ Recording is thinking-first: users speak or type free text only. BAR numbers men
 
 `barRef` follows the TradingView Bar Count indicator convention: bar 1 is the first bar opening at UTC 00:00 of the day, incrementing by one per bar. `lib/bar-time.ts` converts between `barRef` and UTC time by pure arithmetic, which matches gapless 24/7 markets. Markets with session gaps will later need bar positioning from imported candles instead of time arithmetic.
 
+Because the number resets every UTC day, a Case that crosses midnight can contain two Cards with the same or descending `barRef`. Display resolution (`resolveCaseCardTimes` in `lib/bar-time.ts`, used by the Trade detail chart markers and Timeline) is mechanical and monotonic by design — creation order is chronological, so the first BAR-carrying Card anchors to its own creation day, and any later Card whose `barRef` would resolve before the previous Card's resolved time is bumped to the next UTC day; equal numbers share one bar. Cards without `barRef` keep their `createdAt` and add no constraint. This removes day ambiguity without any manual disambiguation, leaving no room for hindsight reinterpretation.
+
 A Case spans from the end of the previous Trade to the next executed Trade. Pre-entry observation and non-executed Entry ideas stay in the same Case while the trader keeps observing. A Case that never leads to an executed Trade remains as an observation-only record.
 
 An Entry CaseCard can be marked `pending`, `executed`, or `continue-observing`. A non-executed Entry remains an Entry in stored data but is displayed with Pre-entry observations. Explicit BAR references are mechanically extracted without rewriting the raw text.
