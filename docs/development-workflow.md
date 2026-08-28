@@ -95,6 +95,8 @@ When preparing a release, update these together:
 - `src-tauri/tauri.conf.json`
 - `docs/release-x.y.z.md`
 
+The Tampermonkey widget script is compiled into the app binary (`include_str!` in `lib.rs`, served via `get_widget_script` from Settings → 本地 API → 浮窗脚本). Settings also checks GitHub main through the Contents API (`check_widget_script_update`, via `api.github.com` — reachable on networks where the raw CDN times out) and offers the newer script for copying. When the script changes, bump its `@version` in `scripts/cairn-case-widget.user.js`; users get it either by updating the app (bundled copy) or directly from Settings once the change lands on `main`.
+
 Cairn uses `pnpm-lock.yaml`, but the package version is not duplicated in the current lockfile format.
 
 ## Verification

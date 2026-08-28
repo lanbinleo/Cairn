@@ -41,7 +41,7 @@ Detailed per-file map of the codebase. AGENTS.md carries only the top-level orie
 - `data/page.tsx`: chart data import, coverage, candle library.
 - `import/page.tsx`: TradingView import flow.
 - `notes/page.tsx` + `notes/[noteId]/edit/page.tsx`: Markdown notes with `[[trade:ID]]` / `[[image:…]]` mentions.
-- `settings/page.tsx`: tabs — 通用、本地 API（token/端口/速查）、AI（providers）、日志/诊断/备份。
+- `settings/page.tsx`: tabs — 通用、本地 API（token/端口、浮窗脚本复制 + GitHub 更新检查、端点速查）、AI（providers）、日志/诊断/备份。
 
 ## UI Components (`components/`)
 
@@ -70,7 +70,7 @@ Dialogs live under `components/*-dialog.tsx` (edit-trade, manage-tags, create-sy
 
 ## Native Tauri Layer (`src-tauri/src/`)
 
-- `lib.rs`: builder, command registration (incl. `analyze_case_card`, `draft_case_title`, `get_ai_settings`/`save_ai_settings`, `fetch_ai_models`, API config commands), `run_card_analysis` shared by manual command and REST auto-analysis, attachment file IO, setup hook (starts api server thread, daily auto-backup).
+- `lib.rs`: builder, command registration (incl. `analyze_case_card`, `draft_case_title`, `get_ai_settings`/`save_ai_settings`, `fetch_ai_models`, API config commands, widget script commands `get_widget_script`/`check_widget_script_update` — bundled via `include_str!` + GitHub main check through the Contents API), `run_card_analysis` shared by manual command and REST auto-analysis, attachment file IO, setup hook (starts api server thread, daily auto-backup).
 - `db.rs`: SQLite schema/migrations, `save_record_in_tx` dispatcher (per-collection validators; `save_case_card` auto-versions rawText history), soft deletes, read helpers (`read_case_cards_for_case`, `read_record_by_id`), backup/restore, state hydration.
 - `api.rs`: local REST — `handle_request` routes (`/api/v1/…`: health, cases, cards incl. `PUT cases/{id}/cards/{cardId}` card correction, bindings, case-tags, accounts), Bearer token, idempotent create, `extract_bar_ref`, CORS + OPTIONS (PUT allowed), emits `cairn://data-changed`; new-card POSTs trigger `ai::spawn_auto_analysis` (background, settings-gated).
 - `ai.rs`: provider CRUD (`ai-providers.json`), `fetch_models`, `chat_completion` (POST /chat/completions, temperature 0) + `chat_completion_with_retry` (one auto retry on network-class errors), `AiSettings` (`ai-settings.json`, `autoAnalyze`), `spawn_auto_analysis`, analysis prompt v2 + `parse_analysis` (seven-field memo incl. `entryPrice`, verbatim-quote validation, mechanical `missingFields`), title prompt + `parse_title`; env-gated e2e tests (`CAIRN_AI_E2E=1`).
