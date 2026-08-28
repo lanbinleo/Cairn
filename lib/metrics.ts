@@ -136,6 +136,24 @@ export function computeEquityCurve(trades: Trade[], initialBalance: number): Equ
   return points
 }
 
+/**
+ * 每笔已平仓交易「入场前」的权益（PnL% 的分母）：
+ * 按平仓顺序倒推，initialBalance + 该笔之前所有已平仓交易的 PnL。
+ */
+export function equityBeforeByTrade(trades: Trade[], initialBalance: number): Map<string, number> {
+  const closed = trades
+    .filter((t) => t.status === 'closed')
+    .map((t) => ({ trade: t, m: computeTradeMetrics(t) }))
+    .sort((a, b) => a.m.exitTime - b.m.exitTime)
+  const result = new Map<string, number>()
+  let equity = initialBalance
+  for (const { trade, m } of closed) {
+    result.set(trade.id, equity)
+    equity += m.pnl
+  }
+  return result
+}
+
 /** 最大回撤（绝对值与百分比） */
 export function computeMaxDrawdown(curve: EquityPoint[]): { maxDrawdown: number; maxDrawdownPct: number } {
   let peak = Number.NEGATIVE_INFINITY

@@ -16,6 +16,7 @@ import { parseNoteMentions } from './note-mentions'
 import { extractExplicitBarRef, isDefaultCaseTitle } from './cases'
 import { findTagByName, normalizeTagDefs, normalizeTagName, normalizeTradeTagNames, uniqueTagNames, tagNamesEqual } from './tags'
 import { firstNumberIn } from './process-score'
+import { computeTradeMetrics } from './metrics'
 import type { Account, Attachment, CaseCard, CaseCardAnalysis, CaseTagDef, CaseTradeBinding, ChartCandle, ChartImport, ChartTimeframe, ImportBatch, Period, Trade, TradeCase, TagDef, TagColor } from './types'
 
 /* ---------- Context ---------- */
@@ -709,6 +710,24 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
     updateTrade(tradeId, patch)
     return true
   }, [caseBindings, trades, caseCards, updateTrade])
+
+  /**
+   * 权益快照：交易变化后按 initialBalance + 已平仓 PnL 重算各账户当前权益，
+   * 写回 Account 记录（派生数据）。REST list_accounts 原样带出，供浮窗显示
+   * 余额与 1%/2% 风险额。值未变化时不写，避免加载即落盘。
+   */
+  useEffect(() => {
+    for (const account of accounts) {
+      const pnlSum = trades
+        .filter((item) => item.accountId === account.id && item.status === 'closed')
+        .reduce((sum, item) => sum + computeTradeMetrics(item).pnl, 0)
+      const equity = account.initialBalance + pnlSum
+      if (account.equity === equity) continue
+      const next = { ...account, equity, equityUpdatedAt: Date.now() }
+      setAccounts((prev) => prev.map((item) => (item.id === account.id ? next : item)))
+      void saveLocalRecord('accounts', next)
+    }
+  }, [trades, accounts])
 
   /**
    * 绑定后自动预填：Entry memo 可能晚于绑定到达（逐卡自动识别仍在进行），

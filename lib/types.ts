@@ -14,6 +14,9 @@ export interface Account {
   initialBalance: number
   currency: string
   note?: string
+  /** 当前权益快照（initialBalance + 已平仓 PnL；派生数据，交易变化后由前端重算） */
+  equity?: number
+  equityUpdatedAt?: number
   createdAt: number
 }
 
