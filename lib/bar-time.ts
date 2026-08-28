@@ -61,30 +61,51 @@ export function isValidBarNumber(barNumber: number, timeframeMinutes: number): b
   return Number.isInteger(barNumber) && barNumber >= 1 && barNumber <= barsPerDay(timeframeMinutes)
 }
 
+export interface ResolvedCaseCardTime {
+  time: number
+  /** barRef 越界或跨日推导越窗，时间按创建顺序兜底放置 */
+  invalid: boolean
+}
+
 /**
- * 按创建顺序把一个 Case 的卡片 barRef 解析为 UTC 时间（防 hindsight，机械推导）。
- * 规则：卡片创建顺序即时间顺序；首张带 barRef 的卡片锚定自身 createdAt 所在 UTC 日；
- * 后续卡片若换算结果早于上一张的已解析时间（即序号变小），判定跨了 UTC 日界，日 +1；
- * 序号相同视为同一根 bar；不带 barRef 的卡片沿用 createdAt，不参与约束。
- * 用于消除跨天 Case 中每日重置的 bar 序号歧义。
+ * 按创建顺序把绑定 Trade 的 Case 卡片 barRef 解析为 UTC 时间（防 hindsight，机械推导）。
+ * 锚点：window.anchor（Trade 首笔持仓成交时刻）所在 UTC 日。回放/复盘场景下卡片
+ * createdAt 是记录墙钟时间，与图表日期无关，不能用来锚定。
+ * 规则：
+ * - barRef 先做当日合法性校验（1..barsPerDay），越界值（如语音误识别的 2265）不参与推导；
+ * - 候选时间早于上一张卡片的已解析时间（序号变小）→ 判定跨 UTC 日界，日 +1；
+ * - 跨日后仍越过 window.end 的（回看区间等噪声），放弃 bar 数学，紧跟上一张放置；
+ * - 无 barRef 或无效的卡片沿用上一张时间 +1ms，保持创建顺序。
+ * 记录顺序优先于 bar 数学：解析结果永不回退。
  */
-export function resolveCaseCardTimes(
+export function resolveCaseCardTimesForTrade(
   cards: Array<{ id: string; createdAt: number; barRef?: number | null }>,
   timeframeMinutes: number,
-): Map<string, number> {
-  const resolved = new Map<string, number>()
+  window: { anchor: number; start: number; end: number },
+): Map<string, ResolvedCaseCardTime> {
+  const resolved = new Map<string, ResolvedCaseCardTime>()
   let prevTime: number | null = null
-  let prevDay: number | null = null
+  let prevDay = utcDayStart(window.anchor)
   const ordered = [...cards].sort((a, b) => a.createdAt - b.createdAt)
   for (const card of ordered) {
-    if (card.barRef == null) continue
-    let day: number = prevDay ?? utcDayStart(card.createdAt)
-    let time: number = barNumberToTime(day, card.barRef, timeframeMinutes)
+    if (card.barRef == null || !isValidBarNumber(card.barRef, timeframeMinutes)) {
+      resolved.set(card.id, { time: prevTime == null ? window.start : prevTime + 1, invalid: card.barRef != null })
+      prevTime = prevTime == null ? window.start : prevTime + 1
+      continue
+    }
+    let day = prevDay
+    let time = barNumberToTime(day, card.barRef, timeframeMinutes)
     while (prevTime != null && time < prevTime) {
       day += 24 * 60 * 60_000
       time = barNumberToTime(day, card.barRef, timeframeMinutes)
     }
-    resolved.set(card.id, time)
+    if (time > window.end) {
+      time = prevTime == null ? window.start : prevTime + 1
+      resolved.set(card.id, { time, invalid: true })
+      prevTime = time
+      continue
+    }
+    resolved.set(card.id, { time, invalid: false })
     prevTime = time
     prevDay = day
   }

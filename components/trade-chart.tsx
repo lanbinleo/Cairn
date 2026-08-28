@@ -16,6 +16,7 @@ import {
 } from 'lightweight-charts'
 import { executionActionLabel, hasPositionFill, isEntryExecution, isManagementExecutionAction } from '@/lib/executions'
 import { aggregateDisplayExecutions, inferChartBarIntervalMs } from '@/lib/execution-display'
+import { fmtPrice } from '@/lib/format'
 import type { CaseCardPhase, ChartBar, Trade } from '@/lib/types'
 
 export type TradeChartOverlayStyle = 'zones' | 'lines' | 'both'
@@ -25,6 +26,8 @@ export interface TradeChartCaseMarker {
   barNumber: number
   time: number
   phase: CaseCardPhase
+  /** barRef 无效或跨日推导失败，时间按创建顺序兜底 */
+  invalid?: boolean
   label?: string
   detail?: string
 }
@@ -179,6 +182,7 @@ export function TradeChart({
   showTrailLines = true,
   showEntryLine = true,
   caseMarkers = [],
+  pricePrecision,
   onCaseMarkerClick,
 }: {
   bars: ChartBar[]
@@ -188,6 +192,7 @@ export function TradeChart({
   showTrailLines?: boolean
   showEntryLine?: boolean
   caseMarkers?: TradeChartCaseMarker[]
+  pricePrecision?: number
   onCaseMarkerClick?: (cardId: string) => void
 }) {
   const containerRef = useRef<HTMLDivElement>(null)
@@ -326,7 +331,7 @@ export function TradeChart({
             price: e.price,
             shape: 'circle' as const,
             color: isTarget ? p.tp : p.sl,
-            text: `${executionActionLabel[e.action]} ${e.price}`,
+            text: `${executionActionLabel[e.action]} ${fmtPrice(e.price, pricePrecision)}`,
             size: 0.7,
           }
         }
@@ -338,7 +343,7 @@ export function TradeChart({
           position: isBuy ? ('belowBar' as const) : ('aboveBar' as const),
           shape: isBuy ? ('arrowUp' as const) : ('arrowDown' as const),
           color: isBuy ? p.up : p.down,
-          text: `${label} ${e.quantity}@${e.price}${countText}`,
+          text: `${label} ${e.quantity}@${fmtPrice(e.price, pricePrecision)}${countText}`,
         }
       })
 
@@ -350,25 +355,27 @@ export function TradeChart({
       color: ev.type.startsWith('sl') ? p.sl : p.tp,
       text: ev.price == null
         ? (ev.note ?? 'Note')
-        : ev.type.startsWith('sl') ? `SL->${ev.price}` : `TP->${ev.price}`,
+        : ev.type.startsWith('sl') ? `SL->${fmtPrice(ev.price, pricePrecision)}` : `TP->${fmtPrice(ev.price, pricePrecision)}`,
       size: 0.6,
     }))
 
-    const caseMarkerByTime = new Map<number, TradeChartCaseMarker>()
-    const caseChartMarkers: SeriesMarker<UTCTimestamp>[] = caseMarkers.flatMap((marker) => {
+    /* Case Card 标记：同一根 bar 合并为一个方块，不印文字（详情在 hover），范围外不画 */
+    const caseBarIntervalMs = inferChartBarIntervalMs(bars)
+    const caseMarkerGroupsByTime = new Map<number, TradeChartCaseMarker[]>()
+    for (const marker of caseMarkers) {
       const barTime = nearestBarTime(bars, marker.time)
-      if (barTime == null) return []
-      const chartTime = toTs(barTime)
-      caseMarkerByTime.set(Number(chartTime), marker)
-      return [{
-        time: chartTime,
-        position: 'aboveBar' as const,
-        shape: 'square' as const,
-        color: CASE_MARKER_COLORS[marker.phase],
-        text: `BAR ${marker.barNumber}`,
-        size: 0.8,
-      }]
-    })
+      if (barTime == null || Math.abs(barTime - marker.time) > caseBarIntervalMs) continue
+      const chartTime = Number(toTs(barTime))
+      caseMarkerGroupsByTime.set(chartTime, [...(caseMarkerGroupsByTime.get(chartTime) ?? []), marker])
+    }
+    const caseChartMarkers: SeriesMarker<UTCTimestamp>[] = [...caseMarkerGroupsByTime.entries()].map(([chartTime, group]) => ({
+      time: chartTime as UTCTimestamp,
+      position: 'aboveBar' as const,
+      shape: 'square' as const,
+      color: CASE_MARKER_COLORS[group[0].phase],
+      text: group.length > 1 ? `×${group.length}` : undefined,
+      size: 0.8,
+    }))
 
     createSeriesMarkers(
       candles,
@@ -380,17 +387,25 @@ export function TradeChart({
     for (const execution of displayExecutions) {
       addHoverItem(Number(toTs(execution.time)), {
         title: executionActionLabel[execution.action] ?? execution.action,
-        detail: `${execution.quantity ?? '—'} @ ${execution.price ?? '—'}${execution.signal ? ` · ${execution.signal}` : ''}`,
+        detail: `${execution.quantity ?? '—'} @ ${execution.price == null ? '—' : fmtPrice(execution.price, pricePrecision)}${execution.signal ? ` · ${execution.signal}` : ''}`,
         tone: 'trade',
       })
     }
-    for (const event of trade.events) addHoverItem(Number(toTs(event.time)), { title: event.type, detail: event.note ?? (event.price == null ? undefined : String(event.price)), tone: 'trade' })
-    for (const [time, marker] of caseMarkerByTime) addHoverItem(time, { title: `BAR ${marker.barNumber}${marker.label ? ` · ${marker.label}` : ''}`, detail: marker.detail, tone: 'case' })
+    for (const event of trade.events) addHoverItem(Number(toTs(event.time)), { title: event.type, detail: event.note ?? (event.price == null ? undefined : fmtPrice(event.price, pricePrecision)), tone: 'trade' })
+    for (const [time, group] of caseMarkerGroupsByTime) {
+      for (const marker of group) {
+        addHoverItem(time, {
+          title: `BAR ${marker.barNumber}${marker.label ? ` · ${marker.label}` : ''}${marker.invalid ? ' · BAR 异常' : ''}`,
+          detail: marker.detail,
+          tone: 'case',
+        })
+      }
+    }
 
     const handleChartClick = (param: MouseEventParams) => {
       if (typeof param.time !== 'number') return
-      const marker = caseMarkerByTime.get(param.time)
-      if (marker) onCaseMarkerClick?.(marker.cardId)
+      const group = caseMarkerGroupsByTime.get(param.time)
+      if (group && group.length > 0) onCaseMarkerClick?.(group[0].cardId)
     }
     chart.subscribeClick(handleChartClick)
     const handleCrosshairMove = (param: MouseEventParams) => {
@@ -470,7 +485,7 @@ export function TradeChart({
       chart.remove()
       chartRef.current = null
     }
-  }, [bars, caseMarkers, height, onCaseMarkerClick, resolvedTheme, overlayStyle, showTrailLines, showEntryLine, trade])
+  }, [bars, caseMarkers, height, onCaseMarkerClick, pricePrecision, resolvedTheme, overlayStyle, showTrailLines, showEntryLine, trade])
 
   if (bars.length === 0) {
     return (

@@ -24,12 +24,12 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { Separator } from '@/components/ui/separator'
 import { useCairn } from '@/lib/store'
-import { executionActionLabel, isPositionExecutionAction, orderTypeLabel } from '@/lib/executions'
+import { executionActionLabel, hasPositionFill, isPositionExecutionAction, orderTypeLabel } from '@/lib/executions'
 import { aggregateDisplayExecutions } from '@/lib/execution-display'
 import { computeTradeMetrics } from '@/lib/metrics'
 import { fmtPrice, fmtDuration, fmtUtcDateTime, fmtUtcDate, fmtMoney } from '@/lib/format'
 import { sortTagNamesByColor } from '@/lib/tags'
-import { resolveCaseCardTimes, timeToBarNumber } from '@/lib/bar-time'
+import { resolveCaseCardTimesForTrade, timeToBarNumber } from '@/lib/bar-time'
 import { readFileAsDataUrl } from '@/lib/tradingview-import'
 import { createTradeTransferPayload, stringifyTradeTransfer } from '@/lib/trade-transfer'
 import { CHART_TIMEFRAMES, chartTimeframeLabel, chartTimeframeMinutes } from '@/lib/chart-timeframes'
@@ -89,15 +89,34 @@ export default function TradeDetailPage() {
   const boundCase = tradeBinding ? cases.find((caseRecord) => caseRecord.id === tradeBinding.caseId) : undefined
   const boundCaseCards = boundCase ? caseCards.filter((card) => card.caseId === boundCase.id) : []
   const entryMemo = boundCaseCards.find((card) => card.phase === 'entry')?.aiAnalysis?.memo ?? null
-  const cardBarTimes = resolveCaseCardTimes(boundCaseCards, barMinutes)
-  const caseMarkers: TradeChartCaseMarker[] = boundCaseCards.flatMap((card) => card.barRef == null ? [] : [{
-    cardId: card.id,
-    barNumber: card.barRef,
-    time: cardBarTimes.get(card.id) ?? card.createdAt,
-    phase: card.phase,
-    label: casePhaseLabel[card.phase],
-    detail: card.rawText,
-  }])
+  const fillTimes = trade.executions.filter(hasPositionFill).map((execution) => execution.time)
+  const anchorTime = fillTimes.length ? Math.min(...fillTimes) : (executionTimes.length ? Math.min(...executionTimes) : undefined)
+  const cardWindow = anchorTime == null ? undefined : {
+    anchor: anchorTime,
+    start: bars.length ? bars[0].time : anchorTime,
+    end: bars.length ? bars[bars.length - 1].time : anchorTime,
+  }
+  const cardBarTimes = cardWindow
+    ? resolveCaseCardTimesForTrade(boundCaseCards, barMinutes, cardWindow)
+    : new Map<string, { time: number; invalid: boolean }>()
+  const barIntervalMs = barMinutes * 60_000
+  const caseMarkers: TradeChartCaseMarker[] = boundCaseCards.flatMap((card) => {
+    const resolved = cardBarTimes.get(card.id)
+    if (!resolved) return []
+    return [{
+      cardId: card.id,
+      barNumber: timeToBarNumber(resolved.time, barMinutes),
+      time: resolved.time,
+      phase: card.phase,
+      invalid: resolved.invalid,
+      label: casePhaseLabel[card.phase],
+      detail: card.rawText,
+    }]
+  })
+  const inRangeCaseMarkers = cardWindow
+    ? caseMarkers.filter((marker) => marker.time >= cardWindow.start - barIntervalMs && marker.time <= cardWindow.end + barIntervalMs)
+    : []
+  const outOfRangeCaseMarkerCount = caseMarkers.length - inRangeCaseMarkers.length
 
   function createLinkedNote() {
     const note = createNote({
@@ -165,7 +184,7 @@ export default function TradeDetailPage() {
       const label = e.action === 'stop' ? stopLabelForExecutionIndex(executionIndex) : (executionActionLabel[e.action] ?? e.action)
       const priceText = e.price == null ? '' : fmtPrice(e.price, symbol?.pricePrecision)
       const isPositionAction = isPositionExecutionAction(e.action)
-      const aggregateText = e.aggregateCount > 1 ? ` · 合并 ${e.aggregateCount} 笔同 K 线同价离场` : ''
+      const aggregateText = e.aggregateCount > 1 ? ` · 合并 ${e.aggregateCount} 笔同 K 线同价成交` : ''
       return {
         kind: 'exec' as const,
         time: e.time,
@@ -183,16 +202,20 @@ export default function TradeDetailPage() {
       tone: ev.type.startsWith('sl') ? 'sl' : 'tp',
       barNumber: timeToBarNumber(ev.time, barMinutes),
     })),
-    ...boundCaseCards.map((card) => ({
-      kind: 'case' as const,
-      time: card.barRef != null ? (cardBarTimes.get(card.id) ?? card.createdAt) : card.createdAt,
-      title: casePhaseLabel[card.phase],
-      detail: card.rawText,
-      tone: 'case' as const,
-      cardId: card.id,
-      barNumber: card.barRef,
-      phase: card.phase,
-    })),
+    ...boundCaseCards.map((card) => {
+      const resolved = cardBarTimes.get(card.id)
+      const time = resolved?.time ?? card.createdAt
+      return {
+        kind: 'case' as const,
+        time,
+        title: `${casePhaseLabel[card.phase]}${resolved?.invalid ? ' · BAR 异常' : ''}`,
+        detail: card.rawText,
+        tone: 'case' as const,
+        cardId: card.id,
+        barNumber: timeToBarNumber(time, barMinutes),
+        phase: card.phase,
+      }
+    }),
   ].sort((a, b) => a.time - b.time)
 
   return (
@@ -307,16 +330,17 @@ export default function TradeDetailPage() {
                 trade={trade}
                 showTrailLines={showTrailLines}
                 showEntryLine={showEntryLine}
-                caseMarkers={caseMarkers}
+                caseMarkers={inRangeCaseMarkers}
+                pricePrecision={symbol?.pricePrecision}
                 onCaseMarkerClick={(cardId) => {
                   setTargetCaseCardId(cardId)
                   setActiveTab('case')
                 }}
               />
-              {caseMarkers.length > 0 && (
+              {inRangeCaseMarkers.length > 0 && (
                 <div className="mt-3 flex flex-wrap items-center gap-1.5" aria-label="Case Card BAR 标记">
                   <span className="mr-1 text-xs text-muted-foreground">Case Cards</span>
-                  {caseMarkers.map((marker) => (
+                  {inRangeCaseMarkers.map((marker) => (
                     <Button
                       key={`${marker.cardId}-${marker.barNumber}`}
                       variant="outline"
@@ -326,9 +350,13 @@ export default function TradeDetailPage() {
                         setActiveTab('case')
                       }}
                     >
-                      BAR {marker.barNumber}
+                      {marker.label ?? marker.phase}
+                      {marker.invalid ? ' · BAR 异常' : ` · BAR ${marker.barNumber}`}
                     </Button>
                   ))}
+                  {outOfRangeCaseMarkerCount > 0 && (
+                    <span className="ml-1 text-xs text-muted-foreground">{outOfRangeCaseMarkerCount} 张卡片时间在图表范围外</span>
+                  )}
                 </div>
               )}
               <p className="mt-2 text-xs text-muted-foreground">
