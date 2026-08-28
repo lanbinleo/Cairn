@@ -361,8 +361,8 @@ pub fn spawn_auto_analysis(app: &AppHandle, card_id: String) {
 
 // ==================== CaseCard 结构化提取 ====================
 
-pub const PROMPT_VERSION: &str = "0.2.0-prompt-1";
-pub const ANALYSIS_SCHEMA_VERSION: &str = "0.2.0-schema-1";
+pub const PROMPT_VERSION: &str = "0.2.1-prompt-2";
+pub const ANALYSIS_SCHEMA_VERSION: &str = "0.2.1-schema-2";
 
 pub const LABEL_TYPES: [&str; 11] = [
     "market-context",
@@ -378,8 +378,9 @@ pub const LABEL_TYPES: [&str; 11] = [
     "reflection",
 ];
 
-pub const MEMO_FIELDS: [&str; 6] = [
+pub const MEMO_FIELDS: [&str; 7] = [
     "direction",
+    "entryPrice",
     "stopLoss",
     "target",
     "confidence",
@@ -415,8 +416,9 @@ pub fn build_analysis_messages(phase: &str, raw_text: &str) -> Vec<ChatMessage> 
 - barRef：原文提到的 K 线序号，{\"bar\": <正整数>, \"quote\": <原文>}。如 BAR41、bar #38、第 42 根 K 线。没有则 null。
 - labels：按原文出现顺序为关键片段打标签，数组每项 {\"type\": \"...\", \"quote\": \"<原文片段>\"}。type 清单：
   market-context=市场背景；setup-condition=形态成立条件；observed-pattern=观察到的结构或价格行为；inference=推断与预期；entry-plan=入场计划；invalidation=失效条件；risk-plan=止损目标与风险计划；position-management=持仓管理（加减仓、移动止损、离场计划）；action=已发生的动作；emotion=情绪；reflection=复盘与自我评价
-- memo：仅当阶段为「入场」时输出，其余阶段必须为 null。七字段每项为 {\"value\": ..., \"quote\": <原文>} 或 null：
+- memo：仅当阶段为「入场」时输出，其余阶段必须为 null。八字段每项为 {\"value\": ..., \"quote\": <原文>} 或 null：
   - direction：做多为 \"long\"，做空为 \"short\"
+  - entryPrice：计划入场价或入场触发方式（字符串，如 \"90360 附近\"、\"突破 90830 追入\"）
   - stopLoss：止损价或止损位置（字符串）
   - target：目标位或预期路径（字符串）
   - confidence：信心百分比 0-100 的数字（口语\"七成\"=70；原文没有明确数字则 null）
@@ -425,7 +427,7 @@ pub fn build_analysis_messages(phase: &str, raw_text: &str) -> Vec<ChatMessage> 
   - emotion：可选，情绪词（字符串）
 
 输出示例（阶段为入场时）：
-{\"barRef\":{\"bar\":38,\"quote\":\"BAR38\"},\"labels\":[{\"type\":\"observed-pattern\",\"quote\":\"第三次测试区间上沿失败收回\"},{\"type\":\"risk-plan\",\"quote\":\"止损放在区间上沿上方\"}],\"memo\":{\"direction\":{\"value\":\"short\",\"quote\":\"我做空\"},\"stopLoss\":{\"value\":\"区间上沿上方\",\"quote\":\"止损放在区间上沿上方\"},\"target\":null,\"confidence\":{\"value\":70,\"quote\":\"胜率我给七成\"},\"invalidation\":null,\"rejectedAlternatives\":null,\"emotion\":null}}";
+{\"barRef\":{\"bar\":38,\"quote\":\"BAR38\"},\"labels\":[{\"type\":\"observed-pattern\",\"quote\":\"第三次测试区间上沿失败收回\"},{\"type\":\"risk-plan\",\"quote\":\"止损放在区间上沿上方\"}],\"memo\":{\"direction\":{\"value\":\"short\",\"quote\":\"我做空\"},\"entryPrice\":{\"value\":\"41600 下方追入\",\"quote\":\"41600 下方追入\"},\"stopLoss\":{\"value\":\"区间上沿上方\",\"quote\":\"止损放在区间上沿上方\"},\"target\":null,\"confidence\":{\"value\":70,\"quote\":\"胜率我给七成\"},\"invalidation\":null,\"rejectedAlternatives\":null,\"emotion\":null}}";
     let user = format!(
         "阶段：{}（{}）\n原文：\n{}",
         phase_label(phase),
@@ -678,7 +680,7 @@ mod tests {
 
     #[test]
     fn parse_analysis_accepts_fenced_json_and_validates_fields() {
-        let content = "```json\n{\"barRef\":{\"bar\":38,\"quote\":\"BAR38\"},\"labels\":[{\"type\":\"observed-pattern\",\"quote\":\"第三次测试区间上沿失败收回\"},{\"type\":\"made-up\",\"quote\":\"我做空\"},{\"type\":\"risk-plan\",\"quote\":\"模型编的话\"}],\"memo\":{\"direction\":{\"value\":\"short\",\"quote\":\"我做空\"},\"stopLoss\":{\"value\":\"区间上沿上方\",\"quote\":\"止损区间上沿上方\"},\"confidence\":{\"value\":\"70%\",\"quote\":\"胜率我给七成\"},\"target\":null}}\n```";
+        let content = "```json\n{\"barRef\":{\"bar\":38,\"quote\":\"BAR38\"},\"labels\":[{\"type\":\"observed-pattern\",\"quote\":\"第三次测试区间上沿失败收回\"},{\"type\":\"made-up\",\"quote\":\"我做空\"},{\"type\":\"risk-plan\",\"quote\":\"模型编的话\"}],\"memo\":{\"direction\":{\"value\":\"short\",\"quote\":\"我做空\"},\"entryPrice\":{\"value\":\"41600 下方追入\",\"quote\":\"41600 下方追入\"},\"stopLoss\":{\"value\":\"区间上沿上方\",\"quote\":\"止损区间上沿上方\"},\"confidence\":{\"value\":\"70%\",\"quote\":\"胜率我给七成\"},\"target\":null}}\n```";
         let analysis =
             parse_analysis("entry", RAW, content, "test-model", "ai-test", 1).unwrap();
         assert_eq!(analysis["barRef"]["bar"], 38);
@@ -686,6 +688,7 @@ mod tests {
         assert_eq!(labels.len(), 1, "unknown type and non-verbatim quote dropped");
         assert_eq!(labels[0]["type"], "observed-pattern");
         assert_eq!(analysis["memo"]["direction"]["value"], "short");
+        assert_eq!(analysis["memo"]["entryPrice"]["value"], "41600 下方追入");
         assert_eq!(analysis["memo"]["confidence"]["value"], 70, "percent string parsed");
         let missing = analysis["missingFields"]
             .as_array()
@@ -694,6 +697,7 @@ mod tests {
             .map(|v| v.as_str().unwrap())
             .collect::<Vec<_>>();
         assert_eq!(missing, ["target", "invalidation", "rejectedAlternatives"]);
+        assert_eq!(analysis["schemaVersion"], ANALYSIS_SCHEMA_VERSION);
     }
 
     #[test]

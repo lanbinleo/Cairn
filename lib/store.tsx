@@ -15,7 +15,8 @@ import { logFrontendError, logFrontendMessage } from './frontend-log'
 import { parseNoteMentions } from './note-mentions'
 import { extractExplicitBarRef, isDefaultCaseTitle } from './cases'
 import { findTagByName, normalizeTagDefs, normalizeTagName, normalizeTradeTagNames, uniqueTagNames, tagNamesEqual } from './tags'
-import type { Account, Attachment, CaseCard, CaseTagDef, CaseTradeBinding, ChartCandle, ChartImport, ChartTimeframe, ImportBatch, Period, Trade, TradeCase, TagDef, TagColor } from './types'
+import { firstNumberIn } from './process-score'
+import type { Account, Attachment, CaseCard, CaseCardAnalysis, CaseTagDef, CaseTradeBinding, ChartCandle, ChartImport, ChartTimeframe, ImportBatch, Period, Trade, TradeCase, TagDef, TagColor } from './types'
 
 /* ---------- Context ---------- */
 
@@ -68,7 +69,10 @@ interface CairnStore {
   createCaseCard: (input: Omit<CaseCard, 'id' | 'createdAt' | 'barRef' | 'barRefs'> & { barRef: number }) => CaseCard
   moveCaseCard: (cardId: string, targetCaseId: string) => CaseCard | undefined
   updateCaseCardText: (cardId: string, rawText: string) => CaseCard | undefined
+  updateCaseCardBarRef: (cardId: string, barRef: number | null) => CaseCard | undefined
+  updateCaseCardAnalysis: (cardId: string, updater: (prev: CaseCardAnalysis) => CaseCardAnalysis) => CaseCard | undefined
   analyzeCaseCard: (cardId: string, instruction?: string) => Promise<CaseCard | undefined>
+  prefillTradePlanFromBoundCase: (tradeId: string) => boolean
   createCaseBinding: (caseId: string, tradeId: string, source?: CaseTradeBinding['source']) => Promise<CaseTradeBinding>
   deleteCaseBinding: (id: string) => Promise<void>
   createTrades: (records: Trade[]) => void
@@ -346,6 +350,39 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
       rawText: trimmed,
       rawTextHistory: [...(card.rawTextHistory ?? []), card.rawText],
       rawTextEditedAt: Date.now(),
+    }
+    setCaseCards((prev) => prev
+      .map((item) => (item.id === cardId ? next : item))
+      .sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id)))
+    void saveLocalRecord('caseCards', next)
+    return next
+  }, [caseCards])
+
+  /** BAR 修正：语音误识别（如 2265→265）或漏填时直接改 barRef；rawText 不动。 */
+  const updateCaseCardBarRef = useCallback((cardId: string, barRef: number | null): CaseCard | undefined => {
+    const card = caseCards.find((item) => item.id === cardId)
+    if (!card) return undefined
+    const same = barRef == null
+      ? card.barRef == null
+      : card.barRef === barRef
+    if (same) return card
+    const next: CaseCard = barRef == null
+      ? { ...card, barRef: undefined, barRefs: undefined }
+      : { ...card, barRef, barRefs: undefined }
+    setCaseCards((prev) => prev
+      .map((item) => (item.id === cardId ? next : item))
+      .sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id)))
+    void saveLocalRecord('caseCards', next)
+    return next
+  }, [caseCards])
+
+  /** AI 派生数据人工修正（标签/memo/过期忽略）：标记 userAdjusted，重新识别前会提示覆盖。 */
+  const updateCaseCardAnalysis = useCallback((cardId: string, updater: (prev: CaseCardAnalysis) => CaseCardAnalysis): CaseCard | undefined => {
+    const card = caseCards.find((item) => item.id === cardId)
+    if (!card?.aiAnalysis) return undefined
+    const next: CaseCard = {
+      ...card,
+      aiAnalysis: { ...updater(card.aiAnalysis), userAdjusted: true },
     }
     setCaseCards((prev) => prev
       .map((item) => (item.id === cardId ? next : item))
@@ -648,6 +685,53 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
     if (patch.status != null || patch.executions != null) requestAutoCloseCheck()
   }, [tagDefs, requestAutoCloseCheck])
 
+  /** 从绑定 Case 的 Entry memo 机械回填 Trade 计划价（入场价/止损/止盈）；只填空字段，绝不覆盖已填值。 */
+  const prefillTradePlanFromBoundCase = useCallback((tradeId: string): boolean => {
+    const binding = caseBindings.find((item) => item.tradeId === tradeId)
+    const trade = trades.find((item) => item.id === tradeId)
+    if (!binding || !trade) return false
+    const memo = caseCards.find((card) => card.caseId === binding.caseId && card.phase === 'entry')?.aiAnalysis?.memo
+    if (!memo) return false
+    const patch: Partial<Trade> = {}
+    if (trade.initialEntryPrice == null) {
+      const value = memo.entryPrice ? firstNumberIn(memo.entryPrice.value) : null
+      if (value != null) patch.initialEntryPrice = value
+    }
+    if (trade.initialStopLoss == null) {
+      const value = memo.stopLoss ? firstNumberIn(memo.stopLoss.value) : null
+      if (value != null) patch.initialStopLoss = value
+    }
+    if (trade.initialTakeProfit == null) {
+      const value = memo.target ? firstNumberIn(memo.target.value) : null
+      if (value != null) patch.initialTakeProfit = value
+    }
+    if (Object.keys(patch).length === 0) return false
+    updateTrade(tradeId, patch)
+    return true
+  }, [caseBindings, trades, caseCards, updateTrade])
+
+  /**
+   * 绑定后自动预填：Entry memo 可能晚于绑定到达（逐卡自动识别仍在进行），
+   * 用 effect 等它到位；每笔 Trade 只尝试一次，用户手动清空不会被打扰。
+   */
+  const prefillHandledRef = useRef<Set<string>>(new Set())
+  useEffect(() => {
+    for (const binding of caseBindings) {
+      if (prefillHandledRef.current.has(binding.tradeId)) continue
+      const trade = trades.find((item) => item.id === binding.tradeId)
+      if (!trade) continue
+      const hasGap = trade.initialEntryPrice == null || trade.initialStopLoss == null || trade.initialTakeProfit == null
+      if (!hasGap) {
+        prefillHandledRef.current.add(binding.tradeId)
+        continue
+      }
+      const memo = caseCards.find((card) => card.caseId === binding.caseId && card.phase === 'entry')?.aiAnalysis?.memo
+      if (memo == null) continue
+      prefillTradePlanFromBoundCase(binding.tradeId)
+      prefillHandledRef.current.add(binding.tradeId)
+    }
+  }, [caseBindings, trades, caseCards, prefillTradePlanFromBoundCase])
+
   const updateNote = useCallback((id: string, patch: Partial<(typeof seedState.notes)[number]>) => {
     setNotes((prev) =>
       prev.map((note) => {
@@ -812,7 +896,10 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
       createCaseCard,
       moveCaseCard,
       updateCaseCardText,
+      updateCaseCardBarRef,
+      updateCaseCardAnalysis,
       analyzeCaseCard,
+      prefillTradePlanFromBoundCase,
       createCaseBinding,
       deleteCaseBinding,
       createTrades,
@@ -842,7 +929,7 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
       updateCaseTag,
       deleteCaseTag,
     }),
-    [accounts, periods, trades, tagDefs, cases, caseCards, caseBindings, caseTagDefs, importBatches, attachments, chartImports, chartCandles, symbols, notes, updateAccount, updatePeriod, updateTrade, updateNote, createAccount, createPeriod, createSymbol, createNote, createImageAttachment, deleteAttachment, createCase, updateCase, deleteCase, createCaseCard, moveCaseCard, updateCaseCardText, analyzeCaseCard, createCaseBinding, deleteCaseBinding, createTrades, createImportBatch, createChartImport, deleteChartImport, rollbackImportBatch, deleteAccount, deletePeriod, deleteTrade, deleteSymbol, deleteNote, restoreState, exportBackup, setTradeStatus, createTag, updateTag, deleteTag, createCaseTag, updateCaseTag, deleteCaseTag],
+    [accounts, periods, trades, tagDefs, cases, caseCards, caseBindings, caseTagDefs, importBatches, attachments, chartImports, chartCandles, symbols, notes, updateAccount, updatePeriod, updateTrade, updateNote, createAccount, createPeriod, createSymbol, createNote, createImageAttachment, deleteAttachment, createCase, updateCase, deleteCase, createCaseCard, moveCaseCard, updateCaseCardText, updateCaseCardBarRef, updateCaseCardAnalysis, analyzeCaseCard, prefillTradePlanFromBoundCase, createCaseBinding, deleteCaseBinding, createTrades, createImportBatch, createChartImport, deleteChartImport, rollbackImportBatch, deleteAccount, deletePeriod, deleteTrade, deleteSymbol, deleteNote, restoreState, exportBackup, setTradeStatus, createTag, updateTag, deleteTag, createCaseTag, updateCaseTag, deleteCaseTag],
   )
 
   return <StoreContext.Provider value={value}>{children}</StoreContext.Provider>

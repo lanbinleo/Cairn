@@ -81,15 +81,29 @@ export const CASE_CARD_LABEL_META: Record<string, { label: string; color: string
   reflection: { label: '复盘', color: '#818cf8' },
 }
 
-/** 入场 memo 六字段的中文名（与过程分 memo 完整项同一清单）。 */
+/** 入场 memo 七字段的中文名（与过程分 memo 完整项、Rust MEMO_FIELDS 同一清单）。 */
 export const CASE_MEMO_FIELD_LABEL: Record<string, string> = {
   direction: '方向',
+  entryPrice: '入场价',
   stopLoss: '止损',
   target: '目标',
   confidence: '置信度',
   invalidation: '失效点',
   rejectedAlternatives: '放弃的方案',
   emotion: '情绪',
+}
+
+/** memo 必填字段清单（emotion 可选不计入）。 */
+export const CASE_MEMO_REQUIRED_FIELDS = ['direction', 'entryPrice', 'stopLoss', 'target', 'confidence', 'invalidation', 'rejectedAlternatives'] as const
+
+/** 机械推导缺失字段：与 Rust parse_analysis 同规则，不信任模型自评。 */
+export function deriveMissingFields(memo: Record<string, { value: string | number } | null | undefined> | null | undefined): string[] {
+  if (!memo) return []
+  return CASE_MEMO_REQUIRED_FIELDS.filter((key) => {
+    const field = memo[key]
+    const empty = field == null || field.value == null || String(field.value).trim() === ''
+    return empty
+  })
 }
 
 /** 默认占位标题：自动拟题只替换这类标题，用户起过的名字永不覆盖。 */
