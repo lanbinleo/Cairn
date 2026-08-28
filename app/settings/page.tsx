@@ -36,7 +36,7 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { deleteAiProvider, getAiSettings, getApiStatus, listAiProviders, regenerateApiToken, saveAiSettings, setApiConfig, type AiProvider, type ApiStatus } from '@/lib/local-db'
+import { checkWidgetScriptUpdate, deleteAiProvider, getAiSettings, getApiStatus, getWidgetScript, listAiProviders, regenerateApiToken, saveAiSettings, setApiConfig, type AiProvider, type ApiStatus, type WidgetScript, type WidgetScriptUpdate } from '@/lib/local-db'
 import { useCairn } from '@/lib/store'
 
 const categoryLabel: Record<string, string> = {
@@ -86,6 +86,10 @@ export default function SettingsPage() {
   const [apiMessage, setApiMessage] = useState('')
   const [copiedToken, setCopiedToken] = useState(false)
   const [savingApi, setSavingApi] = useState(false)
+  const [widgetScript, setWidgetScript] = useState<WidgetScript | null>(null)
+  const [widgetUpdate, setWidgetUpdate] = useState<WidgetScriptUpdate | null>(null)
+  const [checkingWidget, setCheckingWidget] = useState(true)
+  const [copiedWidgetScript, setCopiedWidgetScript] = useState(false)
   const [aiProviders, setAiProviders] = useState<AiProvider[]>([])
   const [aiDialogOpen, setAiDialogOpen] = useState(false)
   const [editingProvider, setEditingProvider] = useState<AiProvider | null>(null)
@@ -104,6 +108,8 @@ export default function SettingsPage() {
         setApiPortDraft(String(status.port))
       })
       .catch(() => undefined)
+    void getWidgetScript().then(setWidgetScript).catch(() => undefined)
+    void runWidgetUpdateCheck()
     void listAiProviders().then(setAiProviders).catch(() => undefined)
     void getAiSettings()
       .then((settings) => setAiAutoAnalyze(settings.autoAnalyze))
@@ -150,6 +156,32 @@ export default function SettingsPage() {
     await navigator.clipboard?.writeText(apiStatus.token)
     setCopiedToken(true)
     window.setTimeout(() => setCopiedToken(false), 1200)
+  }
+
+  async function copyWidgetScript() {
+    // GitHub 有新版时复制新版，否则复制内置版
+    const source = widgetUpdate?.remoteNewer && widgetUpdate.remote ? widgetUpdate.remote.script : widgetScript?.script
+    if (!source) return
+    await navigator.clipboard?.writeText(source)
+    setCopiedWidgetScript(true)
+    window.setTimeout(() => setCopiedWidgetScript(false), 2000)
+  }
+
+  async function runWidgetUpdateCheck() {
+    if (!isTauriRuntime()) {
+      setCheckingWidget(false)
+      return
+    }
+    setCheckingWidget(true)
+    try {
+      const update = await checkWidgetScriptUpdate()
+      if (update?.remoteError) console.warn('[cairn] widget update check failed:', update.remoteError)
+      setWidgetUpdate(update)
+    } catch {
+      setWidgetUpdate(null)
+    } finally {
+      setCheckingWidget(false)
+    }
   }
 
   async function loadLogs() {
@@ -471,6 +503,50 @@ export default function SettingsPage() {
 
           <Card>
             <CardHeader>
+              <CardTitle>浮窗脚本</CardTitle>
+              <CardDescription>TradingView 悬浮记录浮窗（Tampermonkey 用户脚本）。内置版随应用分发，并自动对照 GitHub main 分支——有新版直接复制新版</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="flex max-w-2xl flex-col">
+                <SettingRow title="脚本版本" description="Tampermonkey → 新建脚本 → 粘贴全部内容 → 保存（Ctrl+S）；详细步骤见用户指南">
+                  <div className="flex items-center gap-2">
+                    <span className={`rounded-md px-2 py-1 font-mono text-xs ${widgetUpdate?.remoteNewer ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400' : 'bg-muted text-muted-foreground'}`}>
+                      v{widgetUpdate?.remoteNewer && widgetUpdate.remote ? widgetUpdate.remote.version : (widgetScript?.version ?? '…')}
+                    </span>
+                    <Button variant="outline" size="sm" disabled={!widgetScript} onClick={copyWidgetScript}>
+                      {copiedWidgetScript ? <Check data-icon="inline-start" /> : <Copy data-icon="inline-start" />}
+                      {copiedWidgetScript ? '已复制' : widgetUpdate?.remoteNewer ? '复制最新版' : '复制脚本'}
+                    </Button>
+                  </div>
+                </SettingRow>
+                <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                  {checkingWidget ? (
+                    '正在从 GitHub 检查…'
+                  ) : widgetUpdate?.remote ? (
+                    widgetUpdate.remoteNewer ? (
+                      <span className="text-emerald-600 dark:text-emerald-400">
+                        GitHub 有新版 v{widgetUpdate.remote.version}（应用内置 v{widgetUpdate.builtinVersion}），复制后将安装新版
+                      </span>
+                    ) : widgetUpdate.remote.version === widgetUpdate.builtinVersion ? (
+                      `GitHub 与内置版本一致（v${widgetUpdate.builtinVersion}），已是最新`
+                    ) : (
+                      `GitHub 版本（v${widgetUpdate.remote.version}）尚未跟上应用内置版（v${widgetUpdate.builtinVersion}），复制内置版即可`
+                    )
+                  ) : (
+                    <>
+                      无法连接 GitHub，将复制应用内置版
+                      <button type="button" className="underline underline-offset-2 hover:text-foreground" disabled={checkingWidget} onClick={runWidgetUpdateCheck}>
+                        重试
+                      </button>
+                    </>
+                  )}
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
               <CardTitle>端点速查</CardTitle>
               <CardDescription>供编写配套脚本使用；除 health 外均需 Bearer token</CardDescription>
             </CardHeader>
@@ -491,6 +567,7 @@ export default function SettingsPage() {
                     ['POST', '/api/v1/cases', '创建 Case；title / accountId / periodId 必填；同 id 同内容幂等'],
                     ['GET', '/api/v1/cases/:id/cards', '该 Case 的 Card 列表'],
                     ['POST', '/api/v1/cases/:id/cards', '提交 Card；phase / rawText 必填，barRef 选填（缺省从原文提取 BAR 引用）；原文不可变，重复提交幂等'],
+                    ['PUT', '/api/v1/cases/:id/cards/:cardId', '修正 Card；body 为 { rawText, barRef }（barRef: null 清除、缺省保持，1–1440）；旧表述自动存入 rawTextHistory'],
                     ['POST', '/api/v1/bindings', '建立 Case↔Trade 绑定；双向一对一'],
                     ['DELETE', '/api/v1/bindings/:id', '解除绑定'],
                     ['GET / POST', '/api/v1/case-tags', 'Case 标签查询与创建'],

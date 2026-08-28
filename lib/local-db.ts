@@ -168,6 +168,30 @@ export async function setApiConfig(enabled: boolean, port: number): Promise<ApiS
   return invoke<ApiStatus>('set_api_config', { enabled, port })
 }
 
+/** 内置浮窗脚本（随应用打包）；浏览器预览环境拿不到。 */
+export interface WidgetScript {
+  version: string
+  script: string
+}
+
+export async function getWidgetScript(): Promise<WidgetScript | null> {
+  if (!isTauriRuntime()) return null
+  return invoke<WidgetScript>('get_widget_script')
+}
+
+/** GitHub main 分支的浮窗脚本；remote 为 null 表示网络不可达（remoteError 为原因），用内置版。 */
+export interface WidgetScriptUpdate {
+  builtinVersion: string
+  remote: { version: string; script: string } | null
+  remoteNewer: boolean
+  remoteError: string | null
+}
+
+export async function checkWidgetScriptUpdate(): Promise<WidgetScriptUpdate | null> {
+  if (!isTauriRuntime()) return null
+  return invoke<WidgetScriptUpdate>('check_widget_script_update')
+}
+
 /* ---------- AI Provider 管理 ---------- */
 
 export interface AiProvider {

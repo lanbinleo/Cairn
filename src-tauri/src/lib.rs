@@ -109,6 +109,136 @@ fn get_api_status(app: AppHandle) -> Result<api::ApiStatus, String> {
     api::status(&app)
 }
 
+const WIDGET_SCRIPT: &str = include_str!("../../scripts/cairn-case-widget.user.js");
+
+/// 浮窗脚本内置分发：脚本内容编译进二进制，应用更新即脚本更新，
+/// 用户从设置页复制即可，无需访问 GitHub。
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WidgetScript {
+    version: String,
+    script: String,
+}
+
+fn widget_script_version(source: &str) -> String {
+    source
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("// @version"))
+        .map(|rest| rest.trim().to_string())
+        .filter(|version| !version.is_empty())
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+#[tauri::command]
+fn get_widget_script() -> WidgetScript {
+    WidgetScript {
+        version: widget_script_version(WIDGET_SCRIPT),
+        script: WIDGET_SCRIPT.to_string(),
+    }
+}
+
+/// GitHub 上 main 分支的脚本内容（走 api.github.com Contents API：
+/// 本机网络下它通常可达，raw CDN 域名经常超时）。
+async fn fetch_widget_script_remote() -> Result<String, String> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(8))
+        .user_agent("cairn-widget-update-check")
+        .build()
+        .map_err(|err| err.to_string())?;
+    let response = client
+        .get("https://api.github.com/repos/lanbinleo/Cairn/contents/scripts/cairn-case-widget.user.js?ref=main")
+        .send()
+        .await
+        .map_err(|err| format!("request failed: {err}"))?;
+    if !response.status().is_success() {
+        return Err(format!("github api returned {}", response.status()));
+    }
+    let payload: serde_json::Value = response.json().await.map_err(|err| err.to_string())?;
+    let content = payload
+        .get("content")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| "github api response missing content".to_string())?;
+    let decoded = general_purpose::STANDARD
+        .decode(content.replace('\n', ""))
+        .map_err(|err| err.to_string())?;
+    String::from_utf8(decoded).map_err(|err| err.to_string())
+}
+
+/// 点分版本逐段数值比较：a > b。
+fn version_gt(a: &str, b: &str) -> bool {
+    let nums = |v: &str| -> Vec<u64> { v.split('.').map(|p| p.parse::<u64>().unwrap_or(0)).collect() };
+    let (mut va, mut vb) = (nums(a), nums(b));
+    let len = va.len().max(vb.len());
+    va.resize(len, 0);
+    vb.resize(len, 0);
+    va > vb
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WidgetScriptRemote {
+    version: String,
+    script: String,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WidgetScriptUpdate {
+    builtin_version: String,
+    /// None = 无法访问 GitHub（网络不通等），复制内置版即可。
+    remote: Option<WidgetScriptRemote>,
+    remote_newer: bool,
+    /// remote 为 None 时的原因，供排障（前端仅 console.warn，不打扰 UI）。
+    remote_error: Option<String>,
+}
+
+/// 浮窗脚本更新检查：内置版本 vs GitHub main 分支。网络失败不报错——
+/// 返回 remote: None，前端降级展示「使用内置版」。
+#[tauri::command]
+async fn check_widget_script_update() -> WidgetScriptUpdate {
+    let builtin_version = widget_script_version(WIDGET_SCRIPT);
+    match fetch_widget_script_remote().await {
+        Ok(script) => {
+            let version = widget_script_version(&script);
+            if version == "unknown" {
+                return WidgetScriptUpdate {
+                    builtin_version,
+                    remote: None,
+                    remote_newer: false,
+                    remote_error: Some("remote script has no parseable @version".to_string()),
+                };
+            }
+            let remote_newer = version_gt(&version, &builtin_version);
+            WidgetScriptUpdate { builtin_version, remote: Some(WidgetScriptRemote { version, script }), remote_newer, remote_error: None }
+        }
+        Err(err) => WidgetScriptUpdate { builtin_version, remote: None, remote_newer: false, remote_error: Some(err) },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn widget_script_version_parses_userscript_header() {
+        let source = "// ==UserScript==\n// @name    Cairn\n// @version  0.2.4\n// ==/UserScript==\nbody;";
+        assert_eq!(widget_script_version(source), "0.2.4");
+        assert_eq!(widget_script_version("no header here"), "unknown");
+        // 内置脚本必须带可解析的 @version，否则设置页无法显示版本
+        assert_ne!(widget_script_version(WIDGET_SCRIPT), "unknown");
+    }
+
+    #[test]
+    fn version_gt_compares_dot_segments_numerically() {
+        assert!(version_gt("0.2.4", "0.2.3"));
+        assert!(version_gt("0.10.0", "0.9.9"));
+        assert!(version_gt("1.0", "0.99"));
+        assert!(!version_gt("0.2.4", "0.2.4"));
+        assert!(!version_gt("0.2.3", "0.2.4"));
+        assert!(!version_gt("0.2", "0.2.0"));
+    }
+}
+
 #[tauri::command]
 fn regenerate_api_token(app: AppHandle) -> Result<api::ApiStatus, String> {
     api::regenerate_token(&app)
@@ -427,6 +557,8 @@ pub fn run() {
             read_logs,
             get_log_path,
             get_api_status,
+            get_widget_script,
+            check_widget_script_update,
             regenerate_api_token,
             set_api_config,
             list_ai_providers,

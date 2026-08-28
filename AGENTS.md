@@ -66,7 +66,7 @@ Top-level orientation:
 
 - Frontend: pages under `app/`, components under `components/`, domain logic under `lib/`, routes in `src/App.tsx`.
 - Native: `src-tauri/src/` — `lib.rs` (commands/setup), `db.rs` (SQLite), `api.rs` (local REST on 127.0.0.1), `ai.rs` (providers + chat + prompts), `diagnostics.rs` (logs).
-- Companion userscript: `scripts/cairn-case-widget.user.js` (+ `scripts/cairn-case-widget.test.html` harness).
+- Companion userscript: `scripts/cairn-case-widget.user.js` (+ `scripts/cairn-case-widget.test.html` harness). Distribution is in-app: the script is compiled into the binary (`include_str!`) and Settings → 本地 API → 浮窗脚本 offers copy + a GitHub-main update check (`api.github.com` Contents API, `check_widget_script_update`); network failure degrades to the bundled copy. Bump the script `@version` whenever it changes — version comparison is dot-segment numeric (`version_gt`).
 
 ## Domain Rules To Remember
 
