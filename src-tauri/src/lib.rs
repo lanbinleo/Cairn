@@ -141,21 +141,20 @@ async fn fetch_ai_models(base_url: String, api_key: String) -> Result<Vec<String
     ai::fetch_models(base_url, api_key).await
 }
 
-/// AI 秘书整理一张 Card：六字段 memo 提取（entry）、span quote 标签、barRef 提议。
-/// 结果作为版本化派生数据写入 card.aiAnalysis；原文永不改写。
+/// AI 秘书整理一张 Card 的完整链路：读卡 → 请求（失败自动重试一次）→ 解析 → 写回
+/// 版本化派生数据 card.aiAnalysis；原文永不改写。手动按钮与 REST 自动整理共用。
 /// instruction 是用户重试时的补充要求，例如"止损不是 41650，注意口语里的位置词"。
-#[tauri::command]
-async fn analyze_case_card(
-    app: AppHandle,
-    db: tauri::State<'_, db::Db>,
-    card_id: String,
+pub(crate) async fn run_card_analysis(
+    app: &AppHandle,
+    db: &db::Db,
+    card_id: &str,
     instruction: Option<String>,
 ) -> Result<Value, String> {
     let (card, provider, model) = {
         let conn = db.conn()?;
-        let card = db::read_record_by_id(&conn, "caseCards", &card_id)?
+        let card = db::read_record_by_id(&conn, "caseCards", card_id)?
             .ok_or_else(|| format!("case card not found: {card_id}"))?;
-        let (provider, model) = ai::default_provider(&app)?
+        let (provider, model) = ai::default_provider(app)?
             .ok_or_else(|| "还没有默认 AI Provider，请在 设置 → AI 中配置".to_string())?;
         (card, provider, model)
     };
@@ -173,8 +172,8 @@ async fn analyze_case_card(
     if let Some(extra) = instruction.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         messages.push(ai::ChatMessage::user(format!("补充整理要求：{extra}")));
     }
-    ai::log_provider_event(&app, format!("analyzing card {card_id} with {model}"));
-    let content = ai::chat_completion(&provider, &model, &messages).await?;
+    ai::log_provider_event(app, format!("analyzing card {card_id} with {model}"));
+    let content = ai::chat_completion_with_retry(&provider, &model, &messages).await?;
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_millis() as u64)
@@ -195,10 +194,30 @@ async fn analyze_case_card(
     updated["aiAnalysis"] = analysis;
     {
         let conn = db.conn()?;
-        db::save_record_in_tx(&conn, "caseCards", &card_id, updated.clone())?;
+        db::save_record_in_tx(&conn, "caseCards", card_id, updated.clone())?;
     }
-    ai::log_provider_event(&app, format!("card {card_id} analyzed"));
+    ai::log_provider_event(app, format!("card {card_id} analyzed"));
     Ok(updated)
+}
+
+#[tauri::command]
+async fn analyze_case_card(
+    app: AppHandle,
+    db: tauri::State<'_, db::Db>,
+    card_id: String,
+    instruction: Option<String>,
+) -> Result<Value, String> {
+    run_card_analysis(&app, &db, &card_id, instruction).await
+}
+
+#[tauri::command]
+fn get_ai_settings(app: AppHandle) -> Result<ai::AiSettings, String> {
+    Ok(ai::settings(&app))
+}
+
+#[tauri::command]
+fn save_ai_settings(app: AppHandle, settings: ai::AiSettings) -> Result<ai::AiSettings, String> {
+    ai::save_settings(&app, settings)
 }
 
 /// AI 秘书代拟 Case 标题：读 Case 的全部 Card 原文，返回一个短标题草稿（不落库，由前端确认写入）。
@@ -230,7 +249,7 @@ async fn draft_case_title(
     }
     let messages = ai::build_title_messages(&cards);
     ai::log_provider_event(&app, format!("drafting title for case {case_id}"));
-    let content = ai::chat_completion(&provider, &model, &messages).await?;
+    let content = ai::chat_completion_with_retry(&provider, &model, &messages).await?;
     let title = ai::parse_title(&content)?;
     ai::log_provider_event(&app, format!("case {case_id} title drafted"));
     Ok(title)
@@ -396,6 +415,8 @@ pub fn run() {
             fetch_ai_models,
             analyze_case_card,
             draft_case_title,
+            get_ai_settings,
+            save_ai_settings,
             save_attachment_file,
             read_attachment_file,
             save_chart_source_file

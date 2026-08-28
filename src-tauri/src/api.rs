@@ -285,6 +285,12 @@ pub fn start_server(app: AppHandle) {
 
             if outcome.data_changed {
                 let _ = app.emit(DATA_CHANGED_EVENT, &outcome.body);
+                // 逐卡自动 AI 整理：仅 REST 新建 Card 触发；幂等重放（changed=false）不触发
+                if method == "POST" && url.starts_with("/api/v1/cases/") && url.ends_with("/cards") {
+                    if let Some(card_id) = outcome.body.get("id").and_then(Value::as_str) {
+                        crate::ai::spawn_auto_analysis(&app, card_id.to_string());
+                    }
+                }
             }
 
             let mut response = tiny_http::Response::from_string(outcome.body.to_string())

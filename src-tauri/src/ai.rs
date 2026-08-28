@@ -6,7 +6,7 @@ use std::{fs, path::PathBuf, time::Duration};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tauri::AppHandle;
+use tauri::{AppHandle, Emitter, Manager};
 
 use crate::{diagnostics, paths};
 
@@ -263,6 +263,100 @@ pub fn default_provider(app: &AppHandle) -> Result<Option<(AiProvider, String)>,
             Ok(Some((provider, model)))
         }
     }
+}
+
+// ==================== 请求重试 ====================
+
+/// 网络类失败（发送失败/超时/5xx/空回复）自动重试一次，最多一次；
+/// 配置与解析类错误（4xx、响应结构异常）直接返回，不浪费一次调用。
+pub async fn chat_completion_with_retry(
+    provider: &AiProvider,
+    model: &str,
+    messages: &[ChatMessage],
+) -> Result<String, String> {
+    match chat_completion(provider, model, messages).await {
+        Ok(content) => Ok(content),
+        Err(first) if is_retryable_error(&first) => {
+            chat_completion(provider, model, messages).await
+                .map_err(|second| format!("{first}；重试一次后仍失败：{second}"))
+        }
+        Err(first) => Err(first),
+    }
+}
+
+fn is_retryable_error(message: &str) -> bool {
+    message.starts_with("request failed")
+        || message.starts_with("read response failed")
+        || message.starts_with("provider returned 5")
+        || message.starts_with("provider returned empty content")
+}
+
+// ==================== AI 通用设置 ====================
+
+/// 自动整理等行为开关，存 app_data_dir/ai-settings.json，不进入备份。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiSettings {
+    /// 新 Card（浮窗/REST）提交后自动后台识别；失败重试一次后静默记日志
+    #[serde(default = "default_true")]
+    pub auto_analyze: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl Default for AiSettings {
+    fn default() -> Self {
+        Self { auto_analyze: true }
+    }
+}
+
+fn settings_path(app: &AppHandle) -> Result<PathBuf, String> {
+    Ok(paths::app_data_dir(app)?.join("ai-settings.json"))
+}
+
+pub fn settings(app: &AppHandle) -> AiSettings {
+    let Ok(path) = settings_path(app) else {
+        return AiSettings::default();
+    };
+    let Ok(content) = fs::read_to_string(&path) else {
+        return AiSettings::default();
+    };
+    serde_json::from_str(&content).unwrap_or_default()
+}
+
+pub fn save_settings(app: &AppHandle, value: AiSettings) -> Result<AiSettings, String> {
+    let path = settings_path(app)?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|err| err.to_string())?;
+    }
+    let content = serde_json::to_string_pretty(&value).map_err(|err| err.to_string())?;
+    let tmp = path.with_extension("json.tmp");
+    fs::write(&tmp, content).map_err(|err| err.to_string())?;
+    fs::rename(&tmp, &path).map_err(|err| err.to_string())?;
+    Ok(value)
+}
+
+/// 浮窗/REST 新建 Card 后的后台自动整理入口：开关关闭时跳过；
+/// 完成后 emit data-changed 让前端刷新，失败只记日志不打扰录制。
+pub fn spawn_auto_analysis(app: &AppHandle, card_id: String) {
+    if !settings(app).auto_analyze {
+        return;
+    }
+    let app = app.clone();
+    std::thread::spawn(move || {
+        let db = app.state::<crate::db::Db>();
+        let result = tauri::async_runtime::block_on(crate::run_card_analysis(&app, &db, &card_id, None));
+        match result {
+            Ok(card) => {
+                let _ = app.emit(crate::api::DATA_CHANGED_EVENT, &card);
+            }
+            Err(err) => {
+                diagnostics::app_log(&app, format!("auto analysis failed for card {card_id}: {err}"));
+            }
+        }
+    });
 }
 
 // ==================== CaseCard 结构化提取 ====================
@@ -546,6 +640,31 @@ pub fn parse_title(content: &str) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn retryable_errors_are_network_like() {
+        assert!(is_retryable_error("request failed: connection reset"));
+        assert!(is_retryable_error("read response failed: unexpected eof"));
+        assert!(is_retryable_error("provider returned 502: bad gateway"));
+        assert!(is_retryable_error("provider returned empty content"));
+    }
+
+    #[test]
+    fn config_and_parse_errors_are_not_retried() {
+        assert!(!is_retryable_error("provider returned 401: unauthorized"));
+        assert!(!is_retryable_error("provider returned 400: bad request"));
+        assert!(!is_retryable_error("invalid response: expected value"));
+        assert!(!is_retryable_error("response has no message content"));
+        assert!(!is_retryable_error("model output is not JSON: trailing chars"));
+    }
+
+    #[test]
+    fn ai_settings_default_to_auto_analyze() {
+        let settings = AiSettings::default();
+        assert!(settings.auto_analyze);
+        let parsed: AiSettings = serde_json::from_str("{}").unwrap();
+        assert!(parsed.auto_analyze, "missing field falls back to default");
+    }
 
     const RAW: &str = "BAR38 第三次测试区间上沿失败收回，我做空，止损区间上沿上方，目标区间中轨，胜率我给七成，如果重新站上 41600 我就错了，以太想做多但放弃了，有点兴奋";
 
