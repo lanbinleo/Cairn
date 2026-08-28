@@ -1,6 +1,8 @@
 'use client'
 
 import { invoke } from '@tauri-apps/api/core'
+import { relaunch } from '@tauri-apps/plugin-process'
+import { check } from '@tauri-apps/plugin-updater'
 import { useTheme } from 'next-themes'
 import { Pencil, Plus, Star, Trash2 } from 'lucide-react'
 import type { ReactNode } from 'react'
@@ -76,6 +78,8 @@ export default function SettingsPage() {
   const [logPath, setLogPath] = useState('')
   const [copiedLogs, setCopiedLogs] = useState(false)
   const [appVersion, setAppVersion] = useState('0.1.3')
+  const [updateStatus, setUpdateStatus] = useState('尚未检查更新')
+  const [checkingUpdate, setCheckingUpdate] = useState(false)
   const [apiStatus, setApiStatus] = useState<ApiStatus | null>(null)
   const [apiEnabledDraft, setApiEnabledDraft] = useState(true)
   const [apiPortDraft, setApiPortDraft] = useState('8787')
@@ -161,6 +165,26 @@ export default function SettingsPage() {
     await navigator.clipboard?.writeText(logs)
     setCopiedLogs(true)
     window.setTimeout(() => setCopiedLogs(false), 1200)
+  }
+
+  async function checkForUpdate() {
+    setCheckingUpdate(true)
+    setUpdateStatus('正在检查更新')
+    try {
+      const update = await check()
+      if (!update) {
+        setUpdateStatus('当前已经是最新版本')
+        return
+      }
+      setUpdateStatus(`发现 ${update.version}，正在下载并安装`)
+      await update.downloadAndInstall()
+      setUpdateStatus('更新安装完成，正在重启')
+      await relaunch()
+    } catch (error) {
+      setUpdateStatus(`检查更新失败：${String(error)}`)
+    } finally {
+      setCheckingUpdate(false)
+    }
   }
 
   return (
@@ -628,8 +652,12 @@ export default function SettingsPage() {
               </div>
               <div className="flex items-center gap-2 rounded-full bg-muted px-3 py-2">
                 <span className="font-mono text-sm font-medium">v{appVersion}</span>
+                <Button variant="outline" size="sm" disabled={checkingUpdate || !isTauriRuntime()} onClick={checkForUpdate}>
+                  <RefreshCw data-icon="inline-start" />
+                  {checkingUpdate ? '检查中' : '检查更新'}
+                </Button>
               </div>
-              <p className="text-sm text-muted-foreground">新版本手动下载安装：见下方 Releases。</p>
+              <div className="text-sm text-muted-foreground">{updateStatus}</div>
               <div className="flex items-center gap-3 text-sm text-muted-foreground">
                 <a className="transition-colors hover:text-foreground" href="https://github.com/lanbinleo/Cairn" target="_blank" rel="noreferrer">GitHub</a>
                 <span>·</span>
