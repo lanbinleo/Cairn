@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Cairn 记一笔
 // @namespace    cairn
-// @version      0.2.3
+// @version      0.2.4
 // @description  TradingView 悬浮记录浮窗：口述或打字记录交易思考，实时写入本地 Cairn（127.0.0.1 本地 API）
 // @author       Cairn
 // @match        https://*.tradingview.com/*
@@ -38,9 +38,23 @@
 
   /* ================= 状态 ================= */
 
+  // 仓位提示百分比：0 < n <= 100，最多三档；旧数据兜底回 1%/2%。
+  function normalizePercents(list) {
+    if (!Array.isArray(list)) return [1, 2];
+    const out = [];
+    for (const v of list.slice(0, 3)) {
+      const n = typeof v === 'number' ? v : parseFloat(v);
+      if (Number.isFinite(n) && n > 0 && n <= 100 && !out.includes(n)) out.push(n);
+    }
+    return out;
+  }
+
   const state = {
     token: store.get('token', ''),
     port: store.get('port', 8787),
+    themeMode: store.get('theme', 'auto'),
+    riskPercents: normalizePercents(store.get('riskPercents', [1, 2])),
+    editingCardId: '',
     connected: false,
     busy: false,
     accounts: [],   // [{ id, name, periods: [{ id, name }] }]
@@ -111,11 +125,11 @@
   host.innerHTML = `
 <style>
   #cairn-cw-wrap { all: initial; }
-  #cairn-cw-wrap * { box-sizing: border-box; margin: 0; padding: 0; scrollbar-width: thin; scrollbar-color: #363a45 transparent; }
+  #cairn-cw-wrap * { box-sizing: border-box; margin: 0; padding: 0; scrollbar-width: thin; scrollbar-color: var(--scroll, #363a45) transparent; }
   #cairn-cw-wrap *::-webkit-scrollbar { width: 8px; height: 8px; }
   #cairn-cw-wrap *::-webkit-scrollbar-track { background: transparent; }
-  #cairn-cw-wrap *::-webkit-scrollbar-thumb { background: #363a45; border-radius: 4px; }
-  #cairn-cw-wrap *::-webkit-scrollbar-thumb:hover { background: #4a4f5c; }
+  #cairn-cw-wrap *::-webkit-scrollbar-thumb { background: var(--scroll, #363a45); border-radius: 4px; }
+  #cairn-cw-wrap *::-webkit-scrollbar-thumb:hover { background: var(--scroll-hover, #4a4f5c); }
   #cairn-cw-wrap *::-webkit-scrollbar-corner { background: transparent; }
 
   #cairn-cw-wrap .cw-root {
@@ -130,12 +144,42 @@
     --red: #ef5350;
     --warn: #ffb648;
     --bar-num: #ff9800;
+    --scroll: #363a45;
+    --scroll-hover: #4a4f5c;
+    --shadow-panel: 0 16px 48px rgba(0, 0, 0, 0.55);
+    --shadow-pop: 0 10px 28px rgba(0, 0, 0, 0.5);
+    --chev: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%23787b86' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
     --radius: 12px;
+    color-scheme: dark;
     font-family: -apple-system, "Segoe UI", "Microsoft YaHei", "PingFang SC", sans-serif;
     font-size: 14px;
     color: var(--text);
     user-select: none;
   }
+
+  /* 输入控件必须可选中文本：.cw-root 的 user-select:none 会吞掉全选/拖选 */
+  #cairn-cw-wrap .cw-root input, #cairn-cw-wrap .cw-root textarea { user-select: text; }
+
+  /* 浅色主题：TradingView light 色板。主题由 .cw-root.light 类切换。 */
+  #cairn-cw-wrap .cw-root.light {    --bg: #ffffff;
+    --panel: #f0f3fa;
+    --panel-2: #e0e3eb;
+    --border: #d1d4dc;
+    --text: #131722;
+    --text-dim: #6a6d78;
+    --green: #089981;
+    --red: #f23645;
+    --warn: #ad6800;
+    --bar-num: #c96a00;
+    --scroll: #c9cfd9;
+    --scroll-hover: #aeb6c2;
+    --shadow-panel: 0 16px 48px rgba(24, 34, 51, 0.16);
+    --shadow-pop: 0 10px 28px rgba(24, 34, 51, 0.18);
+    color-scheme: light;
+  }
+  /* 白字压浅色底读不清的几处，浅色下改用主色文字 */
+  #cairn-cw-wrap .cw-root.light .phase-pill.active { color: var(--accent); }
+  #cairn-cw-wrap .cw-root.light .ed-btn.active[data-v="pending"] { color: var(--accent); }
 
   /* ---------- Dock：悬浮球 + 面板一体化 ---------- */
   #cairn-cw-wrap #cw-dock {
@@ -183,10 +227,12 @@
     background: var(--panel);
     border: 1px solid var(--border);
     border-radius: var(--radius);
-    box-shadow: 0 16px 48px rgba(0, 0, 0, 0.55);
+    box-shadow: var(--shadow-panel);
     display: none;
     flex-direction: column;
-    overflow: hidden;
+    /* 不能 overflow:hidden：会把 header 里绝对定位的 Case 下拉菜单裁掉。
+       各滚动区自己负责裁切与底部圆角。 */
+    overflow: visible;
   }
   #cairn-cw-wrap #cw-dock.open #cw-widget { display: flex; animation: cw-pop .16s ease; }
   @keyframes cw-pop { from { opacity: 0; transform: translateY(8px) scale(.97); } }
@@ -199,32 +245,35 @@
   }
   #cairn-cw-wrap #cw-widget-header:active { cursor: grabbing; }
   #cairn-cw-wrap #cw-widget-header .grip { color: var(--text-dim); font-size: 14px; letter-spacing: -1px; }
+  /* Case 选择触发框：外观与 .cw-select（主题下拉）一致；弹层用回自定义菜单 */
   #cairn-cw-wrap .case-current {
     flex: 1; min-width: 0;
-    display: flex; align-items: center; gap: 6px;
     background: var(--panel-2);
     border: 1px solid transparent;
     border-radius: 8px;
-    padding: 5px 8px;
+    padding: 5px 26px 5px 8px;
     font-size: 13px;
     font-family: inherit;
     color: var(--text);
     cursor: pointer;
     text-align: left;
+    overflow: hidden;
+    background-image: var(--chev);
+    background-repeat: no-repeat;
+    background-position: right 9px center;
   }
   #cairn-cw-wrap .case-current:hover, #cairn-cw-wrap .case-current:focus { border-color: var(--border); outline: none; }
   #cairn-cw-wrap .case-current #cw-case-current-name {
-    flex: 1; min-width: 0;
+    display: block;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
-  #cairn-cw-wrap .case-current .chev { color: var(--text-dim); font-size: 10px; flex-shrink: 0; }
   #cairn-cw-wrap #cw-case-menu {
     position: absolute;
-    top: 44px; left: 8px; right: 8px;
+    top: 48px; left: 8px; right: 8px;
     background: var(--bg);
     border: 1px solid var(--border);
     border-radius: 10px;
-    box-shadow: 0 10px 28px rgba(0,0,0,.5);
+    box-shadow: var(--shadow-pop);
     display: none;
     flex-direction: column;
     max-height: 224px;
@@ -251,11 +300,17 @@
     color: var(--text);
     border: 1px solid transparent;
     border-radius: 8px;
-    padding: 5px 8px;
+    padding: 5px 26px 5px 8px;
     font-size: 13px;
     font-family: inherit;
     cursor: pointer;
     min-width: 0;
+    /* 原生箭头不跟主题（白底块），自绘 chevron 代替；color-scheme 管弹层与光标 */
+    appearance: none;
+    -webkit-appearance: none;
+    background-image: var(--chev);
+    background-repeat: no-repeat;
+    background-position: right 9px center;
   }
   #cairn-cw-wrap .cw-select:hover, #cairn-cw-wrap .cw-select:focus { border-color: var(--border); outline: none; }
   #cairn-cw-wrap .icon-btn {
@@ -294,16 +349,26 @@
   #cairn-cw-wrap #cw-settings {
     display: none;
     padding: 12px;
+    flex: 1 1 auto;
+    min-height: 0;
     flex-direction: column; gap: 10px;
     overflow-y: auto;
+    border-radius: 0 0 var(--radius) var(--radius);
   }
   #cairn-cw-wrap #cw-dock.settings #cw-settings { display: flex; }
   #cairn-cw-wrap #cw-dock.settings #cw-widget-context,
+  #cairn-cw-wrap #cw-dock.settings #cw-risk-strip,
   #cairn-cw-wrap #cw-dock.settings #cw-widget-body,
   #cairn-cw-wrap #cw-dock.settings #cw-cards-section { display: none; }
   #cairn-cw-wrap #cw-settings .set-title { font-size: 13px; font-weight: 600; }
+  #cairn-cw-wrap #cw-settings .set-title:not(:first-child) {
+    margin-top: 4px; padding-top: 10px;
+    border-top: 1px solid var(--border);
+  }
   #cairn-cw-wrap #cw-settings label { font-size: 11px; color: var(--text-dim); display: block; margin-bottom: 4px; }
   #cairn-cw-wrap #cw-settings .set-row + .set-row { margin-top: 2px; }
+  #cairn-cw-wrap #cw-settings .pct-row { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 6px; }
+  #cairn-cw-wrap #cw-settings .set-hint { font-size: 10.5px; line-height: 1.5; color: var(--text-dim); margin-top: 5px; }
   #cairn-cw-wrap #cw-set-token { font-family: Consolas, monospace; font-size: 12px; }
   #cairn-cw-wrap #cw-set-port { width: 90px; }
   #cairn-cw-wrap #cw-set-status { font-size: 12px; line-height: 1.5; min-height: 18px; }
@@ -332,7 +397,7 @@
   #cairn-cw-wrap #cw-risk-strip b { color: var(--text); font-weight: 600; }
   #cairn-cw-wrap #cw-risk-strip .rs-sep { margin: 0 6px; opacity: .45; }
 
-  #cairn-cw-wrap #cw-widget-body { padding: 10px 12px 12px; display: flex; flex-direction: column; gap: 10px; overflow-y: auto; }
+  #cairn-cw-wrap #cw-widget-body { padding: 10px 12px 12px; display: flex; flex-direction: column; gap: 10px; overflow-y: auto; flex: 1 1 auto; min-height: 0; }
 
   #cairn-cw-wrap .phase-row { display: flex; gap: 4px; }
   #cairn-cw-wrap .phase-pill {
@@ -430,7 +495,7 @@
   }
   #cairn-cw-wrap #cw-completeness-tip button:hover { color: var(--text); }
 
-  #cairn-cw-wrap #cw-cards-section { border-top: 1px solid var(--border); padding: 10px 12px 12px; }
+  #cairn-cw-wrap #cw-cards-section { border-top: 1px solid var(--border); padding: 10px 12px 12px; border-radius: 0 0 var(--radius) var(--radius); overflow: hidden; }
   #cairn-cw-wrap #cw-cards-section .cs-head {
     display: flex; align-items: center; justify-content: space-between;
     font-size: 11px; color: var(--text-dim); margin-bottom: 8px;
@@ -465,6 +530,61 @@
   #cairn-cw-wrap .cw-card.fresh { animation: cw-fresh .5s ease; }
   @keyframes cw-fresh { from { background: rgba(38,166,154,.14); } }
 
+  /* 卡片行内编辑：常驻 ✎ 进入，改 rawText（错字修正，原文进历史）与 barRef（留空清除） */
+  #cairn-cw-wrap .cw-card .mc-edit {
+    background: none; border: none;
+    color: var(--text-dim);
+    cursor: pointer; font-size: 11px;
+    padding: 1px 3px; border-radius: 4px;
+    flex-shrink: 0; margin-left: 4px;
+  }
+  #cairn-cw-wrap .cw-card .mc-edit:hover { color: var(--text); }
+  #cairn-cw-wrap .cw-card.editing { display: flex; flex-direction: column; gap: 6px; }
+  #cairn-cw-wrap .cw-card.editing .ec-text {
+    width: 100%;
+    min-height: 72px;
+    resize: vertical;
+    background: var(--panel);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 6px 8px;
+    font-size: 12px;
+    line-height: 1.5;
+    font-family: inherit;
+    user-select: text;
+  }
+  #cairn-cw-wrap .cw-card.editing .ec-text:focus { outline: none; border-color: var(--accent); }
+  #cairn-cw-wrap .ec-row { display: flex; gap: 6px; align-items: center; }
+  #cairn-cw-wrap .ec-bar {
+    width: 76px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    color: var(--bar-num);
+    font-family: Consolas, monospace;
+    font-size: 12px;
+    border-radius: 6px;
+    padding: 4px 6px;
+    text-align: center;
+  }
+  #cairn-cw-wrap .ec-bar:focus { outline: none; border-color: var(--bar-num); }
+  #cairn-cw-wrap .ec-bar::placeholder { color: var(--text-dim); opacity: .7; }
+  #cairn-cw-wrap .ec-cancel {
+    margin-left: auto;
+    background: none; border: none;
+    color: var(--text-dim);
+    font-size: 12px; font-family: inherit;
+    cursor: pointer; padding: 4px 6px;
+  }
+  #cairn-cw-wrap .ec-cancel:hover { color: var(--text); }
+  #cairn-cw-wrap .ec-save {
+    background: var(--accent); border: none; color: #fff;
+    border-radius: 6px; padding: 4px 12px;
+    font-size: 12px; font-family: inherit; cursor: pointer;
+  }
+  #cairn-cw-wrap .ec-save:hover { filter: brightness(1.12); }
+  #cairn-cw-wrap .ec-save:disabled { opacity: .55; cursor: default; filter: none; }
+
   #cairn-cw-wrap #cw-toast {
     position: fixed;
     left: 50%; bottom: 36px;
@@ -490,9 +610,8 @@
     <div id="cw-widget">
       <div id="cw-widget-header">
         <span class="grip">⠿</span>
-        <button id="cw-case-current" type="button" title="切换 Case">
+        <button id="cw-case-current" class="case-current" type="button" title="切换 Case">
           <span id="cw-case-current-name">—</span>
-          <span class="chev">▾</span>
         </button>
         <div id="cw-case-menu"></div>
         <button class="icon-btn" id="cw-new-case-btn" title="开新 Case">＋</button>
@@ -525,6 +644,27 @@
           <button class="nc-create" id="cw-set-save">保存并连接</button>
         </div>
         <div id="cw-set-status"></div>
+
+        <div class="set-title">外观</div>
+        <div class="set-row">
+          <label for="cw-set-theme">主题</label>
+          <select id="cw-set-theme" class="cw-select" style="width:100%">
+            <option value="auto">跟随 TradingView</option>
+            <option value="dark">深色</option>
+            <option value="light">浅色</option>
+          </select>
+        </div>
+
+        <div class="set-title">仓位提示</div>
+        <div class="set-row">
+          <label>开仓风险百分比（最多 3 个，可留空）</label>
+          <div class="pct-row">
+            <input id="cw-set-pct-1" class="cw-input" inputmode="decimal" placeholder="%">
+            <input id="cw-set-pct-2" class="cw-input" inputmode="decimal" placeholder="%">
+            <input id="cw-set-pct-3" class="cw-input" inputmode="decimal" placeholder="%">
+          </div>
+          <div class="set-hint">按当前 Case 账户的权益显示对应风险金额，显示在面板顶部；全部留空则不显示。</div>
+        </div>
       </div>
 
       <div id="cw-widget-context">
@@ -608,6 +748,38 @@
     return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
   }
 
+  /* ================= 主题（auto 跟随 TradingView） ================= */
+
+  function detectTvTheme() {
+    const html = document.documentElement.classList;
+    const body = document.body ? document.body.classList : html;
+    if (html.contains('theme-dark') || body.contains('theme-dark')) return 'dark';
+    if (html.contains('theme-light') || body.contains('theme-light')) return 'light';
+    try {
+      if (window.matchMedia('(prefers-color-scheme: dark)').matches) return 'dark';
+    } catch { /* 无 matchMedia 环境按浅色处理 */ }
+    return 'light';
+  }
+
+  function effectiveTheme() {
+    if (state.themeMode === 'dark' || state.themeMode === 'light') return state.themeMode;
+    return detectTvTheme();
+  }
+
+  function applyTheme() {
+    host.querySelector('.cw-root').classList.toggle('light', effectiveTheme() === 'light');
+  }
+
+  function watchTheme() {
+    const reapply = () => { if (state.themeMode === 'auto') applyTheme(); };
+    const mo = new MutationObserver(reapply);
+    mo.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
+    if (document.body) mo.observe(document.body, { attributes: true, attributeFilter: ['class'] });
+    try {
+      window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', reapply);
+    } catch { /* 老浏览器没有 addEventListener 版媒询 */ }
+  }
+
   /* ================= 展开 / 收起 ================= */
 
   function setBallMode(open) {
@@ -649,6 +821,10 @@
     if (show) {
       $('set-token').value = state.token;
       $('set-port').value = String(state.port);
+      $('set-theme').value = state.themeMode;
+      for (let i = 1; i <= 3; i++) {
+        $('set-pct-' + i).value = state.riskPercents[i - 1] != null ? String(state.riskPercents[i - 1]) : '';
+      }
       renderSetStatus(state.connected ? { ok: true, text: '✓ 已连接' } : null);
     }
   }
@@ -681,6 +857,31 @@
     } else {
       renderSetStatus({ ok: false, text: '无法连接 127.0.0.1:' + state.port + '，确认 Cairn 正在运行' });
     }
+  }
+
+  function saveTheme() {
+    state.themeMode = $('set-theme').value;
+    store.set('theme', state.themeMode);
+    applyTheme();
+  }
+
+  // 三个百分比输入 change 时即时保存；非法值不动旧配置并提示。
+  function saveRiskPercents() {
+    const values = [];
+    for (let i = 1; i <= 3; i++) {
+      const raw = $('set-pct-' + i).value.trim();
+      if (!raw) continue;
+      const n = parseFloat(raw);
+      if (!Number.isFinite(n) || n <= 0 || n > 100) {
+        renderSetStatus({ ok: false, text: '百分比需为 0–100 之间的数字' });
+        return;
+      }
+      values.push(n);
+    }
+    state.riskPercents = values;
+    store.set('riskPercents', values);
+    renderSetStatus({ ok: true, text: values.length ? '✓ 仓位提示已保存' : '✓ 已保存（不显示仓位提示）' });
+    renderContext();
   }
 
   /* ================= 数据加载 ================= */
@@ -782,6 +983,7 @@
     closeCaseMenu()
     if (id === state.caseId) return
     state.caseId = id
+    state.editingCardId = ''
     store.set('caseId', id)
     renderCaseOptions()
     renderContext()
@@ -801,7 +1003,7 @@
     renderRisk(account || null);
   }
 
-  /* 余额与固定风险额（1% / 2%）：权益快照来自 Cairn 账户记录；无快照退回初始资金。 */
+  /* 余额与自定义百分比风险额：权益快照来自 Cairn 账户记录；无快照退回初始资金。 */
   function renderRisk(account) {
     const strip = $('risk-strip');
     if (!strip) return;
@@ -812,16 +1014,16 @@
     }
     const hasSnapshot = account.equity != null && Number.isFinite(account.equity);
     const base = hasSnapshot ? account.equity : account.initialBalance;
-    if (base == null || !Number.isFinite(base)) {
+    if (base == null || !Number.isFinite(base) || !state.riskPercents.length) {
       strip.classList.remove('show');
       return;
     }
     const fmt = (n) => n.toLocaleString('en-US', { maximumFractionDigits: base >= 1000 ? 0 : 2 });
     const sep = '<span class="rs-sep">·</span>';
+    const parts = state.riskPercents.map((p) => p + '% <b>' + fmt(base * p / 100) + '</b>');
     strip.innerHTML =
       '余额 <b>' + fmt(base) + '</b>' + (hasSnapshot ? '' : '（初始）') +
-      ' ' + sep + ' 1% <b>' + fmt(base * 0.01) + '</b>' +
-      ' ' + sep + ' 2% <b>' + fmt(base * 0.02) + '</b>';
+      ' ' + sep + ' ' + parts.join(' ' + sep + ' ');
     strip.title = account.currency ? '单位 ' + account.currency : '';
     strip.classList.add('show');
   }
@@ -834,19 +1036,39 @@
       const el = document.createElement('div');
       el.className = 'cw-card';
       el.style.setProperty('--pc', meta.color);
-      const barHtml = card.barRef != null
-        ? '<span class="mc-bar">BAR ' + card.barRef + '</span>'
-        : '';
-      el.innerHTML = `
-        <div class="mc-meta">
-          <span class="mc-phase"></span>
-          ${barHtml}
-          <span class="mc-time"></span>
-        </div>
-        <div class="mc-text"></div>`;
-      el.querySelector('.mc-phase').textContent = meta.label;
-      el.querySelector('.mc-time').textContent = card.createdAt ? fmtTime(card.createdAt) : '';
-      el.querySelector('.mc-text').textContent = card.rawText || '';
+      if (card.id === state.editingCardId) {
+        el.classList.add('editing');
+        const ta = document.createElement('textarea');
+        ta.className = 'ec-text';
+        ta.spellcheck = false;
+        ta.value = card.rawText || '';
+        const row = document.createElement('div');
+        row.className = 'ec-row';
+        row.innerHTML =
+          '<input class="ec-bar" inputmode="numeric" placeholder="BAR №（留空清除）">' +
+          '<button type="button" class="ec-cancel">取消</button>' +
+          '<button type="button" class="ec-save">保存</button>';
+        row.querySelector('.ec-bar').value = card.barRef != null ? String(card.barRef) : '';
+        row.querySelector('.ec-cancel').addEventListener('click', cancelEditCard);
+        row.querySelector('.ec-save').addEventListener('click', () => saveCardEdit(card.id, el));
+        el.append(ta, row);
+      } else {
+        const barHtml = card.barRef != null
+          ? '<span class="mc-bar">BAR ' + card.barRef + '</span>'
+          : '';
+        el.innerHTML = `
+          <div class="mc-meta">
+            <span class="mc-phase"></span>
+            ${barHtml}
+            <span class="mc-time"></span>
+            <button type="button" class="mc-edit" title="修改这张卡">✎</button>
+          </div>
+          <div class="mc-text"></div>`;
+        el.querySelector('.mc-phase').textContent = meta.label;
+        el.querySelector('.mc-time').textContent = card.createdAt ? fmtTime(card.createdAt) : '';
+        el.querySelector('.mc-text').textContent = card.rawText || '';
+        el.querySelector('.mc-edit').addEventListener('click', () => startEditCard(card.id));
+      }
       list.appendChild(el);
     }
     $('cs-count').textContent = '本次 Case 已有 ' + state.cards.length + ' 张卡';
@@ -983,6 +1205,77 @@
     }
   }
 
+  /* ================= 修改已登记卡片 ================= */
+
+  function startEditCard(id) {
+    state.editingCardId = id;
+    renderCards();
+    const ta = host.querySelector('.cw-card.editing .ec-text');
+    if (ta) {
+      ta.focus();
+      ta.setSelectionRange(ta.value.length, ta.value.length);
+    }
+  }
+
+  function cancelEditCard() {
+    state.editingCardId = '';
+    renderCards();
+  }
+
+  // 卡片修正：rawText 错字修正（后端负责把旧表述压入 rawTextHistory）+ barRef（null = 清除）。
+  // 契约：PUT /cases/{caseId}/cards/{cardId}，返回更新后的卡片。
+  // 后端 0.2.2 起才提供该路由；旧后端返回 404/immutable 时提示升级，编辑内容保留不丢。
+  async function saveCardEdit(id, el) {
+    const card = state.cards.find((c) => c.id === id);
+    if (!card || state.busy) return;
+    const text = el.querySelector('.ec-text').value.trim();
+    if (!text) { showToast('内容不能为空', 'err'); return; }
+    let barRef = null;
+    const barRaw = el.querySelector('.ec-bar').value.trim();
+    if (barRaw) {
+      const n = parseInt(barRaw, 10);
+      if (!Number.isInteger(n) || n < 1) { showToast('BAR 需为正整数', 'err'); return; }
+      barRef = n;
+    }
+    const prevBar = card.barRef == null ? null : card.barRef;
+    if (text === card.rawText && barRef === prevBar) { cancelEditCard(); return; }
+    if (!state.connected) {
+      const err = await connect({ silent: true });
+      if (err) { showToast('无法连接 Cairn', 'err'); showSettings(true); return; }
+    }
+
+    const btn = el.querySelector('.ec-save');
+    state.busy = true;
+    btn.disabled = true;
+    btn.textContent = '保存中…';
+    try {
+      const caseId = card.caseId || state.caseId;
+      const res = await api('PUT', '/cases/' + encodeURIComponent(caseId) + '/cards/' + encodeURIComponent(id), { rawText: text, barRef });
+      if (res.status === 401) {
+        state.connected = false;
+        showToast('Token 无效', 'err');
+        showSettings(true);
+        return;
+      }
+      if (res.status === 200 && res.json && res.json.id) {
+        state.cards = state.cards.map((c) => (c.id === id ? res.json : c));
+        state.editingCardId = '';
+        renderCards();
+        showToast('✓ 已修正（原表述已存档）');
+      } else if (res.status === 404 || res.status === 405 || /immutable/i.test((res.json && res.json.error) || '')) {
+        showToast('当前 Cairn 版本还不支持修改卡片，请更新 Cairn（0.2.2+）后重试', 'err');
+      } else {
+        showToast((res.json && res.json.error) || '保存失败', 'err');
+      }
+    } catch {
+      showToast('无法连接 Cairn', 'err');
+    } finally {
+      state.busy = false;
+      btn.disabled = false;
+      btn.textContent = '保存';
+    }
+  }
+
   /* ================= 新建 Case ================= */
 
   function defaultCaseTitle() {
@@ -1093,6 +1386,10 @@
       else showSettings(true);
     });
     $('set-save').addEventListener('click', saveSettings);
+    $('set-theme').addEventListener('change', saveTheme);
+    for (let i = 1; i <= 3; i++) {
+      $('set-pct-' + i).addEventListener('change', saveRiskPercents);
+    }
 
     // 键盘隔离（双保险）：浮窗 UI 直接挂在页面 DOM 上（非 Shadow DOM），TradingView 对聚焦的
     // input/textarea 会自行跳过快捷键；这里再兜一层——任何源自浮窗内部的按键在 window 捕获
@@ -1104,12 +1401,22 @@
       if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && inner === $('card-input')) {
         e.preventDefault();
         submitCard();
+      } else if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && inner && inner.classList.contains('ec-text')) {
+        e.preventDefault();
+        saveCardEdit(state.editingCardId, inner.closest('.cw-card'));
+      } else if (e.key === 'Enter' && inner && inner.classList.contains('ec-bar')) {
+        e.preventDefault();
+        saveCardEdit(state.editingCardId, inner.closest('.cw-card'));
       } else if (e.key === 'Enter' && (inner === $('bar-input') || inner === $('set-token') || inner === $('set-port'))) {
         e.preventDefault();
         if (inner === $('bar-input')) submitCard();
         else saveSettings();
+      } else if (e.key === 'Enter' && inner && inner.id && inner.id.indexOf('cw-set-pct-') === 0) {
+        e.preventDefault();
+        saveRiskPercents();
       } else if (e.key === 'Escape' && dock().classList.contains('open')) {
-        if ($('case-menu').classList.contains('show')) closeCaseMenu();
+        if (state.editingCardId) cancelEditCard();
+        else if ($('case-menu').classList.contains('show')) closeCaseMenu();
         else collapseWidget();
       }
       e.stopPropagation();
@@ -1193,6 +1500,8 @@
     renderCards();
     bindEvents();
     restoreDockPos();
+    applyTheme();
+    watchTheme();
 
     if (typeof GM_registerMenuCommand === 'function') {
       GM_registerMenuCommand('Cairn 连接设置', () => {
