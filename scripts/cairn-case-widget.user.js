@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Cairn 记一笔
 // @namespace    cairn
-// @version      0.2.1
+// @version      0.2.2
 // @description  TradingView 悬浮记录浮窗：口述或打字记录交易思考，实时写入本地 Cairn（127.0.0.1 本地 API）
 // @author       Cairn
 // @match        https://*.tradingview.com/*
@@ -1022,12 +1022,6 @@
     });
 
     $('submit-btn').addEventListener('click', submitCard);
-    $('card-input').addEventListener('keydown', (e) => {
-      if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); submitCard(); }
-    });
-    $('bar-input').addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') { e.preventDefault(); submitCard(); }
-    });
     $('ct-close').addEventListener('click', () => $('completeness-tip').classList.remove('show'));
 
     $('cards-expand').addEventListener('click', function () {
@@ -1058,24 +1052,32 @@
       else showSettings(true);
     });
     $('set-save').addEventListener('click', saveSettings);
-    $('set-token').addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') { e.preventDefault(); saveSettings(); }
-    });
-    $('set-port').addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') { e.preventDefault(); saveSettings(); }
-    });
 
-    // 键盘隔离：事件源自浮窗内部时一律截断冒泡（只 stopPropagation，不 preventDefault，
-    // 打字/粘贴/IME 不受影响）。TradingView 不认得 Shadow DOM 内的焦点（document.activeElement
-    // 是浮窗宿主 div），不截断的话字母和组合键会被它当自家快捷键触发。
-    root.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape' && dock().classList.contains('open')) {
+    // 键盘隔离：TradingView 不认得 Shadow DOM 内的焦点（键盘事件的 target 被重定向为宿主
+    // div，light-DOM 输入框则会被它自动跳过），且它的快捷键可能在 document/window 捕获阶段
+    // 监听，Shadow Root 内冒泡截断拦不住。因此任何源自浮窗内部的按键改在 window 捕获阶段
+    // （早于一切 document 监听）截断，浮窗自身的按键行为（提交/保存/Esc）由这一层代答。
+    // 只 stopPropagation，除提交/保存键外不 preventDefault：打字/粘贴/IME 组字不受影响。
+    function widgetKeydown(e) {
+      if (!e.composedPath().includes(host)) return;
+      const inner = root.activeElement;
+      if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && inner === $('card-input')) {
+        e.preventDefault();
+        submitCard();
+      } else if (e.key === 'Enter' && (inner === $('bar-input') || inner === $('set-token') || inner === $('set-port'))) {
+        e.preventDefault();
+        if (inner === $('bar-input')) submitCard();
+        else saveSettings();
+      } else if (e.key === 'Escape' && dock().classList.contains('open')) {
         if ($('case-menu').classList.contains('show')) closeCaseMenu();
         else collapseWidget();
       }
       e.stopPropagation();
-    });
-    root.addEventListener('keyup', (e) => e.stopPropagation());
+    }
+    window.addEventListener('keydown', widgetKeydown, true);
+    window.addEventListener('keyup', (e) => {
+      if (e.composedPath().includes(host)) e.stopPropagation();
+    }, true);
 
     // 点浮窗外部：收起 Case 菜单
     document.addEventListener('pointerdown', (e) => {
