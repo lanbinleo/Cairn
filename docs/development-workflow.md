@@ -133,6 +133,16 @@ Installer verification, when needed:
 pnpm release:check 0.1.1 -BuildInstaller
 ```
 
+## In-App Updater (Tauri updater)
+
+The app ships with the Tauri updater: Settings → 关于 → 检查更新 pulls `releases/latest/download/latest.json` and installs passive-NSIS updates.
+
+- Signing keypair lives on the release machine at `%USERPROFILE%\.tauri\cairn-updater.key` (passwordless, generated 2026-07-08). Its public key is baked into `src-tauri/tauri.conf.json` (`plugins.updater.pubkey`) and therefore into every shipped binary since v0.1.3.
+- `pnpm release:check x.y.z -BuildInstaller` sets `TAURI_SIGNING_PRIVATE_KEY_PATH`/`TAURI_SIGNING_PRIVATE_KEY_PASSWORD` from that key, builds installers with the main config (`createUpdaterArtifacts: true` → `.sig` files), and generates `bundle/latest.json` pointing at the GitHub release asset URL.
+- Release upload must include: NSIS setup.exe, MSI, and `latest.json` (asset name exactly `latest.json`). The endpoint is `releases/latest/download/latest.json`, so the newest release's manifest is always what clients check.
+- A build made through `pnpm tauri:build:local` (local config) skips updater artifacts — use it only for throwaway local installers.
+- Regenerating the keypair would break every already-shipped binary (they verify against the old public key); only do it deliberately and accept that old versions must update manually.
+
 ## Release Process
 
 1. Confirm branch and workspace status. Release work should happen from `dev/x.y.z`.
@@ -142,8 +152,9 @@ pnpm release:check 0.1.1 -BuildInstaller
 5. For installer verification, run `pnpm release:check x.y.z -BuildInstaller`.
 6. Confirm release artifacts:
    - `src-tauri/target/release/cairn.exe`
-   - `src-tauri/target/release/bundle/nsis/Cairn_x.y.z_x64-setup.exe` when installer build is requested
-   - `src-tauri/target/release/bundle/msi/Cairn_x.y.z_x64_en-US.msi` when installer build is requested
+   - `src-tauri/target/release/bundle/nsis/Cairn_x.y.z_x64-setup.exe` (+ `.sig`) when installer build is requested
+   - `src-tauri/target/release/bundle/msi/Cairn_x.y.z_x64_en-US.msi` (+ `.sig`) when installer build is requested
+   - `src-tauri/target/release/bundle/latest.json` when installer build is requested (upload with the release for in-app updates)
 7. Review the final diff.
 8. Commit release changes with a Conventional Commits message.
 9. Push the version branch and open a pull request into `master`.

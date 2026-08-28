@@ -1,6 +1,6 @@
 'use client'
 
-import { useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
+import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
 import { Check, ChevronDown, ChevronRight, GripVertical, Pencil, Plus, RotateCcw, Trash2 } from 'lucide-react'
 
 import { TAG_COLORS, tagColorClasses, tagColorNames, tagDotClasses } from '@/components/tag-badge'
@@ -158,7 +158,7 @@ function canSaveExecution(execution: Execution) {
   return isManagementExecutionAction(execution.action) && Number.isFinite(execution.price)
 }
 
-export function EditTradeDialog({ trade }: { trade: Trade }) {
+export function EditTradeDialog({ trade, openRequest }: { trade: Trade; openRequest?: number }) {
   const { updateTrade, deleteTrade, tagDefs, createTag, setTradeStatus } = useCairn()
   const [open, setOpen] = useState(false)
 
@@ -166,6 +166,7 @@ export function EditTradeDialog({ trade }: { trade: Trade }) {
   const [note, setNote] = useState(trade.note ?? '')
   const [sl, setSl] = useState(trade.initialStopLoss?.toString() ?? '')
   const [tp, setTp] = useState(trade.initialTakeProfit?.toString() ?? '')
+  const [ep, setEp] = useState(trade.initialEntryPrice?.toString() ?? '')
   const [status, setStatus] = useState(trade.status)
   const [executionRows, setExecutionRows] = useState<Execution[]>(trade.executions.map(editableExecution))
   const [expandedExecutionIds, setExpandedExecutionIds] = useState<Set<string>>(new Set())
@@ -177,10 +178,20 @@ export function EditTradeDialog({ trade }: { trade: Trade }) {
   const normalizedNewTagName = normalizeTagName(newTagName)
   const sortedTagDefs = sortTagDefsByColor(tagDefs)
 
+  /* 外部请求打开（如缺失计划价提醒的「手动填写」）：计数器变化时打开 */
+  const prevOpenRequestRef = useRef(openRequest)
+  useEffect(() => {
+    if (openRequest == null || openRequest === prevOpenRequestRef.current) return
+    prevOpenRequestRef.current = openRequest
+    resetForm()
+    setOpen(true)
+  }, [openRequest])
+
   function resetForm() {
     setNote(trade.note ?? '')
     setSl(trade.initialStopLoss?.toString() ?? '')
     setTp(trade.initialTakeProfit?.toString() ?? '')
+    setEp(trade.initialEntryPrice?.toString() ?? '')
     setStatus(trade.status)
     setExecutionRows(trade.executions.map((execution) => editableExecution({ ...execution })))
     setExpandedExecutionIds(new Set())
@@ -210,10 +221,12 @@ export function EditTradeDialog({ trade }: { trade: Trade }) {
   function handleSave() {
     const parsedSl = sl.trim() === '' ? undefined : Number(sl)
     const parsedTp = tp.trim() === '' ? undefined : Number(tp)
+    const parsedEp = ep.trim() === '' ? undefined : Number(ep)
     updateTrade(trade.id, {
       note: note.trim() === '' ? undefined : note.trim(),
       initialStopLoss: parsedSl != null && Number.isFinite(parsedSl) ? parsedSl : undefined,
       initialTakeProfit: parsedTp != null && Number.isFinite(parsedTp) ? parsedTp : undefined,
+      initialEntryPrice: parsedEp != null && Number.isFinite(parsedEp) ? parsedEp : undefined,
       executions: executionRows
         .map((execution) => normalizeExecution(execution, trade.id))
         .filter(canSaveExecution),
@@ -384,6 +397,19 @@ export function EditTradeDialog({ trade }: { trade: Trade }) {
 
           <TabsContent value="basic">
             <FieldGroup>
+              <Field>
+                <FieldLabel htmlFor="edit-trade-ep">初始入场价</FieldLabel>
+                <Input
+                  id="edit-trade-ep"
+                  type="number"
+                  inputMode="decimal"
+                  placeholder="未设置"
+                  value={ep}
+                  onChange={(e) => setEp(e.target.value)}
+                />
+                <FieldDescription>计划入场价（区别于成交均价）；绑定 Case 后可由 Entry 卡自动回填</FieldDescription>
+              </Field>
+
               <Field>
                 <FieldLabel htmlFor="edit-trade-sl">初始止损价</FieldLabel>
                 <Input

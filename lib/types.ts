@@ -14,6 +14,9 @@ export interface Account {
   initialBalance: number
   currency: string
   note?: string
+  /** 当前权益快照（initialBalance + 已平仓 PnL；派生数据，交易变化后由前端重算） */
+  equity?: number
+  equityUpdatedAt?: number
   createdAt: number
 }
 
@@ -106,9 +109,11 @@ export interface CaseMemoField {
   quote?: string
 }
 
-/** 入场前三分钟 memo：六字段 + 可选情绪。缺省字段代表原文没提到。 */
+/** 入场前三分钟 memo：七字段 + 可选情绪。缺省字段代表原文没提到。 */
 export interface CaseCardMemo {
   direction?: CaseMemoField
+  /** 计划入场价或入场触发方式（schema v2 起提取） */
+  entryPrice?: CaseMemoField
   stopLoss?: CaseMemoField
   target?: CaseMemoField
   confidence?: CaseMemoField
@@ -128,6 +133,10 @@ export interface CaseCardAnalysis {
   labels: CaseCardLabel[]
   memo: CaseCardMemo | null
   missingFields: string[]
+  /** 用户手动修正过标签/memo；重新识别前会提示覆盖 */
+  userAdjusted?: boolean
+  /** 用户忽略了最近一次过期（= 当时 rawTextEditedAt）；原文再改则重新出现 */
+  staleDismissedAt?: number
 }
 
 /** Case 内的一条原始记录。rawText 可修正错字，旧值自动进 rawTextHistory。 */
@@ -244,6 +253,8 @@ export interface Trade {
   initialStopLoss?: number
   /** 初始止盈价（复盘图表参考；可后补） */
   initialTakeProfit?: number
+  /** 计划入场价（区别于成交均价；可后补） */
+  initialEntryPrice?: number
   executions: Execution[]
   events: TradeEvent[]
   /** 参考图（备份截图）attachment id；旧数据可能是 URL/data URL */

@@ -1,6 +1,6 @@
 'use client'
 
-import type { ReactNode } from 'react'
+import { useMemo, type ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 import { Badge } from '@/components/ui/badge'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
@@ -8,7 +8,7 @@ import { PnlText, RText } from '@/components/pnl-text'
 import { TradeTitle } from '@/components/trade-title'
 import { TagBadge } from '@/components/tag-badge'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
-import { computeTradeMetrics } from '@/lib/metrics'
+import { computeTradeMetrics, equityBeforeByTrade } from '@/lib/metrics'
 import { fmtUtcDateTime, fmtDuration } from '@/lib/format'
 import { useCairn } from '@/lib/store'
 import { sortTagNamesByColor } from '@/lib/tags'
@@ -69,8 +69,22 @@ export function TradesTable({
   /** 是否显示 账户/Period 列（全局交易列表用） */
   showContext?: boolean
 }) {
-  const { getAccount, getPeriod, symbols, tagDefs } = useCairn()
+  const { getAccount, getPeriod, symbols, tagDefs, accounts, trades: allTrades } = useCairn()
   const sorted = [...trades].sort((a, b) => computeTradeMetrics(b).entryTime - computeTradeMetrics(a).entryTime)
+  /**
+   * 每笔入场前权益（PnL% 分母）。必须用全账户全量交易推导——trades prop 在
+   * 调用方可能是筛选/分页/最近的子集，按子集累计会把分母重置回初始资金。
+   */
+  const equityBefore = useMemo(() => {
+    const merged = new Map<string, number>()
+    for (const account of accounts) {
+      const accountTrades = allTrades.filter((trade) => trade.accountId === account.id)
+      for (const [tradeId, equity] of equityBeforeByTrade(accountTrades, account.initialBalance)) {
+        merged.set(tradeId, equity)
+      }
+    }
+    return merged
+  }, [accounts, allTrades])
 
   const symbolLabel = (symbolId: string) => {
     const s = symbols.find((x) => x.id === symbolId)
@@ -89,6 +103,7 @@ export function TradesTable({
           <TableHead className="w-40">进场时间（UTC）</TableHead>
           <TableHead className="w-16 text-right">持仓</TableHead>
           <TableHead className="w-24 text-right">PnL</TableHead>
+          <TableHead className="w-20 text-right">PnL%</TableHead>
           <TableHead className="w-20 text-right">R</TableHead>
           <TableHead className="w-20">状态</TableHead>
         </TableRow>
@@ -167,6 +182,24 @@ export function TradesTable({
               </TableCell>
               <TableCell className="text-right">
                 {trade.status === 'closed' ? <PnlText value={m.pnl} currency={account?.currency} /> : <span className="text-muted-foreground">—</span>}
+              </TableCell>
+              <TableCell className="text-right">
+                {trade.status === 'closed' && (() => {
+                  const base = equityBefore.get(trade.id)
+                  if (base == null || base === 0) return <span className="text-muted-foreground">—</span>
+                  const pct = (m.pnl / base) * 100
+                  return (
+                    <span
+                      className="font-mono tabular-nums"
+                      title="PnL ÷ 该笔入场前权益（初始资金 + 此前已平仓累计 PnL）"
+                    >
+                      <span className={cn(pct > 0 ? 'text-profit' : pct < 0 ? 'text-loss' : 'text-muted-foreground')}>
+                        {pct > 0 ? '+' : ''}{pct.toFixed(2)}%
+                      </span>
+                    </span>
+                  )
+                })()}
+                {trade.status !== 'closed' && <span className="text-muted-foreground">—</span>}
               </TableCell>
               <TableCell className="text-right">
                 {trade.status === 'closed' ? <RText value={m.rMultiple} /> : <span className="text-muted-foreground">—</span>}

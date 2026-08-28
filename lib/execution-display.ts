@@ -13,8 +13,19 @@ function executionBucket(time: number, barIntervalMs: number) {
   return Math.floor(time / barIntervalMs) * barIntervalMs
 }
 
-function canAggregateExit(execution: Execution) {
-  return hasPositionFill(execution) && (execution.action === 'scale-out' || execution.action === 'exit')
+/** 仓位方向：入场侧（entry/scale-in）或离场侧（exit/scale-out）；管理动作不参与 */
+function fillSide(action: Execution['action']): 'entry' | 'exit' | null {
+  if (action === 'entry' || action === 'scale-in') return 'entry'
+  if (action === 'exit' || action === 'scale-out') return 'exit'
+  return null
+}
+
+/**
+ * 同一根 K 线内同价同侧的成交聚合为一笔展示（冰山拆单：一次下单被交易所
+ * 拆成多笔 fill，数据层保持原样，仅展示合并）。
+ */
+function canAggregate(execution: Execution) {
+  return hasPositionFill(execution) && fillSide(execution.action) != null
 }
 
 function aggregateGroup(group: Execution[]): DisplayExecution {
@@ -27,6 +38,7 @@ function aggregateGroup(group: Execution[]): DisplayExecution {
     }
   }
 
+  const side = fillSide(group[0].action) ?? 'exit'
   const quantity = group.reduce((sum, execution) => sum + (execution.quantity ?? 0), 0)
   const weightedPrice = quantity > 0
     ? group.reduce((sum, execution) => sum + (execution.quantity ?? 0) * (execution.price ?? 0), 0) / quantity
@@ -36,7 +48,10 @@ function aggregateGroup(group: Execution[]): DisplayExecution {
 
   return {
     ...group[0],
-    action: group.some((execution) => execution.action === 'exit') ? 'exit' : 'scale-out',
+    action:
+      side === 'entry'
+        ? (group.some((execution) => execution.action === 'entry') ? 'entry' : 'scale-in')
+        : (group.some((execution) => execution.action === 'exit') ? 'exit' : 'scale-out'),
     time: Math.min(...group.map((execution) => execution.time)),
     price: weightedPrice,
     quantity,
@@ -53,7 +68,8 @@ export function aggregateDisplayExecutions(executions: Execution[], barIntervalM
   const passthrough: DisplayExecution[] = []
 
   for (const execution of executions) {
-    if (!canAggregateExit(execution)) {
+    const side = canAggregate(execution) ? fillSide(execution.action) : null
+    if (side == null) {
       passthrough.push({
         ...execution,
         aggregateCount: 1,
@@ -66,6 +82,7 @@ export function aggregateDisplayExecutions(executions: Execution[], barIntervalM
     const key = [
       executionBucket(execution.time, barIntervalMs),
       execution.price,
+      side,
     ].join(':')
     groups.set(key, [...(groups.get(key) ?? []), execution])
   }

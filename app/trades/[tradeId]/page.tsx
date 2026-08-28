@@ -1,6 +1,6 @@
 'use client'
 
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Link, Navigate, useNavigate, useParams } from 'react-router-dom'
 import { CheckCircle2, ChevronDown, ChevronRight, Clipboard, Copy, ImagePlus, NotebookPen, Trash2 } from 'lucide-react'
 
@@ -15,6 +15,7 @@ import { TradeProcessScoreCard } from '@/components/trade-process-score'
 import { TradePlanCompareCard } from '@/components/trade-plan-compare'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import {
   DropdownMenu,
@@ -24,12 +25,12 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { Separator } from '@/components/ui/separator'
 import { useCairn } from '@/lib/store'
-import { executionActionLabel, isPositionExecutionAction, orderTypeLabel } from '@/lib/executions'
+import { executionActionLabel, hasPositionFill, isPositionExecutionAction, orderTypeLabel } from '@/lib/executions'
 import { aggregateDisplayExecutions } from '@/lib/execution-display'
 import { computeTradeMetrics } from '@/lib/metrics'
 import { fmtPrice, fmtDuration, fmtUtcDateTime, fmtUtcDate, fmtMoney } from '@/lib/format'
 import { sortTagNamesByColor } from '@/lib/tags'
-import { barNumberToTime, timeToBarNumber, utcDayStart } from '@/lib/bar-time'
+import { resolveCaseCardTimesForTrade, timeToBarNumber } from '@/lib/bar-time'
 import { readFileAsDataUrl } from '@/lib/tradingview-import'
 import { createTradeTransferPayload, stringifyTradeTransfer } from '@/lib/trade-transfer'
 import { CHART_TIMEFRAMES, chartTimeframeLabel, chartTimeframeMinutes } from '@/lib/chart-timeframes'
@@ -67,7 +68,22 @@ export default function TradeDetailPage() {
   const [showEntryLine, setShowEntryLine] = useState(true)
   const [activeTab, setActiveTab] = useState<TradeDetailTab>('overview')
   const [targetCaseCardId, setTargetCaseCardId] = useState<string>()
-  const { getTrade, getAccount, getPeriod, getSymbol, getNotesMentioningTrade, symbolLabel, setTradeStatus, updateTrade, createNote, createImageAttachment, deleteAttachment, getChartCandles, tagDefs, cases, caseCards, caseBindings } = useCairn()
+  const [planPromptOpen, setPlanPromptOpen] = useState(false)
+  const [planPrefillHint, setPlanPrefillHint] = useState('')
+  const [editOpenRequest, setEditOpenRequest] = useState(0)
+  const planPromptShownRef = useRef<string | null>(null)
+  const { getTrade, getAccount, getPeriod, getSymbol, getNotesMentioningTrade, symbolLabel, setTradeStatus, updateTrade, createNote, createImageAttachment, deleteAttachment, getChartCandles, tagDefs, cases, caseCards, caseBindings, prefillTradePlanFromBoundCase } = useCairn()
+  /* 缺失计划价提醒：每笔 Trade 每次访问最多弹一次；「忽略」持久化，「待会儿提醒」下次访问再弹 */
+  useEffect(() => {
+    const current = getTrade(tradeId)
+    if (!current || current.status !== 'closed') return
+    if (current.initialStopLoss != null && current.initialTakeProfit != null) return
+    if (localStorage.getItem(`cairn.trade-plan-prompt.${current.id}`) === 'ignored') return
+    if (planPromptShownRef.current === current.id) return
+    planPromptShownRef.current = current.id
+    setPlanPrefillHint('')
+    setPlanPromptOpen(true)
+  }, [getTrade, tradeId])
   const trade = getTrade(tradeId)
   if (!trade) return <Navigate to="/trades" replace />
   const activeTrade = trade
@@ -78,7 +94,8 @@ export default function TradeDetailPage() {
   const m = computeTradeMetrics(trade)
   const tags = sortTagNamesByColor(trade.tags, tagDefs)
   const executionTimes = trade.executions.map((execution) => execution.time)
-  const chartPadding = chartTimeframeMinutes(chartTimeframe) * 60_000 * 80
+  const barMinutes = chartTimeframeMinutes(chartTimeframe)
+  const chartPadding = barMinutes * 60_000 * 80
   const chartStart = executionTimes.length ? Math.min(...executionTimes) - chartPadding : undefined
   const chartEnd = executionTimes.length ? Math.max(...executionTimes) + chartPadding : undefined
   const libraryBars = getChartCandles(trade.symbolId, chartTimeframe, chartStart, chartEnd)
@@ -88,14 +105,34 @@ export default function TradeDetailPage() {
   const boundCase = tradeBinding ? cases.find((caseRecord) => caseRecord.id === tradeBinding.caseId) : undefined
   const boundCaseCards = boundCase ? caseCards.filter((card) => card.caseId === boundCase.id) : []
   const entryMemo = boundCaseCards.find((card) => card.phase === 'entry')?.aiAnalysis?.memo ?? null
-  const caseMarkers: TradeChartCaseMarker[] = boundCaseCards.flatMap((card) => card.barRef == null ? [] : [{
-    cardId: card.id,
-    barNumber: card.barRef,
-    time: barNumberToTime(utcDayStart(m.entryTime), card.barRef, chartTimeframeMinutes(chartTimeframe)),
-    phase: card.phase,
-    label: casePhaseLabel[card.phase],
-    detail: card.rawText,
-  }])
+  const fillTimes = trade.executions.filter(hasPositionFill).map((execution) => execution.time)
+  const anchorTime = fillTimes.length ? Math.min(...fillTimes) : (executionTimes.length ? Math.min(...executionTimes) : undefined)
+  const cardWindow = anchorTime == null ? undefined : {
+    anchor: anchorTime,
+    start: bars.length ? bars[0].time : anchorTime,
+    end: bars.length ? bars[bars.length - 1].time : anchorTime,
+  }
+  const cardBarTimes = cardWindow
+    ? resolveCaseCardTimesForTrade(boundCaseCards, barMinutes, cardWindow)
+    : new Map<string, { time: number; invalid: boolean }>()
+  const barIntervalMs = barMinutes * 60_000
+  const caseMarkers: TradeChartCaseMarker[] = boundCaseCards.flatMap((card) => {
+    const resolved = cardBarTimes.get(card.id)
+    if (!resolved) return []
+    return [{
+      cardId: card.id,
+      barNumber: timeToBarNumber(resolved.time, barMinutes),
+      time: resolved.time,
+      phase: card.phase,
+      invalid: resolved.invalid,
+      label: casePhaseLabel[card.phase],
+      detail: card.rawText,
+    }]
+  })
+  const inRangeCaseMarkers = cardWindow
+    ? caseMarkers.filter((marker) => marker.time >= cardWindow.start - barIntervalMs && marker.time <= cardWindow.end + barIntervalMs)
+    : []
+  const outOfRangeCaseMarkerCount = caseMarkers.length - inRangeCaseMarkers.length
 
   function createLinkedNote() {
     const note = createNote({
@@ -163,14 +200,14 @@ export default function TradeDetailPage() {
       const label = e.action === 'stop' ? stopLabelForExecutionIndex(executionIndex) : (executionActionLabel[e.action] ?? e.action)
       const priceText = e.price == null ? '' : fmtPrice(e.price, symbol?.pricePrecision)
       const isPositionAction = isPositionExecutionAction(e.action)
-      const aggregateText = e.aggregateCount > 1 ? ` · 合并 ${e.aggregateCount} 笔同 K 线同价离场` : ''
+      const aggregateText = e.aggregateCount > 1 ? ` · 合并 ${e.aggregateCount} 笔同 K 线同价成交` : ''
       return {
         kind: 'exec' as const,
         time: e.time,
         title: isPositionAction ? `${label} ${e.quantity ?? '—'} @ ${priceText || '—'}` : `${label}${priceText ? ` -> ${priceText}` : ''}`,
         detail: `${orderTypeLabel[e.orderType] ?? e.orderType}${e.anchorPrice == null ? '' : ` · anchor ${fmtPrice(e.anchorPrice, symbol?.pricePrecision)}`}${e.signal ? ` · 信号 ${e.signal}` : ''}${aggregateText}`,
         tone: e.action === 'entry' || e.action === 'scale-in' || e.action.startsWith('target') ? 'entry' : 'exit',
-        barNumber: timeToBarNumber(e.time, 5),
+        barNumber: timeToBarNumber(e.time, barMinutes),
       }
     }),
     ...trade.events.map((ev) => ({
@@ -179,18 +216,22 @@ export default function TradeDetailPage() {
       title: ev.price == null ? eventLabel[ev.type] : `${eventLabel[ev.type]} -> ${fmtPrice(ev.price, symbol?.pricePrecision)}`,
       detail: ev.note ?? '',
       tone: ev.type.startsWith('sl') ? 'sl' : 'tp',
-      barNumber: timeToBarNumber(ev.time, 5),
+      barNumber: timeToBarNumber(ev.time, barMinutes),
     })),
-    ...boundCaseCards.map((card) => ({
-      kind: 'case' as const,
-      time: card.barRef ? barNumberToTime(utcDayStart(m.entryTime), card.barRef, 5) : card.createdAt,
-      title: casePhaseLabel[card.phase],
-      detail: card.rawText,
-      tone: 'case' as const,
-      cardId: card.id,
-      barNumber: card.barRef,
-      phase: card.phase,
-    })),
+    ...boundCaseCards.map((card) => {
+      const resolved = cardBarTimes.get(card.id)
+      const time = resolved?.time ?? card.createdAt
+      return {
+        kind: 'case' as const,
+        time,
+        title: `${casePhaseLabel[card.phase]}${resolved?.invalid ? ' · BAR 异常' : ''}`,
+        detail: card.rawText,
+        tone: 'case' as const,
+        cardId: card.id,
+        barNumber: timeToBarNumber(time, barMinutes),
+        phase: card.phase,
+      }
+    }),
   ].sort((a, b) => a.time - b.time)
 
   return (
@@ -252,9 +293,61 @@ export default function TradeDetailPage() {
               标记为已平仓
             </Button>
           )}
-          <EditTradeDialog trade={trade} />
+          <EditTradeDialog trade={trade} openRequest={editOpenRequest} />
         </div>
       </header>
+
+      <Dialog open={planPromptOpen} onOpenChange={setPlanPromptOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>缺少计划信息</DialogTitle>
+            <DialogDescription>
+              这笔已平仓的 Trade 还缺 {[
+                trade.initialStopLoss == null && '初始止损',
+                trade.initialTakeProfit == null && '初始止盈',
+              ].filter(Boolean).join('、')}
+              ，缺失时 R 与过程分不完整。可以现在补，也可以待会儿再说。
+            </DialogDescription>
+          </DialogHeader>
+          {planPrefillHint && <p className="text-sm text-muted-foreground">{planPrefillHint}</p>}
+          <DialogFooter className="flex-wrap gap-2 sm:flex-wrap">
+            <Button
+              variant="ghost"
+              className="text-muted-foreground"
+              onClick={() => {
+                localStorage.setItem(`cairn.trade-plan-prompt.${trade.id}`, 'ignored')
+                setPlanPromptOpen(false)
+              }}
+            >
+              忽略
+            </Button>
+            <Button variant="outline" onClick={() => setPlanPromptOpen(false)}>待会儿提醒</Button>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setPlanPromptOpen(false)
+                setEditOpenRequest((n) => n + 1)
+              }}
+            >
+              手动填写
+            </Button>
+            {boundCase && (
+              <Button
+                onClick={() => {
+                  const filled = prefillTradePlanFromBoundCase(trade.id)
+                  if (filled) {
+                    setPlanPromptOpen(false)
+                  } else {
+                    setPlanPrefillHint('Entry 卡还没有可用的 memo（先在 Case 页点「AI 整理」，或手动填写）。')
+                  }
+                }}
+              >
+                从 Entry 卡填入
+              </Button>
+            )}
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as TradeDetailTab)} className="gap-6">
         <TabsList className="h-10">
@@ -305,16 +398,17 @@ export default function TradeDetailPage() {
                 trade={trade}
                 showTrailLines={showTrailLines}
                 showEntryLine={showEntryLine}
-                caseMarkers={caseMarkers}
+                caseMarkers={inRangeCaseMarkers}
+                pricePrecision={symbol?.pricePrecision}
                 onCaseMarkerClick={(cardId) => {
                   setTargetCaseCardId(cardId)
                   setActiveTab('case')
                 }}
               />
-              {caseMarkers.length > 0 && (
+              {inRangeCaseMarkers.length > 0 && (
                 <div className="mt-3 flex flex-wrap items-center gap-1.5" aria-label="Case Card BAR 标记">
                   <span className="mr-1 text-xs text-muted-foreground">Case Cards</span>
-                  {caseMarkers.map((marker) => (
+                  {inRangeCaseMarkers.map((marker) => (
                     <Button
                       key={`${marker.cardId}-${marker.barNumber}`}
                       variant="outline"
@@ -324,9 +418,13 @@ export default function TradeDetailPage() {
                         setActiveTab('case')
                       }}
                     >
-                      BAR {marker.barNumber}
+                      {marker.label ?? marker.phase}
+                      {marker.invalid ? ' · BAR 异常' : ` · BAR ${marker.barNumber}`}
                     </Button>
                   ))}
+                  {outOfRangeCaseMarkerCount > 0 && (
+                    <span className="ml-1 text-xs text-muted-foreground">{outOfRangeCaseMarkerCount} 张卡片时间在图表范围外</span>
+                  )}
                 </div>
               )}
               <p className="mt-2 text-xs text-muted-foreground">
