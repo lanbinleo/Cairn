@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Cairn 记一笔
 // @namespace    cairn
-// @version      0.2.0
+// @version      0.2.1
 // @description  TradingView 悬浮记录浮窗：口述或打字记录交易思考，实时写入本地 Cairn（127.0.0.1 本地 API）
 // @author       Cairn
 // @match        https://*.tradingview.com/*
@@ -1065,13 +1065,17 @@
       if (e.key === 'Enter') { e.preventDefault(); saveSettings(); }
     });
 
-    // Esc：先收 Case 菜单，再收面板（事件源自浮窗内部时不影响 TradingView 自身快捷键）
+    // 键盘隔离：事件源自浮窗内部时一律截断冒泡（只 stopPropagation，不 preventDefault，
+    // 打字/粘贴/IME 不受影响）。TradingView 不认得 Shadow DOM 内的焦点（document.activeElement
+    // 是浮窗宿主 div），不截断的话字母和组合键会被它当自家快捷键触发。
     root.addEventListener('keydown', (e) => {
-      if (e.key !== 'Escape' || !dock().classList.contains('open')) return;
+      if (e.key === 'Escape' && dock().classList.contains('open')) {
+        if ($('case-menu').classList.contains('show')) closeCaseMenu();
+        else collapseWidget();
+      }
       e.stopPropagation();
-      if ($('case-menu').classList.contains('show')) closeCaseMenu();
-      else collapseWidget();
     });
+    root.addEventListener('keyup', (e) => e.stopPropagation());
 
     // 点浮窗外部：收起 Case 菜单
     document.addEventListener('pointerdown', (e) => {
