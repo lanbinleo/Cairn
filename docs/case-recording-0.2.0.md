@@ -464,3 +464,14 @@ The 0.2.0 design should eventually verify that:
 10. Should `forward` / `retrospective` be recorded at Case level or Card level?
 11. How should pre-entry market commentary appear when it applies to more than one possible Trade?
 12. Should Cairn remain running in the tray, or should a separate lightweight local service receive browser records?
+
+## 13. 0.2.1 增注（实际使用反馈修订）
+
+首个真实回放复盘流程跑通后的修订（问题 6 的部分答案在这里落地）：
+
+- **跨天 barRef 解析改锚定 Trade 首笔成交日**（`resolveCaseCardTimesForTrade`）：回放/复盘场景下卡片 `createdAt` 是录制墙钟时间，与图表日期无关，不能做锚点。越界序号（语音误识别如 2265）不参与推导；跨日推导越窗的回看区间卡按创建顺序兜底；无 BAR 卡沿用上一张 +1ms。记录顺序优先于 bar 数学。
+- **AI 逐卡自动整理**：浮窗/REST 新建 Card 后后台自动识别（设置可关，失败自动重试一次后静默记日志）；幂等重放不触发。
+- **AI 结果可人工修正**：barRef 内联编辑（含清除）、memo 字段编辑（missingFields 机械重算）、span 标签整理（改/删/选中打标）。修正标记 `userAdjusted`，重新识别前确认。
+- **memo schema v2**（0.2.1-schema-2 / 0.2.1-prompt-2）：新增第七字段 `entryPrice`（计划入场价/触发方式），喂给 Trade 的 计划 vs 实际 与绑定后的自动回填。
+- **过期可忽略**：`staleDismissedAt` 记录忽略时点，原文再改才重新提示。
+- **默认占位标题自动拟题**：绑定 Trade 后，仅当标题仍是占位样式（未命名/日期/观察 HH:MM/Trade #N Case）时替换。
