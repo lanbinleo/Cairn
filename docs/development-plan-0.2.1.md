@@ -52,6 +52,7 @@
 ## 验证状态
 
 - `pnpm typecheck` / `pnpm build` / `pnpm test`（11 例）/ `cargo check` / `cargo test`（23 过 2 忽略）全部通过。
+- 2026-08-28 Leo code review（v0.2.0..dev/0.2.1）后修复六项：latest.json BOM（阻断，改 UTF8Encoding(false) 无 BOM 写入）、PnL% 分母改全量交易推导（子集累计会重置回初始资金）、AI 写回改重读现记录只覆盖 aiAnalysis + 自动分析不覆盖 userAdjusted + 前端只吸收分析结果、计划价回填「每 Trade 一次」localStorage 持久化、MemoEditor confidence 校验、批量整理限流并发 3。
 - 待做：`pnpm tauri:dev:isolated` 隔离环境人工过一遍（跨天解析、毒 BAR 修正、冰山、自动整理/拟题、编辑器、折叠布局、浮窗权益、PnL%、提醒模态）。
 
 ## 顺延（0.2.1 backlog 未变）
