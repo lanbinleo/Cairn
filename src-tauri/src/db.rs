@@ -698,7 +698,7 @@ fn save_case(conn: &Connection, id: &str, data: Value) -> Result<(), String> {
     Ok(())
 }
 
-fn save_case_card(conn: &Connection, id: &str, mut data: Value) -> Result<(), String> {
+pub(crate) fn save_case_card(conn: &Connection, id: &str, mut data: Value) -> Result<(), String> {
     let raw_text = data
         .get("rawText")
         .and_then(Value::as_str)

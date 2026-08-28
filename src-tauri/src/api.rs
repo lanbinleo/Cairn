@@ -304,7 +304,7 @@ pub fn start_server(app: AppHandle) {
 fn add_cors_headers<R: Read>(response: &mut tiny_http::Response<R>) {
     for (name, value) in [
         ("Access-Control-Allow-Origin", "*"),
-        ("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS"),
+        ("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS"),
         ("Access-Control-Allow-Headers", "Authorization, Content-Type"),
         ("Content-Type", "application/json; charset=utf-8"),
     ] {
@@ -431,6 +431,9 @@ pub(crate) fn handle_request(
         }),
         ("POST", ["api", "v1", "cases", case_id, "cards"]) => {
             run(|| create_case_card(conn, case_id, &parsed_body, now))
+        }
+        ("PUT", ["api", "v1", "cases", case_id, "cards", card_id]) => {
+            run(|| update_case_card(conn, case_id, card_id, &parsed_body))
         }
         ("POST", ["api", "v1", "bindings"]) => run(|| create_binding(conn, &parsed_body, now)),
         ("DELETE", ["api", "v1", "bindings", binding_id]) => {
@@ -683,6 +686,45 @@ fn create_case_card(
     }
     db::save_record_in_tx(conn, "caseCards", &id, data.clone())?;
     Ok((data, true))
+}
+
+/// 卡片修正（错字 / 漏填 BAR）：只动 rawText 与 barRef，其余字段（phase、createdAt、
+/// aiAnalysis 等）原样保留。rawText 变化的 rawTextHistory / rawTextEditedAt 落库
+/// 由 save_case_card 统一处理；barRef 缺省保持不变，显式 null 为清除。
+fn update_case_card(
+    conn: &Connection,
+    case_id: &str,
+    card_id: &str,
+    body: &Value,
+) -> Result<(Value, bool), String> {
+    let mut data = db::read_record_by_id(conn, "caseCards", card_id)?
+        .filter(|card| card.get("caseId").and_then(Value::as_str) == Some(case_id))
+        .ok_or_else(|| format!("case card not found: {card_id}"))?;
+    let raw_text = require_str(body, "rawText")?;
+    data["rawText"] = json!(raw_text);
+    match body.get("barRef") {
+        Some(Value::Null) => {
+            if let Value::Object(map) = &mut data {
+                map.remove("barRef");
+            }
+        }
+        Some(value) => {
+            let parsed = value
+                .as_i64()
+                .ok_or_else(|| "invalid barRef: must be an integer or null".to_string())?;
+            // 与前端 MAX_BAR_NUMBER（components/case-card-timeline.tsx）同界：
+            // BAR 按 UTC 日重置，最小 1 分钟周期 → 一天最多 1440 根。
+            if !(1..=1440).contains(&parsed) {
+                return Err("invalid barRef: must be between 1 and 1440".to_string());
+            }
+            data["barRef"] = json!(parsed);
+        }
+        None => {}
+    }
+    db::save_case_card(conn, card_id, data)?;
+    let updated = db::read_record_by_id(conn, "caseCards", card_id)?
+        .ok_or_else(|| format!("case card not found after update: {card_id}"))?;
+    Ok((updated, true))
 }
 
 fn create_binding(conn: &Connection, body: &Value, now: u64) -> Result<(Value, bool), String> {
@@ -1007,6 +1049,152 @@ mod tests {
 
         let cards = call(&conn, "GET", "/api/v1/cases/case-1/cards", json!({}));
         assert_eq!(cards.body["cards"].as_array().map(Vec::len), Some(1));
+    }
+
+    #[test]
+    fn update_card_edits_raw_text_and_bar_ref_preserving_history() {
+        let conn = setup_conn();
+        call(
+            &conn,
+            "POST",
+            "/api/v1/cases",
+            json!({ "id": "case-1", "title": "T", "accountId": "acct-1", "periodId": "period-1" }),
+        );
+        let created = call(
+            &conn,
+            "POST",
+            "/api/v1/cases/case-1/cards",
+            json!({ "id": "card-1", "phase": "entry", "rawText": "BAR38 做多，止损5295", "entryDecision": "executed" }),
+        );
+        assert_eq!(created.status, 200);
+
+        // 错字修正 + 补 barRef：rawTextHistory 记旧表述，其余字段原样保留
+        let edited = call(
+            &conn,
+            "PUT",
+            "/api/v1/cases/case-1/cards/card-1",
+            json!({ "rawText": "BAR 38 做多，止损 5295", "barRef": 38 }),
+        );
+        assert_eq!(edited.status, 200);
+        assert!(edited.data_changed);
+        assert_eq!(edited.body["rawText"], "BAR 38 做多，止损 5295");
+        assert_eq!(edited.body["rawTextHistory"][0], "BAR38 做多，止损5295");
+        assert!(edited.body["rawTextEditedAt"].as_u64().is_some());
+        assert_eq!(edited.body["phase"], "entry");
+        assert_eq!(edited.body["entryDecision"], "executed");
+        assert_eq!(edited.body["barRef"], 38);
+
+        // barRef: null 显式清除；rawText 未变则不再追加历史
+        let cleared = call(
+            &conn,
+            "PUT",
+            "/api/v1/cases/case-1/cards/card-1",
+            json!({ "rawText": "BAR 38 做多，止损 5295", "barRef": null }),
+        );
+        assert_eq!(cleared.status, 200);
+        assert!(cleared.body.get("barRef").is_none());
+        assert_eq!(
+            cleared.body["rawTextHistory"].as_array().map(Vec::len),
+            Some(1)
+        );
+
+        // barRef 缺省保持不变（此卡已无 barRef，依旧没有）
+        let kept = call(
+            &conn,
+            "PUT",
+            "/api/v1/cases/case-1/cards/card-1",
+            json!({ "rawText": "BAR 38 做多，止损位 5295" }),
+        );
+        assert_eq!(kept.status, 200);
+        assert!(kept.body.get("barRef").is_none());
+
+        let cards = call(&conn, "GET", "/api/v1/cases/case-1/cards", json!({}));
+        assert_eq!(cards.body["cards"].as_array().map(Vec::len), Some(1));
+        assert_eq!(
+            cards.body["cards"][0]["rawText"],
+            "BAR 38 做多，止损位 5295"
+        );
+    }
+
+    #[test]
+    fn update_card_validates_and_404s() {
+        let conn = setup_conn();
+        call(
+            &conn,
+            "POST",
+            "/api/v1/cases",
+            json!({ "id": "case-1", "title": "T", "accountId": "acct-1", "periodId": "period-1" }),
+        );
+        call(
+            &conn,
+            "POST",
+            "/api/v1/cases/case-1/cards",
+            json!({ "id": "card-1", "phase": "intermediate", "rawText": "持有观察" }),
+        );
+
+        // 卡不存在 / 挂在别的 Case 下 → 404
+        assert_eq!(
+            call(
+                &conn,
+                "PUT",
+                "/api/v1/cases/case-1/cards/card-404",
+                json!({ "rawText": "x" })
+            )
+            .status,
+            404
+        );
+        assert_eq!(
+            call(
+                &conn,
+                "PUT",
+                "/api/v1/cases/case-404/cards/card-1",
+                json!({ "rawText": "x" })
+            )
+            .status,
+            404
+        );
+
+        // 校验：rawText 必填、barRef 必须为正整数或 null
+        assert_eq!(
+            call(
+                &conn,
+                "PUT",
+                "/api/v1/cases/case-1/cards/card-1",
+                json!({ "rawText": "  " })
+            )
+            .status,
+            400
+        );
+        assert_eq!(
+            call(
+                &conn,
+                "PUT",
+                "/api/v1/cases/case-1/cards/card-1",
+                json!({ "rawText": "x", "barRef": 0 })
+            )
+            .status,
+            400
+        );
+        assert_eq!(
+            call(
+                &conn,
+                "PUT",
+                "/api/v1/cases/case-1/cards/card-1",
+                json!({ "rawText": "x", "barRef": 1441 })
+            )
+            .status,
+            400
+        );
+        assert_eq!(
+            call(
+                &conn,
+                "PUT",
+                "/api/v1/cases/case-1/cards/card-1",
+                json!({ "rawText": "x", "barRef": "38" })
+            )
+            .status,
+            400
+        );
     }
 
     #[test]

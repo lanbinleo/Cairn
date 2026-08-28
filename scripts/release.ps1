@@ -83,12 +83,19 @@ if ($BuildInstaller) {
     }
     # 密钥为无密码生成；签名公钥内嵌于 tauri.conf.json 与已发布版本。
     # bundler 只认 TAURI_SIGNING_PRIVATE_KEY（密钥内容），不认 _PATH 变体。
+    # PowerShell 无法把空字符串环境变量传给子进程（赋 "" 等于删除变量），bundler 拿不到
+    # TAURI_SIGNING_PRIVATE_KEY_PASSWORD 会转交互式 prompt（Console API，不吃管道 stdin），
+    # 无控制台的会话里直接报 os error 233。Node 的 spawn 环境块可保留空值变量，
+    # 故密钥内容照常走 $env，空密码经 node 包装真实传给 bundler。
     $env:TAURI_SIGNING_PRIVATE_KEY = (Get-Content -LiteralPath $updaterKey -Raw).Trim()
-    $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = ""
 
     Step "Building Tauri installers (signed updater artifacts)"
     # 主配置（非 tauri.local.conf.json）：createUpdaterArtifacts 需要 true 才会生成 .sig
-    Invoke-Checked "pnpm" @("tauri", "build")
+    $nodeWrapper = "const{spawnSync}=require('child_process');" +
+        "const r=spawnSync('pnpm',['tauri','build'],{stdio:'inherit',shell:true," +
+        "env:{...process.env,TAURI_SIGNING_PRIVATE_KEY_PASSWORD:''}});" +
+        "process.exit(r.status==null?1:r.status)"
+    Invoke-Checked "node" @("-e", $nodeWrapper)
 
     $artifacts = @(
         "src-tauri/target/release/bundle/nsis/Cairn_${Version}_x64-setup.exe",

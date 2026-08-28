@@ -39,7 +39,10 @@
 <body>
 <div id="note">
   油猴脚本测试页：GM_* 以 localStorage 模拟，网络直接 fetch 真实本地 API（<code>127.0.0.1:8787</code>）。<br>
-  先启动 Cairn（<code>pnpm tauri:dev:isolated</code>），Token 从 设置 → 本地 API 复制。
+  先启动 Cairn（<code>pnpm tauri:dev:isolated</code>），Token 从 设置 → 本地 API 复制。<br>
+  <label style="display:inline-flex;align-items:center;gap:5px;margin-top:6px;cursor:pointer;color:#d1d4dc;">
+    <input type="checkbox" id="tv-theme-dark" checked> 模拟 TradingView 深色（theme-dark）
+  </label>
 </div>
 <div id="err" style="position:fixed;top:140px;left:16px;z-index:20;max-width:460px;color:#ef5350;font-family:Consolas,monospace;font-size:12px;white-space:pre-wrap;"></div>
 <div id="fake-chart"></div>
@@ -58,6 +61,16 @@
   window.GM_getValue = function (k) { return localStorage.getItem('cairn.widget.' + k); };
   window.GM_setValue = function (k, v) { localStorage.setItem('cairn.widget.' + k, String(v)); };
   window.GM_registerMenuCommand = function () {};
+
+  // 模拟 TradingView 主题类，验证浮窗 auto 模式跟随切换
+  (function () {
+    var box = document.getElementById('tv-theme-dark');
+    document.documentElement.classList.toggle('theme-dark', box.checked);
+    box.addEventListener('change', function () {
+      document.documentElement.classList.toggle('theme-dark', box.checked);
+      document.documentElement.classList.toggle('theme-light', !box.checked);
+    });
+  })();
 </script>
 <script src="./cairn-case-widget.user.js"></script>
 </body>
