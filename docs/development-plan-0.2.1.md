@@ -41,6 +41,12 @@
 - trades 表 PnL% 列（`equityBeforeByTrade`：按平仓顺序倒推入场前权益）。
 - 已平仓 Trade 缺初始止损/止盈的首次访问提醒模态（从 Entry 卡填入/手动填写/待会儿提醒/忽略）。
 
+### S6 发布卫生：移除半配置的 Tauri updater
+
+- 背景：`tauri.conf.json` 配了 `createUpdaterArtifacts: true` + 签名公钥 + endpoint（指向 GitHub Releases 的 `latest.json`），但签名私钥从不在本机——打包时 updater 签名步骤失败，`latest.json`/`.sig` 从未生成，`releases/latest/download/latest.json` 是 404 死链；Settings「关于」页的「检查更新」按钮因此从未成功过。
+- 处理（方案 A）：移除 `plugins.updater` 与 `createUpdaterArtifacts`（含 `tauri.local.conf.json` 的对应覆盖）、`lib.rs` 插件注册、`tauri-plugin-updater` 依赖（Cargo + npm）、`updater:default` 权限、Settings 检查更新按钮（保留版本号与 Releases 链接，手动下载安装）。构建末尾的 `TAURI_SIGNING_PRIVATE_KEY` 报错与死链随之消失。
+- 若未来想要应用内自动更新（方案 B）：`tauri signer generate` 生成密钥对、私钥存本机、构建时设 `TAURI_SIGNING_PRIVATE_KEY`、每次发布随安装包上传带签名的 `latest.json`——按本节记录加回配置即可。
+
 ## 验证状态
 
 - `pnpm typecheck` / `pnpm build` / `pnpm test`（11 例）/ `cargo check` / `cargo test`（23 过 2 忽略）全部通过。

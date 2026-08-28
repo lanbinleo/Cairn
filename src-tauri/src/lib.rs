@@ -365,7 +365,6 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_process::init())
-        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             diagnostics::app_log(app.handle(), "setup started");
             let db = db::init(app.handle()).map_err(|err| {

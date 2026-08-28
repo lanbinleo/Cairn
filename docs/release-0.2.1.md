@@ -33,6 +33,7 @@
 ## 基础设施
 
 - 前端引入 vitest（`pnpm test`）：bar-time 与 execution-display 单测，含生产 25 卡跨天序列全量回放用例。
+- 移除半配置的 Tauri 自动更新器（updater 插件、签名配置、Settings「检查更新」按钮）：签名私钥从不存在，`latest.json` 是从未工作过的 404 死链；发布方式维持手动下载安装，构建末尾的 `TAURI_SIGNING_PRIVATE_KEY` 报错随之消失。
 
 ## Fixes（自 0.2.0）
 
