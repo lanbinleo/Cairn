@@ -1,6 +1,6 @@
 'use client'
 
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Link, Navigate, useNavigate, useParams } from 'react-router-dom'
 import { CheckCircle2, ChevronDown, ChevronRight, Clipboard, Copy, ImagePlus, NotebookPen, Trash2 } from 'lucide-react'
 
@@ -15,6 +15,7 @@ import { TradeProcessScoreCard } from '@/components/trade-process-score'
 import { TradePlanCompareCard } from '@/components/trade-plan-compare'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import {
   DropdownMenu,
@@ -67,7 +68,22 @@ export default function TradeDetailPage() {
   const [showEntryLine, setShowEntryLine] = useState(true)
   const [activeTab, setActiveTab] = useState<TradeDetailTab>('overview')
   const [targetCaseCardId, setTargetCaseCardId] = useState<string>()
-  const { getTrade, getAccount, getPeriod, getSymbol, getNotesMentioningTrade, symbolLabel, setTradeStatus, updateTrade, createNote, createImageAttachment, deleteAttachment, getChartCandles, tagDefs, cases, caseCards, caseBindings } = useCairn()
+  const [planPromptOpen, setPlanPromptOpen] = useState(false)
+  const [planPrefillHint, setPlanPrefillHint] = useState('')
+  const [editOpenRequest, setEditOpenRequest] = useState(0)
+  const planPromptShownRef = useRef<string | null>(null)
+  const { getTrade, getAccount, getPeriod, getSymbol, getNotesMentioningTrade, symbolLabel, setTradeStatus, updateTrade, createNote, createImageAttachment, deleteAttachment, getChartCandles, tagDefs, cases, caseCards, caseBindings, prefillTradePlanFromBoundCase } = useCairn()
+  /* 缺失计划价提醒：每笔 Trade 每次访问最多弹一次；「忽略」持久化，「待会儿提醒」下次访问再弹 */
+  useEffect(() => {
+    const current = getTrade(tradeId)
+    if (!current || current.status !== 'closed') return
+    if (current.initialStopLoss != null && current.initialTakeProfit != null) return
+    if (localStorage.getItem(`cairn.trade-plan-prompt.${current.id}`) === 'ignored') return
+    if (planPromptShownRef.current === current.id) return
+    planPromptShownRef.current = current.id
+    setPlanPrefillHint('')
+    setPlanPromptOpen(true)
+  }, [getTrade, tradeId])
   const trade = getTrade(tradeId)
   if (!trade) return <Navigate to="/trades" replace />
   const activeTrade = trade
@@ -277,9 +293,61 @@ export default function TradeDetailPage() {
               标记为已平仓
             </Button>
           )}
-          <EditTradeDialog trade={trade} />
+          <EditTradeDialog trade={trade} openRequest={editOpenRequest} />
         </div>
       </header>
+
+      <Dialog open={planPromptOpen} onOpenChange={setPlanPromptOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>缺少计划信息</DialogTitle>
+            <DialogDescription>
+              这笔已平仓的 Trade 还缺 {[
+                trade.initialStopLoss == null && '初始止损',
+                trade.initialTakeProfit == null && '初始止盈',
+              ].filter(Boolean).join('、')}
+              ，缺失时 R 与过程分不完整。可以现在补，也可以待会儿再说。
+            </DialogDescription>
+          </DialogHeader>
+          {planPrefillHint && <p className="text-sm text-muted-foreground">{planPrefillHint}</p>}
+          <DialogFooter className="flex-wrap gap-2 sm:flex-wrap">
+            <Button
+              variant="ghost"
+              className="text-muted-foreground"
+              onClick={() => {
+                localStorage.setItem(`cairn.trade-plan-prompt.${trade.id}`, 'ignored')
+                setPlanPromptOpen(false)
+              }}
+            >
+              忽略
+            </Button>
+            <Button variant="outline" onClick={() => setPlanPromptOpen(false)}>待会儿提醒</Button>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setPlanPromptOpen(false)
+                setEditOpenRequest((n) => n + 1)
+              }}
+            >
+              手动填写
+            </Button>
+            {boundCase && (
+              <Button
+                onClick={() => {
+                  const filled = prefillTradePlanFromBoundCase(trade.id)
+                  if (filled) {
+                    setPlanPromptOpen(false)
+                  } else {
+                    setPlanPrefillHint('Entry 卡还没有可用的 memo（先在 Case 页点「AI 整理」，或手动填写）。')
+                  }
+                }}
+              >
+                从 Entry 卡填入
+              </Button>
+            )}
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as TradeDetailTab)} className="gap-6">
         <TabsList className="h-10">

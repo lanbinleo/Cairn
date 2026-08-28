@@ -1,6 +1,6 @@
 'use client'
 
-import { useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
+import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
 import { Check, ChevronDown, ChevronRight, GripVertical, Pencil, Plus, RotateCcw, Trash2 } from 'lucide-react'
 
 import { TAG_COLORS, tagColorClasses, tagColorNames, tagDotClasses } from '@/components/tag-badge'
@@ -158,7 +158,7 @@ function canSaveExecution(execution: Execution) {
   return isManagementExecutionAction(execution.action) && Number.isFinite(execution.price)
 }
 
-export function EditTradeDialog({ trade }: { trade: Trade }) {
+export function EditTradeDialog({ trade, openRequest }: { trade: Trade; openRequest?: number }) {
   const { updateTrade, deleteTrade, tagDefs, createTag, setTradeStatus } = useCairn()
   const [open, setOpen] = useState(false)
 
@@ -177,6 +177,15 @@ export function EditTradeDialog({ trade }: { trade: Trade }) {
   const [newTagColor, setNewTagColor] = useState<TagColor>('blue')
   const normalizedNewTagName = normalizeTagName(newTagName)
   const sortedTagDefs = sortTagDefsByColor(tagDefs)
+
+  /* 外部请求打开（如缺失计划价提醒的「手动填写」）：计数器变化时打开 */
+  const prevOpenRequestRef = useRef(openRequest)
+  useEffect(() => {
+    if (openRequest == null || openRequest === prevOpenRequestRef.current) return
+    prevOpenRequestRef.current = openRequest
+    resetForm()
+    setOpen(true)
+  }, [openRequest])
 
   function resetForm() {
     setNote(trade.note ?? '')
