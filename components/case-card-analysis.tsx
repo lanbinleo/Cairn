@@ -220,6 +220,13 @@ function MemoEditor({ memo, onDone, onSave }: {
     for (const key of MEMO_VIEW_KEYS) {
       const value = draft[key]?.trim()
       if (!value) continue
+      if (key === 'confidence') {
+        // 与 Rust normalize_memo_value 同规则：0-100 数字，非法输入按未提到处理
+        const parsed = Number(value.trimEnd().endsWith('%') ? value.trimEnd().slice(0, -1) : value)
+        if (!Number.isFinite(parsed) || parsed < 0 || parsed > 100) continue
+        next[key] = { value: Math.round(parsed), quote: memo[key]?.quote }
+        continue
+      }
       next[key] = { value, quote: memo[key]?.quote }
     }
     onSave(next as unknown as CaseCardMemo)

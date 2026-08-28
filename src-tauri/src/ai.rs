@@ -340,6 +340,7 @@ pub fn save_settings(app: &AppHandle, value: AiSettings) -> Result<AiSettings, S
 
 /// 浮窗/REST 新建 Card 后的后台自动整理入口：开关关闭时跳过；
 /// 完成后 emit data-changed 让前端刷新，失败只记日志不打扰录制。
+/// 用户已手动修正过派生数据（userAdjusted）时放弃写回，避免覆盖。
 pub fn spawn_auto_analysis(app: &AppHandle, card_id: String) {
     if !settings(app).auto_analyze {
         return;
@@ -347,11 +348,13 @@ pub fn spawn_auto_analysis(app: &AppHandle, card_id: String) {
     let app = app.clone();
     std::thread::spawn(move || {
         let db = app.state::<crate::db::Db>();
-        let result = tauri::async_runtime::block_on(crate::run_card_analysis(&app, &db, &card_id, None));
+        let result =
+            tauri::async_runtime::block_on(crate::run_card_analysis(&app, &db, &card_id, None, false));
         match result {
-            Ok(card) => {
+            Ok(Some(card)) => {
                 let _ = app.emit(crate::api::DATA_CHANGED_EVENT, &card);
             }
+            Ok(None) => {}
             Err(err) => {
                 diagnostics::app_log(&app, format!("auto analysis failed for card {card_id}: {err}"));
             }

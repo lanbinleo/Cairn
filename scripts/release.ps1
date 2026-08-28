@@ -119,7 +119,10 @@ if ($BuildInstaller) {
         }
     }
     $manifestPath = "src-tauri/target/release/bundle/latest.json"
-    $manifest | ConvertTo-Json -Depth 5 | Out-File -LiteralPath $manifestPath -Encoding utf8
+    # .NET WriteAllText + 显式 UTF8Encoding(false)：Out-File 的 utf8 在 Windows PowerShell 5.1 带 BOM，
+    # serde_json 不接受 BOM，updater 会解析失败。
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($manifestPath, ($manifest | ConvertTo-Json -Depth 5), $utf8NoBom)
 
     Write-Host ""
     Write-Host "Upload to the GitHub release (tag v$Version):" -ForegroundColor Yellow

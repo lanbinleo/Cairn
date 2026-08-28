@@ -144,12 +144,14 @@ async fn fetch_ai_models(base_url: String, api_key: String) -> Result<Vec<String
 /// AI 秘书整理一张 Card 的完整链路：读卡 → 请求（失败自动重试一次）→ 解析 → 写回
 /// 版本化派生数据 card.aiAnalysis；原文永不改写。手动按钮与 REST 自动整理共用。
 /// instruction 是用户重试时的补充要求，例如"止损不是 41650，注意口语里的位置词"。
+/// allow_overwrite_adjusted=false（自动分析）时，若用户已手动修正过派生数据则放弃写回。
 pub(crate) async fn run_card_analysis(
     app: &AppHandle,
     db: &db::Db,
     card_id: &str,
     instruction: Option<String>,
-) -> Result<Value, String> {
+    allow_overwrite_adjusted: bool,
+) -> Result<Option<Value>, String> {
     let (card, provider, model) = {
         let conn = db.conn()?;
         let card = db::read_record_by_id(&conn, "caseCards", card_id)?
@@ -180,24 +182,40 @@ pub(crate) async fn run_card_analysis(
         .unwrap_or(0);
     let analysis = ai::parse_analysis(&phase, &raw_text, &content, &model, &provider.id, now)?;
 
-    let mut updated = card;
-    // barRef 回填：卡片缺 barRef 且分析给出明确引用时补上（原文不动）
-    if updated.get("barRef").is_none() {
-        if let Some(bar) = analysis
-            .get("barRef")
-            .and_then(|value| value.get("bar"))
-            .and_then(Value::as_i64)
-        {
-            updated["barRef"] = serde_json::json!(bar);
-        }
-    }
-    updated["aiAnalysis"] = analysis;
-    {
+    // 写回前重读现记录，只覆盖 aiAnalysis（barRef 也只在现记录缺失时回填）：
+    // 分析耗时秒级到 30 秒，期间用户的 rawText 错字修正 / barRef 修正 /
+    // 手动调整过的派生数据不能被请求前的快照整卡回滚。
+    let updated = {
         let conn = db.conn()?;
-        db::save_record_in_tx(&conn, "caseCards", card_id, updated.clone())?;
-    }
+        let mut current = db::read_record_by_id(&conn, "caseCards", card_id)?
+            .ok_or_else(|| format!("case card not found: {card_id}"))?;
+        let user_adjusted = current
+            .get("aiAnalysis")
+            .and_then(|value| value.get("userAdjusted"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        if user_adjusted && !allow_overwrite_adjusted {
+            ai::log_provider_event(
+                app,
+                format!("card {card_id} auto analysis skipped: user-adjusted analysis present"),
+            );
+            return Ok(None);
+        }
+        if current.get("barRef").is_none() {
+            if let Some(bar) = analysis
+                .get("barRef")
+                .and_then(|value| value.get("bar"))
+                .and_then(Value::as_i64)
+            {
+                current["barRef"] = serde_json::json!(bar);
+            }
+        }
+        current["aiAnalysis"] = analysis;
+        db::save_record_in_tx(&conn, "caseCards", card_id, current.clone())?;
+        current
+    };
     ai::log_provider_event(app, format!("card {card_id} analyzed"));
-    Ok(updated)
+    Ok(Some(updated))
 }
 
 #[tauri::command]
@@ -207,7 +225,9 @@ async fn analyze_case_card(
     card_id: String,
     instruction: Option<String>,
 ) -> Result<Value, String> {
-    run_card_analysis(&app, &db, &card_id, instruction).await
+    run_card_analysis(&app, &db, &card_id, instruction, true)
+        .await?
+        .ok_or_else(|| "已手动修正过的分析未被覆盖；如需重新识别请从界面确认".to_string())
 }
 
 #[tauri::command]

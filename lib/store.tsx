@@ -392,11 +392,15 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
     return next
   }, [caseCards])
 
-  /** AI 秘书整理：结果写入 card.aiAnalysis，原文不动。instruction 为重试补充要求。 */
+  /** AI 秘书整理：结果写入 card.aiAnalysis，原文不动。instruction 为重试补充要求。
+   *  只吸收 aiAnalysis 与缺失的 barRef——请求期间本地的 rawText/barRef 修正不被回滚。 */
   const analyzeCaseCard = useCallback(async (cardId: string, instruction?: string): Promise<CaseCard | undefined> => {
     const updated = await analyzeCaseCardRemote(cardId, instruction)
     setCaseCards((prev) => prev
-      .map((item) => (item.id === updated.id ? updated : item))
+      .map((item) => {
+        if (item.id !== updated.id) return item
+        return { ...item, aiAnalysis: updated.aiAnalysis, barRef: item.barRef ?? updated.barRef }
+      })
       .sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id)))
     return updated
   }, [])
@@ -731,23 +735,24 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
 
   /**
    * 绑定后自动预填：Entry memo 可能晚于绑定到达（逐卡自动识别仍在进行），
-   * 用 effect 等它到位；每笔 Trade 只尝试一次，用户手动清空不会被打扰。
+   * 用 effect 等它到位；每笔 Trade 只自动尝试一次且持久化（用户手动清空
+   * 后重启不被填回），与缺失提醒弹窗的 localStorage 口径一致。
    */
-  const prefillHandledRef = useRef<Set<string>>(new Set())
   useEffect(() => {
     for (const binding of caseBindings) {
-      if (prefillHandledRef.current.has(binding.tradeId)) continue
+      const prefillKey = `cairn.trade-plan-prefill.${binding.tradeId}`
+      if (window.localStorage.getItem(prefillKey) === 'done') continue
       const trade = trades.find((item) => item.id === binding.tradeId)
       if (!trade) continue
       const hasGap = trade.initialEntryPrice == null || trade.initialStopLoss == null || trade.initialTakeProfit == null
       if (!hasGap) {
-        prefillHandledRef.current.add(binding.tradeId)
+        window.localStorage.setItem(prefillKey, 'done')
         continue
       }
       const memo = caseCards.find((card) => card.caseId === binding.caseId && card.phase === 'entry')?.aiAnalysis?.memo
       if (memo == null) continue
       prefillTradePlanFromBoundCase(binding.tradeId)
-      prefillHandledRef.current.add(binding.tradeId)
+      window.localStorage.setItem(prefillKey, 'done')
     }
   }, [caseBindings, trades, caseCards, prefillTradePlanFromBoundCase])
 

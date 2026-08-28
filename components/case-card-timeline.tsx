@@ -136,10 +136,19 @@ export function CaseCardTimeline({ cards, showMoveToCase = true, showBatchAnalyz
     }
   }
 
+  /** 批量整理限流并发：整 Case 几十张卡同时打 provider 容易触发 429（4xx 不在重试白名单） */
   async function analyzeAllCards() {
     if (!cards.length) return
     setBatchAnalyzing(true)
-    await Promise.allSettled(cards.map((card) => runAnalysis(card.id)))
+    const queue = cards.map((card) => card.id)
+    const workers = Array.from({ length: Math.min(3, queue.length) }, async () => {
+      for (;;) {
+        const cardId = queue.shift()
+        if (cardId == null) return
+        await runAnalysis(cardId)
+      }
+    })
+    await Promise.all(workers)
     setBatchAnalyzing(false)
   }
 

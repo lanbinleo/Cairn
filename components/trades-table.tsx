@@ -69,19 +69,22 @@ export function TradesTable({
   /** 是否显示 账户/Period 列（全局交易列表用） */
   showContext?: boolean
 }) {
-  const { getAccount, getPeriod, symbols, tagDefs, accounts } = useCairn()
+  const { getAccount, getPeriod, symbols, tagDefs, accounts, trades: allTrades } = useCairn()
   const sorted = [...trades].sort((a, b) => computeTradeMetrics(b).entryTime - computeTradeMetrics(a).entryTime)
-  /** 每笔入场前权益（PnL% 分母），按账户分组推导 */
+  /**
+   * 每笔入场前权益（PnL% 分母）。必须用全账户全量交易推导——trades prop 在
+   * 调用方可能是筛选/分页/最近的子集，按子集累计会把分母重置回初始资金。
+   */
   const equityBefore = useMemo(() => {
     const merged = new Map<string, number>()
     for (const account of accounts) {
-      const accountTrades = trades.filter((trade) => trade.accountId === account.id)
+      const accountTrades = allTrades.filter((trade) => trade.accountId === account.id)
       for (const [tradeId, equity] of equityBeforeByTrade(accountTrades, account.initialBalance)) {
         merged.set(tradeId, equity)
       }
     }
     return merged
-  }, [accounts, trades])
+  }, [accounts, allTrades])
 
   const symbolLabel = (symbolId: string) => {
     const s = symbols.find((x) => x.id === symbolId)
