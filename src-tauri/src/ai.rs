@@ -850,6 +850,60 @@ pub fn parse_summary(content: &str) -> Result<Value, String> {
     }))
 }
 
+// ==================== Case↔Trade 关联推荐 ====================
+
+pub const BINDING_PROMPT_VERSION: &str = "0.3.0-binding-1";
+
+pub fn build_binding_messages(context: &str) -> Vec<ChatMessage> {
+    let system = "你是交易日志的关联核对员。一个 Case（交易者的口语记录集合）可能对应一笔 Trade（交易所成交记录）。用户给了一个目标和一份候选清单，你找出最可能匹配的候选并说明理由。
+
+规则：
+- 只输出一个 JSON 对象，不要 markdown 代码块和解释：{\"matches\":[{\"candidateIndex\":<候选编号>,\"reason\":\"<不超过 60 字的理由，指出方向、价格区间、时间上的吻合点>\",\"confidence\":\"high|medium|low\"}]}
+- 按可能性从高到低排列，最多 3 条；都不匹配就输出 {\"matches\":[]}。
+- 只依据资料判断，资料里没有的信息不要编造。方向相反、价格数量级差很远、时间差很大的候选不要选。";
+    vec![ChatMessage::system(system), ChatMessage::user(context.to_string())]
+}
+
+pub fn parse_binding_matches(content: &str, candidate_count: usize) -> Result<Vec<Value>, String> {
+    let json_text = extract_json_object(content);
+    let parsed: Value =
+        serde_json::from_str(json_text).map_err(|err| format!("model output is not JSON: {err}"))?;
+    let empty: Vec<Value> = Vec::new();
+    let items = parsed
+        .get("matches")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or(empty);
+    let mut out: Vec<Value> = Vec::new();
+    for item in items {
+        let index = match item.get("candidateIndex").and_then(Value::as_i64) {
+            Some(index) if index >= 1 && (index as usize) <= candidate_count => index,
+            _ => continue,
+        };
+        if out.iter().any(|kept| kept["candidateIndex"].as_i64() == Some(index)) {
+            continue;
+        }
+        let confidence = match item.get("confidence").and_then(Value::as_str) {
+            Some("high") => "high",
+            Some("medium") => "medium",
+            Some("low") => "low",
+            _ => "low",
+        };
+        let reason = item
+            .get("reason")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+            .map(|text| text.chars().take(80).collect::<String>())
+            .unwrap_or_default();
+        out.push(json!({ "candidateIndex": index, "reason": reason, "confidence": confidence }));
+        if out.len() >= 3 {
+            break;
+        }
+    }
+    Ok(out)
+}
+
 // ==================== Case 标题代拟 ====================
 
 pub fn build_title_messages(cards: &[(String, String)]) -> Vec<ChatMessage> {

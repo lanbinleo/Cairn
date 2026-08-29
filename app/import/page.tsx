@@ -13,6 +13,7 @@ import {
 } from 'lucide-react'
 
 import { PageHeader } from '@/components/page-header'
+import { BindingSuggestForTrade } from '@/components/binding-suggestions'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -806,7 +807,17 @@ export default function ImportPage() {
                             </Button>
                           </span>
                         ) : (
-                          <span className="ml-auto text-xs text-muted-foreground">未找到 Case</span>
+                          <span className="ml-auto flex items-center gap-2">
+                            <span className="text-xs text-muted-foreground">未找到 Case</span>
+                            <BindingSuggestForTrade
+                              trade={trade}
+                              onBound={() => {
+                                const binding = caseBindings.find((item) => item.tradeId === trade.id)
+                                if (!binding) return
+                                setMatchRows((prev) => prev.map((row) => (row.tradeId === trade.id ? { ...row, boundCaseId: binding.caseId } : row)))
+                              }}
+                            />
+                          </span>
                         )}
                       </div>
                     )

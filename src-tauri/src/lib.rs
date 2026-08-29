@@ -959,6 +959,19 @@ async fn draft_case_title(
     Ok(title)
 }
 
+/// 关联推荐：AI 只排序+解释，候选池由前端机械预筛（同账户/未绑定/时间距离），
+/// 绑定动作永远由用户确认。
+#[tauri::command]
+async fn ai_suggest_bindings(app: AppHandle, context: String, candidate_count: usize) -> Result<Value, String> {
+    let (provider, model) = ai::default_provider(&app)?
+        .ok_or_else(|| "还没有默认 AI Provider，请在 设置 → AI 中配置".to_string())?;
+    let messages = ai::build_binding_messages(&context);
+    ai::log_provider_event(&app, format!("suggesting bindings with {model}"));
+    let content = ai::chat_completion_with_retry(&provider, &model, &messages).await?;
+    let matches = ai::parse_binding_matches(&content, candidate_count)?;
+    Ok(json!({ "schemaVersion": ai::BINDING_PROMPT_VERSION, "matches": matches }))
+}
+
 #[derive(Serialize)]
 struct SavedAttachmentFile {
     file_name: String,
@@ -1122,6 +1135,7 @@ pub fn run() {
             analyze_case_card,
             suggest_case_executions,
             ai_summarize_case,
+            ai_suggest_bindings,
             draft_case_title,
             get_ai_settings,
             save_ai_settings,

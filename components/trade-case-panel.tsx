@@ -7,6 +7,7 @@ import { ArrowRight, Link2, Plus, Unlink } from 'lucide-react'
 import { CaseTagBadge } from '@/components/case-tag-badge'
 import { CaseCardTimeline } from '@/components/case-card-timeline'
 import { CaseExecutionSuggestions } from '@/components/case-execution-suggestions'
+import { BindingSuggestForTrade } from '@/components/binding-suggestions'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -186,6 +187,7 @@ export function TradeCasePanel({
                 <Button disabled={!selectedCaseId || busy} onClick={() => void bindExistingCase()}>
                   <Link2 data-icon="inline-start" />关联已有 Case
                 </Button>
+                <BindingSuggestForTrade trade={trade} />
               </>
             ) : (
               <div className="rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">

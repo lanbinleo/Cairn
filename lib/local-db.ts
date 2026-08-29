@@ -2,6 +2,7 @@ import { invoke } from '@tauri-apps/api/core'
 
 import type { CairnStateSnapshot } from './seed'
 import { seedState } from './seed'
+import type { BindingMatch } from './binding-suggestions'
 import type { CaseCard, CaseSummary, TradeCase } from './types'
 
 type CollectionName =
@@ -257,6 +258,14 @@ export async function summarizeCase(context: string, instruction?: string): Prom
     throw new Error('AI 总结需要桌面版运行')
   }
   return invoke<CaseSummary>('ai_summarize_case', { context, instruction: instruction ?? null })
+}
+
+/** 关联推荐：AI 只排序+给理由，绑定由用户确认。 */
+export async function suggestBindings(context: string, candidateCount: number): Promise<{ matches: BindingMatch[] }> {
+  if (!isTauriRuntime()) {
+    throw new Error('AI 推荐需要桌面版运行')
+  }
+  return invoke<{ matches: BindingMatch[] }>('ai_suggest_bindings', { context, candidateCount })
 }
 
 export interface AiSettings {

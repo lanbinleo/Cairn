@@ -7,6 +7,7 @@ import { Archive, ArrowLeft, Link2, Plus, Trash2, WandSparkles } from 'lucide-re
 import { CaseTagBadge } from '@/components/case-tag-badge'
 import { CaseCardTimeline } from '@/components/case-card-timeline'
 import { CaseSummaryCard } from '@/components/case-summary-card'
+import { BindingSuggestForCase } from '@/components/binding-suggestions'
 import { ManageCaseTagsDialog } from '@/components/manage-case-tags-dialog'
 import { RelativeTime } from '@/components/relative-time'
 import { Badge } from '@/components/ui/badge'
@@ -344,6 +345,7 @@ export default function CaseDetailPage() {
                 <div className="flex flex-col gap-2 text-sm text-muted-foreground">
                   <Archive className="size-5" />
                   <span>尚未关联 Trade。可在 Trade 详情页的 Case 面板中选择本 Case 建立关联。</span>
+                  <BindingSuggestForCase caseRecord={caseRecord} />
                 </div>
               )}
             </CardContent>
