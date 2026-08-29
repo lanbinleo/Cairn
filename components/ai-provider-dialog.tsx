@@ -12,7 +12,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
-import { Field, FieldGroup, FieldLabel } from '@/components/ui/field'
+import { Field, FieldDescription, FieldGroup, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import {
   Select,
@@ -87,6 +87,8 @@ export function AiProviderDialog({
   const [apiKey, setApiKey] = useState('')
   const [defaultModel, setDefaultModel] = useState('')
   const [isDefault, setIsDefault] = useState(false)
+  const [thinking, setThinking] = useState<'auto' | 'on' | 'off'>('auto')
+  const [concurrencyText, setConcurrencyText] = useState('10')
   const [models, setModels] = useState<string[]>([])
   const [loadingModels, setLoadingModels] = useState(false)
   const [modelError, setModelError] = useState('')
@@ -100,6 +102,8 @@ export function AiProviderDialog({
     setApiKey(provider?.apiKey ?? '')
     setDefaultModel(provider?.defaultModel ?? '')
     setIsDefault(provider?.isDefault ?? false)
+    setThinking(provider?.thinking ?? 'auto')
+    setConcurrencyText(String(provider?.concurrency ?? 10))
     setModels(provider?.defaultModel ? [provider.defaultModel] : [])
     setModelError('')
     setSaveError('')
@@ -132,6 +136,7 @@ export function AiProviderDialog({
       setSaveError('名称和 Base URL 不能为空。')
       return
     }
+    const concurrency = Number.parseInt(concurrencyText, 10)
     try {
       const providers = await saveAiProvider({
         id: provider?.id ?? '',
@@ -141,6 +146,8 @@ export function AiProviderDialog({
         presetId: presetId === 'custom' ? undefined : presetId,
         defaultModel: defaultModel.trim() || undefined,
         isDefault,
+        thinking: thinking === 'auto' ? undefined : thinking,
+        concurrency: Number.isInteger(concurrency) && concurrency > 0 ? Math.min(concurrency, 32) : undefined,
         createdAt: provider?.createdAt ?? 0,
         updatedAt: provider?.updatedAt ?? 0,
       })
@@ -238,6 +245,42 @@ export function AiProviderDialog({
             {!modelError && models.length > 0 && (
               <p className="text-xs text-muted-foreground">连接成功，共 {models.length} 个模型</p>
             )}
+          </Field>
+
+          <Field>
+            <FieldLabel htmlFor="ai-provider-thinking">思考模式</FieldLabel>
+            <Select
+              items={[
+                { value: 'auto', label: '跟随模型默认' },
+                { value: 'on', label: '开启思考' },
+                { value: 'off', label: '关闭思考' },
+              ]}
+              value={thinking}
+              onValueChange={(value) => setThinking((value as 'auto' | 'on' | 'off') ?? 'auto')}
+            >
+              <SelectTrigger id="ai-provider-thinking" className="w-full"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectGroup>
+                  <SelectItem value="auto">跟随模型默认</SelectItem>
+                  <SelectItem value="on">开启思考</SelectItem>
+                  <SelectItem value="off">关闭思考</SelectItem>
+                </SelectGroup>
+              </SelectContent>
+            </Select>
+            <FieldDescription>仅支持思考开关的端点（智谱 GLM 系）生效，其他 Provider 保持默认。关闭思考可加快识别速度。</FieldDescription>
+          </Field>
+
+          <Field>
+            <FieldLabel htmlFor="ai-provider-concurrency">并发上限</FieldLabel>
+            <Input
+              id="ai-provider-concurrency"
+              type="number"
+              min="1"
+              max="32"
+              value={concurrencyText}
+              onChange={(event) => setConcurrencyText(event.target.value.replace(/[^0-9]/g, ''))}
+            />
+            <FieldDescription>「全部识别」批量与后台自动识别同时进行的请求数（默认 10）；限流（429）时调低。</FieldDescription>
           </Field>
 
           <div className="flex items-center justify-between rounded-lg border p-3">

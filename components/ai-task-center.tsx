@@ -66,12 +66,12 @@ export function AiTaskCenter() {
       >
         {icon}
         {unreadCount > 0 && (
-          <span className="absolute -top-0.5 -right-0.5 flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-destructive px-0.5 text-[9px] font-medium leading-none text-destructive-foreground">
+          <span className="absolute -top-0.5 -right-0.5 flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-destructive px-0.5 text-[9px] font-medium leading-none text-white">
             {unreadCount > 9 ? '9+' : unreadCount}
           </span>
         )}
       </PopoverTrigger>
-      <PopoverContent side="right" align="end" sideOffset={8} className="w-96 p-0">
+      <PopoverContent side="right" align="end" sideOffset={-24} className="w-80 p-0">
         <Tabs defaultValue="running">
           <div className="flex items-center justify-between gap-2 px-3 pt-2.5 pb-1">
             <TabsList className="h-8">
@@ -145,6 +145,13 @@ function TaskRow({
           </button>
         )}
       </div>
+      {task.status === 'running' && task.kind === 'summary' && (task.phase != null || (task.outputChars ?? 0) > 0) && (
+        <p className="px-2 pb-1.5 text-[11px] leading-4 text-muted-foreground">
+          {task.phase === 'thinking'
+            ? `思考中 · ${((task.thinkingMs ?? 0) / 1000).toFixed(1)}s`
+            : `${(task.thinkingMs ?? 0) > 0 ? `思考 ${((task.thinkingMs ?? 0) / 1000).toFixed(1)}s · ` : ''}已输出 ${task.outputTokens != null ? `${task.outputTokens} tokens` : `${task.outputChars ?? 0} 字`}`}
+        </p>
+      )}
       {task.status === 'running' && task.streamText && (
         <p className="line-clamp-2 break-all px-2 pb-1.5 font-mono text-[11px] leading-4 text-muted-foreground/70">
           {task.streamText}

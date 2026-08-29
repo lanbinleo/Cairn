@@ -60,9 +60,16 @@ export function CaseSummaryCard({
   // busy/error 是 store 级状态：AI 调用长达几十秒，切页回来仍能看到「生成中」或失败原因
   const busy = aiTasks.summarizingCaseIds.includes(caseRecord.id)
   const error = aiTasks.summaryErrorByCase[caseRecord.id] ?? ''
-  const streamText = aiTaskList.find(
+  const runningTask = aiTaskList.find(
     (task) => task.kind === 'summary' && task.status === 'running' && task.targetId === caseRecord.id,
-  )?.streamText ?? ''
+  )
+  const streamText = runningTask?.streamText ?? ''
+  const thinkingSeconds = ((runningTask?.thinkingMs ?? 0) / 1000).toFixed(1)
+  const progressLine = runningTask?.phase === 'thinking'
+    ? `思考中 · ${thinkingSeconds}s`
+    : (runningTask?.thinkingMs ?? 0) > 0 || (runningTask?.outputChars ?? 0) > 0
+      ? `${(runningTask?.thinkingMs ?? 0) > 0 ? `思考 ${thinkingSeconds}s · ` : ''}已输出 ${runningTask?.outputTokens != null ? `${runningTask.outputTokens} tokens` : `${runningTask?.outputChars ?? 0} 字`}`
+      : ''
   const summary = caseRecord.aiSummary
   const stale = isCaseSummaryStale(caseRecord, cards)
   const caseCards = cards.filter((card) => card.caseId === caseRecord.id)
@@ -98,6 +105,7 @@ export function CaseSummaryCard({
               {busy ? '生成中…' : '生成总结'}
             </Button>
           </div>
+          {busy && progressLine && <p className="text-xs text-muted-foreground">{progressLine}</p>}
           {busy && streamText && <SummaryStreamPreview text={streamText} />}
           {error && <p className="rounded-md border border-destructive/40 bg-destructive/10 px-2 py-1.5 text-xs text-destructive">{error}</p>}
         </CardContent>
@@ -135,6 +143,7 @@ export function CaseSummaryCard({
       </CardHeader>
       <CardContent className="flex flex-col gap-4">
         {error && <p className="rounded-md border border-destructive/40 bg-destructive/10 px-2 py-1.5 text-xs text-destructive">{error}</p>}
+        {busy && progressLine && <p className="text-xs text-muted-foreground">{progressLine}</p>}
         {busy && streamText && <SummaryStreamPreview text={streamText} />}
         {variant === 'compact' ? (
           <>

@@ -23,8 +23,35 @@ pub struct AiProvider {
     pub default_model: Option<String>,
     #[serde(default)]
     pub is_default: bool,
+    /// 思考模式（0.3.1）：auto = 不发参数（模型默认）；on/off = 显式开/关。
+    /// 只对支持 thinking 参数的端点（智谱 GLM 系）生效——其他 provider 发未知字段可能被 4xx 拒绝。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking: Option<String>,
+    /// 并发上限（0.3.1）：「全部识别」批量与后台自动识别共用；默认 10。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub concurrency: Option<u8>,
     pub created_at: u64,
     pub updated_at: u64,
+}
+
+/// Provider 并发上限（前端批量 worker 数与 Rust 后台闸门共用），默认 10。
+pub fn concurrency_of(provider: &AiProvider) -> usize {
+    provider
+        .concurrency
+        .map(|n| (n.max(1) as usize).min(32))
+        .unwrap_or(10)
+}
+
+/// thinking 参数体；None = 不发送。目前只有智谱 GLM 端点确认支持。
+fn thinking_param_for(provider: &AiProvider) -> Option<Value> {
+    if provider.preset_id.as_deref() != Some("zhipu") {
+        return None;
+    }
+    match provider.thinking.as_deref() {
+        Some("on") => Some(json!({ "type": "enabled" })),
+        Some("off") => Some(json!({ "type": "disabled" })),
+        _ => None,
+    }
 }
 
 fn now_ms() -> u64 {
@@ -274,12 +301,16 @@ pub async fn chat_completion(
         .timeout(Duration::from_secs(90))
         .build()
         .map_err(|err| err.to_string())?;
-    let mut request = client.post(&url).json(&json!({
+    let mut body = json!({
         "model": model,
         "messages": messages,
         "temperature": 0,
         "stream": false,
-    }));
+    });
+    if let Some(thinking) = thinking_param_for(provider) {
+        body["thinking"] = thinking;
+    }
+    let mut request = client.post(&url).json(&body);
     if !provider.api_key.is_empty() {
         request = request.bearer_auth(&provider.api_key);
     }
@@ -364,23 +395,56 @@ fn is_retryable_error(message: &str) -> bool {
 
 // ==================== 流式 Chat Completion ====================
 
+/// 流式回调的增量种类：思考文本（reasoning_content）或正文内容。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamChunkKind {
+    Reasoning,
+    Content,
+}
+
+#[derive(Debug, Clone)]
+pub struct StreamChunk {
+    pub kind: StreamChunkKind,
+    pub text: String,
+}
+
+/// 流式调用的最终结果：正文 + 思考量 + token 统计（provider 给了才有）。
+#[derive(Debug, Default, Clone)]
+pub struct StreamOutcome {
+    pub content: String,
+    pub reasoning_chars: usize,
+    pub completion_tokens: Option<u64>,
+    pub total_tokens: Option<u64>,
+}
+
 /// SSE 增量累积器：chunk 边界不与换行对齐，也不与 UTF-8 字符边界对齐，
 /// 所以按字节缓冲、只在完整行（\n 之前）上做 UTF-8 解码与 JSON 解析。
 struct SseAccumulator {
     buffer: Vec<u8>,
     content: String,
+    reasoning: String,
+    completion_tokens: Option<u64>,
+    total_tokens: Option<u64>,
     done: bool,
 }
 
 impl SseAccumulator {
     fn new() -> Self {
-        Self { buffer: Vec::new(), content: String::new(), done: false }
+        Self {
+            buffer: Vec::new(),
+            content: String::new(),
+            reasoning: String::new(),
+            completion_tokens: None,
+            total_tokens: None,
+            done: false,
+        }
     }
 
-    /// 喂入一个网络 chunk，返回本次新产生的 delta.content 增量（可能为空）。
-    fn push_chunk(&mut self, chunk: &[u8]) -> String {
+    /// 喂入一个网络 chunk，返回本次产生的增量（content / reasoning，可能为空）。
+    /// usage 统计（若 provider 在最后一帧带上）记在自身字段里。
+    fn push_chunk(&mut self, chunk: &[u8]) -> Vec<StreamChunk> {
         self.buffer.extend_from_slice(chunk);
-        let mut delta = String::new();
+        let mut chunks: Vec<StreamChunk> = Vec::new();
         while let Some(pos) = self.buffer.iter().position(|&byte| byte == b'\n') {
             let line = String::from_utf8_lossy(&self.buffer[..pos]).to_string();
             self.buffer.drain(..=pos);
@@ -394,40 +458,63 @@ impl SseAccumulator {
             if data.is_empty() {
                 continue;
             }
-            // 单个事件解析失败不致命（role-only/usage 等无 delta 的帧直接跳过）
-            if let Ok(event) = serde_json::from_str::<Value>(data) {
-                if let Some(text) = event.pointer("/choices/0/delta/content").and_then(Value::as_str) {
-                    delta.push_str(text);
+            // 单个事件解析失败不致命（role-only 等无 delta 的帧直接跳过）
+            let Ok(event) = serde_json::from_str::<Value>(data) else { continue };
+            if let Some(usage) = event.get("usage").filter(|value| value.is_object()) {
+                if self.completion_tokens.is_none() {
+                    self.completion_tokens = usage.get("completion_tokens").and_then(Value::as_u64);
+                    self.total_tokens = usage.get("total_tokens").and_then(Value::as_u64);
+                }
+                continue;
+            }
+            let Some(delta) = event.pointer("/choices/0/delta") else { continue };
+            // 思考文本：GLM/deepseek 系字段名 reasoning_content，个别端点用 reasoning
+            for field in ["reasoning_content", "reasoning"] {
+                if let Some(text) = delta.get(field).and_then(Value::as_str) {
+                    if !text.is_empty() {
+                        self.reasoning.push_str(text);
+                        chunks.push(StreamChunk { kind: StreamChunkKind::Reasoning, text: text.to_string() });
+                    }
+                    break;
+                }
+            }
+            if let Some(text) = delta.get("content").and_then(Value::as_str) {
+                if !text.is_empty() {
+                    self.content.push_str(text);
+                    chunks.push(StreamChunk { kind: StreamChunkKind::Content, text: text.to_string() });
                 }
             }
         }
-        self.content.push_str(&delta);
-        delta
+        chunks
     }
 }
 
-/// 流式 chat completion：stream: true，每个增量经 on_delta 吐出，返回累积全文
-/// （喂给与非流式相同的解析器，提示词零改动）。
+/// 流式 chat completion：stream: true，增量经 on_chunk 吐出（思考/正文分开），
+/// 返回 StreamOutcome（正文喂给与非流式相同的解析器，提示词零改动）。
 /// 超时口径：connect 15s + 两次 chunk 间隔 30s（read_timeout），无总时长限制——
 /// 总超时会掐断长输出。provider 忽略 stream 参数时自动降级整段读。
 pub async fn chat_completion_stream(
     provider: &AiProvider,
     model: &str,
     messages: &[ChatMessage],
-    on_delta: &(dyn Fn(&str) + Send + Sync),
-) -> Result<String, String> {
+    on_chunk: &(dyn Fn(&StreamChunk) + Send + Sync),
+) -> Result<StreamOutcome, String> {
     let url = format!("{}/chat/completions", provider.base_url);
     let client = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(15))
         .read_timeout(Duration::from_secs(30))
         .build()
         .map_err(|err| err.to_string())?;
-    let mut request = client.post(&url).json(&json!({
+    let mut body = json!({
         "model": model,
         "messages": messages,
         "temperature": 0,
         "stream": true,
-    }));
+    });
+    if let Some(thinking) = thinking_param_for(provider) {
+        body["thinking"] = thinking;
+    }
+    let mut request = client.post(&url).json(&body);
     if !provider.api_key.is_empty() {
         request = request.bearer_auth(&provider.api_key);
     }
@@ -442,7 +529,7 @@ pub async fn chat_completion_stream(
         .and_then(|value| value.to_str().ok())
         .is_some_and(|value| value.contains("text/event-stream"));
     if !is_event_stream {
-        // provider 不支持流式：当普通响应整段读，并整体作为一次增量吐给回调
+        // provider 不支持流式：当普通响应整段读，并整体作为一次正文增量吐给回调
         let status = response.status();
         let body = response
             .text()
@@ -451,9 +538,16 @@ pub async fn chat_completion_stream(
         if !status.is_success() {
             return Err(http_error_message(status, &body));
         }
-        let content = extract_message_content(&body)?;
-        on_delta(&content);
-        return Ok(content);
+        let mut outcome = StreamOutcome {
+            content: extract_message_content(&body)?,
+            ..Default::default()
+        };
+        if let Ok(parsed) = serde_json::from_str::<Value>(&body) {
+            outcome.completion_tokens = parsed.pointer("/usage/completion_tokens").and_then(Value::as_u64);
+            outcome.total_tokens = parsed.pointer("/usage/total_tokens").and_then(Value::as_u64);
+        }
+        on_chunk(&StreamChunk { kind: StreamChunkKind::Content, text: outcome.content.clone() });
+        return Ok(outcome);
     }
 
     let status = response.status();
@@ -468,7 +562,7 @@ pub async fn chat_completion_stream(
             .chunk()
             .await
             .map_err(|err| {
-                if acc.content.is_empty() {
+                if acc.content.is_empty() && acc.reasoning.is_empty() {
                     format!("request failed: {}", describe_request_error(&err))
                 } else {
                     let received = acc.content.chars().count();
@@ -476,15 +570,19 @@ pub async fn chat_completion_stream(
                 }
             })?;
         let Some(chunk) = chunk else { break };
-        let delta = acc.push_chunk(&chunk);
-        if !delta.is_empty() {
-            on_delta(&delta);
+        for piece in acc.push_chunk(&chunk) {
+            on_chunk(&piece);
         }
     }
     if acc.content.trim().is_empty() {
         return Err("provider returned empty content".to_string());
     }
-    Ok(acc.content)
+    Ok(StreamOutcome {
+        content: acc.content,
+        reasoning_chars: acc.reasoning.chars().count(),
+        completion_tokens: acc.completion_tokens,
+        total_tokens: acc.total_tokens,
+    })
 }
 
 /// 流式重试：网络类失败且**尚未收到任何内容**时整体重试一次；
@@ -493,12 +591,12 @@ pub async fn chat_completion_stream_with_retry(
     provider: &AiProvider,
     model: &str,
     messages: &[ChatMessage],
-    on_delta: &(dyn Fn(&str) + Send + Sync),
-) -> Result<String, String> {
-    match chat_completion_stream(provider, model, messages, on_delta).await {
-        Ok(content) => Ok(content),
+    on_chunk: &(dyn Fn(&StreamChunk) + Send + Sync),
+) -> Result<StreamOutcome, String> {
+    match chat_completion_stream(provider, model, messages, on_chunk).await {
+        Ok(outcome) => Ok(outcome),
         Err(first) if is_retryable_error(&first) => {
-            chat_completion_stream(provider, model, messages, on_delta)
+            chat_completion_stream(provider, model, messages, on_chunk)
                 .await
                 .map_err(|second| format!("{first}；重试一次后仍失败：{second}"))
         }
@@ -563,6 +661,10 @@ pub fn save_settings(app: &AppHandle, value: AiSettings) -> Result<AiSettings, S
 
 static TASK_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
+/// 后台自动识别的全局并发闸门（0.3.1）：批量拆卡一次会 spawn N 个线程，
+/// 不限流的话 N 路并发打 provider 容易 429。上限取默认 Provider 的并发设置。
+static ACTIVE_AUTO_ANALYSIS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
 pub fn next_task_id() -> String {
     let seq = TASK_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     format!("bg-{:x}-{seq:x}", now_ms())
@@ -611,8 +713,19 @@ pub fn spawn_auto_analysis(app: &AppHandle, card_id: String) {
         let db = app.state::<crate::db::Db>();
         let task_id = next_task_id();
         emit_task_event(&app, &task_id, "analysis", "start", "识别卡片", Some("card"), Some(&card_id), None);
+        // 并发闸门：达到上限就等下一个空位（150ms 轮询足够，任务本身长达数秒）
+        let max = default_provider(&app)
+            .ok()
+            .flatten()
+            .map(|(provider, _)| concurrency_of(&provider))
+            .unwrap_or(10);
+        while ACTIVE_AUTO_ANALYSIS.load(std::sync::atomic::Ordering::Relaxed) >= max {
+            std::thread::sleep(std::time::Duration::from_millis(150));
+        }
+        ACTIVE_AUTO_ANALYSIS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let result =
             tauri::async_runtime::block_on(crate::run_card_analysis(&app, &db, &card_id, None, false));
+        ACTIVE_AUTO_ANALYSIS.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
         match result {
             Ok(Some(card)) => {
                 emit_task_event(&app, &task_id, "analysis", "succeeded", "识别卡片", Some("card"), Some(&card_id), None);
@@ -1348,14 +1461,22 @@ mod tests {
             .starts_with("模型服务返回 502"));
     }
 
+    fn content_of(chunks: &[StreamChunk]) -> String {
+        chunks
+            .iter()
+            .filter(|chunk| chunk.kind == StreamChunkKind::Content)
+            .map(|chunk| chunk.text.as_str())
+            .collect()
+    }
+
     #[test]
     fn sse_accumulator_handles_multi_event_chunks_and_done() {
         let mut acc = SseAccumulator::new();
         // 注释行/事件行忽略；一个 chunk 内多事件 + 空行分隔；[DONE] 终止后续解析
-        let delta = acc.push_chunk(
+        let chunks = acc.push_chunk(
             b": keepalive\nevent: message\ndata: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\ndata: {\"choices\":[{\"delta\":{}}]}\ndata: [DONE]\ndata: {\"choices\":[{\"delta\":{\"content\":\"ignored\"}}]}\n",
         );
-        assert_eq!(delta, "hi");
+        assert_eq!(content_of(&chunks), "hi");
         assert!(acc.done);
         assert_eq!(acc.content, "hi");
     }
@@ -1368,11 +1489,28 @@ mod tests {
         let line = b"data: {\"choices\":[{\"delta\":{\"content\":\"\xe8\xa7\x82\xe5\xaf\x9f\"}}]}\n".to_vec();
         let split = line.len() - 2;
         let d1 = acc.push_chunk(&line[..split]);
-        assert_eq!(d1, "");
+        assert_eq!(content_of(&d1), "");
         let d2 = acc.push_chunk(&line[split..]);
-        assert_eq!(d2, "观察");
+        assert_eq!(content_of(&d2), "观察");
         assert_eq!(acc.content, "观察");
         assert!(!acc.done);
+    }
+
+    #[test]
+    fn sse_accumulator_captures_reasoning_and_usage() {
+        let mut acc = SseAccumulator::new();
+        // 思考增量（reasoning_content）单独成 chunk；usage 帧记入统计不产出
+        let chunks = acc.push_chunk(
+            "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"思考\"}}]}\ndata: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\ndata: {\"choices\":[],\"usage\":{\"completion_tokens\":42,\"total_tokens\":100}}\ndata: [DONE]\n".as_bytes(),
+        );
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(chunks[0].kind, StreamChunkKind::Reasoning);
+        assert_eq!(chunks[0].text, "思考");
+        assert_eq!(content_of(&chunks), "ok");
+        assert_eq!(acc.reasoning, "思考");
+        assert_eq!(acc.completion_tokens, Some(42));
+        assert_eq!(acc.total_tokens, Some(100));
+        assert!(acc.done);
     }
 
     #[test]
@@ -1676,28 +1814,37 @@ mod tests {
 
         let text = "BAR38 这里第三次测试区间上沿失败收回，我决定做空，止损放在区间上沿上方 41650，目标先看区间中轨 40800，这个把握我给七成，如果重新站上 41700 说明我判断错了收手，本来还想做多以太但大级别偏空放弃了，说实话有点兴奋";
         let messages = build_analysis_messages("entry", text, "");
-        let deltas: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
-        let collect = |delta: &str| {
-            deltas.lock().unwrap().push(delta.to_string());
+        let content_deltas: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+        let reasoning_len = std::sync::atomic::AtomicUsize::new(0);
+        let collect = |chunk: &StreamChunk| {
+            match chunk.kind {
+                StreamChunkKind::Reasoning => { reasoning_len.fetch_add(chunk.text.chars().count(), std::sync::atomic::Ordering::Relaxed); }
+                StreamChunkKind::Content => content_deltas.lock().unwrap().push(chunk.text.clone()),
+            }
         };
-        let output = tauri::async_runtime::block_on(async {
+        let outcome = tauri::async_runtime::block_on(async {
             chat_completion_stream_with_retry(provider, model, &messages, &collect).await
         })
         .expect("stream chat completion");
-        let delta_count = deltas.lock().unwrap().len();
-        let joined = deltas.lock().unwrap().concat();
+        let delta_count = content_deltas.lock().unwrap().len();
+        let joined = content_deltas.lock().unwrap().concat();
         println!(
-            "--- stream output ({delta_count} deltas, {} chars) ---\n{output}\n------------------------",
-            output.chars().count()
+            "--- stream output ({} deltas, {} chars, {} reasoning chars, tokens {:?}) ---\n{}\n------------------------",
+            delta_count,
+            outcome.content.chars().count(),
+            outcome.reasoning_chars,
+            outcome.completion_tokens,
+            outcome.content
         );
-        assert!(!output.trim().is_empty());
+        assert!(!outcome.content.trim().is_empty());
+        assert_eq!(outcome.reasoning_chars, reasoning_len.load(std::sync::atomic::Ordering::Relaxed));
         // 增量拼接必须等于返回的累积全文（流式完整性）
-        assert_eq!(joined, output);
+        assert_eq!(joined, outcome.content);
         // 真流式（event-stream）应产生多个增量；单增量说明 provider 降级了，也允许但打印提示
         if delta_count <= 1 {
             println!("NOTE: provider likely ignored stream=true and returned one body");
         }
-        let analysis = parse_analysis("entry", text, &output, model, &provider.id, 0)
+        let analysis = parse_analysis("entry", text, &outcome.content, model, &provider.id, 0)
             .expect("parse analysis from streamed content");
         assert!(!analysis["labels"].as_array().unwrap().is_empty());
     }

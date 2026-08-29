@@ -203,6 +203,10 @@ export interface AiProvider {
   presetId?: string
   defaultModel?: string
   isDefault: boolean
+  /** 思考模式（0.3.1）：auto = 不发参数（模型默认）；on/off = 显式开/关（仅支持的端点生效） */
+  thinking?: 'auto' | 'on' | 'off'
+  /** 并发上限（0.3.1）：「全部识别」批量与后台自动识别共用，默认 10 */
+  concurrency?: number
   createdAt: number
   updatedAt: number
 }
@@ -226,6 +230,12 @@ export async function deleteAiProvider(id: string): Promise<AiProvider[]> {
 
 export async function fetchAiModels(baseUrl: string, apiKey: string): Promise<string[]> {
   return invoke<string[]>('fetch_ai_models', { baseUrl, apiKey })
+}
+
+/** 默认 Provider 的并发上限（「全部识别」批量 worker 数，默认 10）。 */
+export async function getDefaultAiConcurrency(): Promise<number> {
+  if (!isTauriRuntime()) return 10
+  return invoke<number>('default_ai_concurrency')
 }
 
 /** AI 秘书识别一张 Card；instruction 为重试时的补充要求。返回更新后的 Card。 */

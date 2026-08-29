@@ -132,6 +132,11 @@ export interface AiTask {
   error?: string
   /** 流式累积文本（整单总结） */
   streamText?: string
+  /** 流式进度（整单总结）：思考时长与输出量 */
+  thinkingMs?: number
+  outputChars?: number
+  outputTokens?: number
+  phase?: 'thinking' | 'writing'
   /** 完成后未查看（点开任务中心清零，驱动徽标） */
   unread?: boolean
 }

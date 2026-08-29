@@ -13,6 +13,7 @@ import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
 import { CASE_PHASE_OPTIONS, caseCardDigest, caseEntryDecisionLabel, casePhaseLabel, displayPhaseForCaseCard, isCaseCardAnalysisStale } from '@/lib/cases'
+import { getDefaultAiConcurrency } from '@/lib/local-db'
 import { useCairn } from '@/lib/store'
 import type { CaseCard, CaseCardPhase } from '@/lib/types'
 import { cn } from '@/lib/utils'
@@ -133,7 +134,8 @@ export function CaseCardTimeline({ cards, showMoveToCase = true, showBatchAnalyz
     }
   }
 
-  /** 批量整理限流并发：整 Case 几十张卡同时打 provider 容易触发 429（4xx 不在重试白名单）。
+  /** 批量整理限流并发：并发数 = 默认 Provider 的并发设置（设置 → AI，默认 10），
+   *  整 Case 几十张卡同时打 provider 容易触发 429（4xx 不在重试白名单）。
    *  任务中心只记一个批量任务（内部单卡不重复注册），任一张失败整体标失败。 */
   async function analyzeAllCards() {
     if (!cards.length) return
@@ -143,10 +145,11 @@ export function CaseCardTimeline({ cards, showMoveToCase = true, showBatchAnalyz
       targetType: 'case',
       targetId: cards[0]?.caseId,
     })
+    const concurrency = await getDefaultAiConcurrency().catch(() => 10)
     const failures: string[] = []
     setBatchAnalyzing(true)
     const queue = cards.map((card) => card.id)
-    const workers = Array.from({ length: Math.min(3, queue.length) }, async () => {
+    const workers = Array.from({ length: Math.max(1, Math.min(concurrency, queue.length)) }, async () => {
       for (;;) {
         const cardId = queue.shift()
         if (cardId == null) return
