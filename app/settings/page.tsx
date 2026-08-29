@@ -94,6 +94,8 @@ export default function SettingsPage() {
   const [aiDialogOpen, setAiDialogOpen] = useState(false)
   const [editingProvider, setEditingProvider] = useState<AiProvider | null>(null)
   const [aiAutoAnalyze, setAiAutoAnalyze] = useState(true)
+  const [aiAutoSuggest, setAiAutoSuggest] = useState(true)
+  const [aiAutoSummary, setAiAutoSummary] = useState(true)
 
   useEffect(() => setMounted(true), [])
 
@@ -112,7 +114,11 @@ export default function SettingsPage() {
     void runWidgetUpdateCheck()
     void listAiProviders().then(setAiProviders).catch(() => undefined)
     void getAiSettings()
-      .then((settings) => setAiAutoAnalyze(settings.autoAnalyze))
+      .then((settings) => {
+        setAiAutoAnalyze(settings.autoAnalyze)
+        setAiAutoSuggest(settings.autoSuggest !== false)
+        setAiAutoSummary(settings.autoSummary !== false)
+      })
       .catch(() => undefined)
   }, [])
 
@@ -611,7 +617,27 @@ export default function SettingsPage() {
                   disabled={!isTauriRuntime()}
                   onCheckedChange={(checked) => {
                     setAiAutoAnalyze(checked)
-                    void saveAiSettings({ autoAnalyze: checked }).catch(() => undefined)
+                    void saveAiSettings({ autoAnalyze: checked, autoSuggest: aiAutoSuggest, autoSummary: aiAutoSummary }).catch(() => undefined)
+                  }}
+                />
+              </SettingRow>
+              <SettingRow title="自动建议" description="Case 关联 Trade 后自动检查没落库的止盈止损动作；导入后的 AI 关联推荐也由此开关控制">
+                <Switch
+                  checked={aiAutoSuggest}
+                  disabled={!isTauriRuntime()}
+                  onCheckedChange={(checked) => {
+                    setAiAutoSuggest(checked)
+                    void saveAiSettings({ autoAnalyze: aiAutoAnalyze, autoSuggest: checked, autoSummary: aiAutoSummary }).catch(() => undefined)
+                  }}
+                />
+              </SettingRow>
+              <SettingRow title="自动整单总结" description="Trade 关闭时自动生成整单 AI 总结（复盘页/Case 页查看，随时可手动重新总结）">
+                <Switch
+                  checked={aiAutoSummary}
+                  disabled={!isTauriRuntime()}
+                  onCheckedChange={(checked) => {
+                    setAiAutoSummary(checked)
+                    void saveAiSettings({ autoAnalyze: aiAutoAnalyze, autoSuggest: aiAutoSuggest, autoSummary: checked }).catch(() => undefined)
                   }}
                 />
               </SettingRow>
