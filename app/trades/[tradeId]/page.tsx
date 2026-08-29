@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react'
 import { Link, Navigate, useNavigate, useParams } from 'react-router-dom'
-import { CheckCircle2, ChevronDown, ChevronRight, Clipboard, Copy, ImagePlus, NotebookPen, Trash2 } from 'lucide-react'
+import { CheckCircle2, ChevronRight, Clipboard, Copy, ImagePlus, MoreHorizontal, NotebookPen, Trash2 } from 'lucide-react'
 
 import { AttachmentImage } from '@/components/attachment-image'
 import { TradeChart, type TradeChartCaseMarker } from '@/components/trade-chart'
@@ -262,31 +262,6 @@ export default function TradeDetailPage() {
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <div className="inline-flex items-center rounded-lg shadow-sm" data-slot="button-group">
-            <Button variant="outline" className="rounded-r-none border-r-0" onClick={() => copyText(trade.id)}>
-              <Clipboard data-icon="inline-start" />
-              复制 ID
-            </Button>
-            <DropdownMenu>
-              <DropdownMenuTrigger
-                render={
-                  <Button variant="outline" size="icon" className="rounded-l-none px-0" aria-label="更多复制选项">
-                    <ChevronDown />
-                  </Button>
-                }
-              />
-              <DropdownMenuContent align="end" className="w-44">
-                <DropdownMenuItem onClick={() => copyTradeJson(false)}>
-                  <Clipboard />
-                  复制 JSON
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => copyTradeJson(true)}>
-                  <Clipboard />
-                  JSON + 图表
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
-          </div>
           <Button variant="outline" onClick={createLinkedNote}>
             <NotebookPen data-icon="inline-start" />
             新建笔记
@@ -298,6 +273,29 @@ export default function TradeDetailPage() {
             </Button>
           )}
           <EditTradeDialog trade={trade} openRequest={editOpenRequest} prefill={suggestPrefill} />
+          <DropdownMenu>
+            <DropdownMenuTrigger
+              render={
+                <Button variant="outline" size="icon" aria-label="更多操作">
+                  <MoreHorizontal />
+                </Button>
+              }
+            />
+            <DropdownMenuContent align="end" className="w-44">
+              <DropdownMenuItem onClick={() => copyText(trade.id)}>
+                <Clipboard />
+                复制 ID
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => copyTradeJson(false)}>
+                <Clipboard />
+                复制 JSON
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => copyTradeJson(true)}>
+                <Clipboard />
+                JSON + 图表
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
         </div>
       </header>
 
