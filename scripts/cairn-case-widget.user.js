@@ -90,7 +90,8 @@
     return 'http://127.0.0.1:' + state.port + '/api/v1';
   }
 
-  function api(method, path, body) {
+  function api(method, path, body, timeoutMs) {
+    const timeout = timeoutMs || 8000;
     const payload = body == null ? null : JSON.stringify(body);
     const headers = { Authorization: 'Bearer ' + state.token };
     if (payload != null) headers['Content-Type'] = 'application/json';
@@ -102,14 +103,14 @@
           url: baseUrl() + path,
           headers,
           data: payload,
-          timeout: 8000,
+          timeout,
           onload: (res) => resolve({ status: res.status, json: parseJson(res.responseText) }),
           onerror: () => reject(new Error('network')),
           ontimeout: () => reject(new Error('timeout')),
         });
       });
     }
-    return fetch(baseUrl() + path, { method, headers, body: payload })
+    return fetch(baseUrl() + path, { method, headers, body: payload, signal: AbortSignal.timeout(timeout) })
       .then(async (res) => ({ status: res.status, json: parseJson(await res.text()) }))
       .catch(() => { throw new Error('network'); });
   }
@@ -1160,6 +1161,38 @@
     return hints;
   }
 
+  /* ================= 批量拆卡预检 ================= */
+
+  // 显式 K 线锚点的口语变体（生产语料校准）：「BAR 120」「bar #120」「120号K线」「第 42 根」
+  const ANCHOR_PATTERNS = [
+    /\bbar\s*#?\s*\d+\b/gi,
+    /\d+\s*号\s*k\s*线/gi,
+    /第\s*\d+\s*根/g,
+  ];
+
+  function countExplicitAnchors(text) {
+    let count = 0;
+    for (const pattern of ANCHOR_PATTERNS) {
+      const matches = text.match(pattern);
+      if (matches) count += matches.length;
+    }
+    return count;
+  }
+
+  // 命中批量特征（显式锚点 ≥2，或 ≥1 锚点 + 「下一根」类推进）→ 走 batch-split；
+  // 手动填了 BAR 的提交视为单卡（用户已明确锚点），不拆。
+  function looksLikeBatch(text) {
+    const anchors = countExplicitAnchors(text);
+    if (anchors === 0) return false;
+    if (anchors >= 2) return true;
+    const nexts = (text.match(/下一根/g) || []).length;
+    return nexts >= 1;
+  }
+
+  function makeRequestIds() {
+    return 'bs-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
+  }
+
   /* ================= 提交 Card ================= */
 
   async function submitCard() {
@@ -1177,11 +1210,46 @@
     if (Number.isInteger(manualBar) && manualBar > 0) payload.barRef = manualBar;
     if (state.phase === 'entry') payload.entryDecision = state.entryDecision;
 
+    // 批量语音拆卡：直接拆分落库（不做预览，流畅优先）；拆错了用 ✎/✕ 修正或删除
+    const useBatch = payload.barRef == null && looksLikeBatch(text);
+
     const btn = $('submit-btn');
     state.busy = true;
     btn.disabled = true;
-    btn.textContent = '保存中…';
+    btn.textContent = useBatch ? '拆分中…' : '保存中…';
     try {
+      if (useBatch) {
+        const batchBody = { phase: payload.phase, rawText: text, clientRequestId: makeRequestIds() };
+        if (payload.entryDecision) batchBody.entryDecision = payload.entryDecision;
+        // AI 拆分可能要几十秒：60s 超时；旧后端（0.2.x）没有该路由 → 404 自动退回单卡提交
+        let res = await api('POST', '/cases/' + encodeURIComponent(state.caseId) + '/cards/batch-split', batchBody, 60000);
+        if (res.status === 404 || res.status === 405) {
+          res = await api('POST', '/cases/' + encodeURIComponent(state.caseId) + '/cards', payload);
+          res = { status: res.status, json: res.json && res.json.id ? { cards: [res.json] } : res.json };
+        }
+        if (res.status === 401) {
+          state.connected = false;
+          showToast('Token 无效', 'err');
+          showSettings(true);
+          return;
+        }
+        const cards = res.json && Array.isArray(res.json.cards) ? res.json.cards : null;
+        if (res.status !== 200 || !cards) {
+          showToast((res.json && res.json.error) || '拆分失败', 'err');
+          return;
+        }
+        state.cards = [...cards].reverse().concat(state.cards);
+        renderCards();
+        const first = $('card-list').firstElementChild;
+        if (first) first.classList.add('fresh');
+        ta.value = '';
+        $('bar-input').value = '';
+        $('completeness-tip').classList.remove('show');
+        showToast(cards.length > 1 ? '✓ 已拆成 ' + cards.length + ' 张卡' : '✓ 已保存');
+        ta.focus();
+        return;
+      }
+
       const res = await api('POST', '/cases/' + encodeURIComponent(state.caseId) + '/cards', payload);
       if (res.status === 401) {
         state.connected = false;

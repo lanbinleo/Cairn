@@ -238,6 +238,56 @@ mod tests {
         assert!(!version_gt("0.2", "0.2.0"));
     }
 
+    #[test]
+    fn batch_split_degrades_without_ai_and_is_idempotent() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        db::migrate(&conn).unwrap();
+        db::save_record_in_tx(
+            &conn,
+            "cases",
+            "case-1",
+            json!({ "id": "case-1", "accountId": "acct-1", "periodId": "period-1", "title": "T", "status": "active", "provenance": "forward", "tagIds": [], "createdAt": 1, "updatedAt": 1 }),
+        )
+        .unwrap();
+
+        // 无 AppHandle（单测）→ AI 不可用 → 退化为完整单卡，绝不丢原文；barRef 机械提取
+        let long_text = "现在是 BAR 120，这根 K 线收了长上影，我看到区间上沿又一次失败了。下一根直接砸下来，突破了昨天的低点。再下一根缩量回抽，没有跟随的空头。我决定继续等一个更干净的入场位置再说。";
+        let (cards, changed) = futures::executor::block_on(run_batch_split(
+            None, &conn, "case-1", "pre-entry", long_text, None, "bs-test-1", 1000,
+        ))
+        .unwrap();
+        assert!(changed);
+        assert_eq!(cards.len(), 1, "degraded to single card");
+        assert_eq!(cards[0]["rawText"], long_text, "original text never lost");
+        assert_eq!(cards[0]["barRef"], 120);
+        assert_eq!(cards[0]["id"], "bs-test-1-0");
+
+        // 幂等重放：同 clientRequestId 返回已创建的卡，不再新增
+        let (replayed, changed) = futures::executor::block_on(run_batch_split(
+            None, &conn, "case-1", "pre-entry", long_text, None, "bs-test-1", 2000,
+        ))
+        .unwrap();
+        assert!(!changed);
+        assert_eq!(replayed.len(), 1);
+
+        let all = db::read_case_cards_for_case(&conn, "case-1").unwrap();
+        assert_eq!(all.len(), 1);
+
+        // 校验：非法 clientRequestId / 未知 Case / 非法 phase
+        assert!(futures::executor::block_on(run_batch_split(
+            None, &conn, "case-1", "pre-entry", "内容", None, "非法 id!", 3000,
+        ))
+        .is_err());
+        assert!(futures::executor::block_on(run_batch_split(
+            None, &conn, "case-404", "pre-entry", "内容", None, "bs-x", 3000,
+        ))
+        .is_err());
+        assert!(futures::executor::block_on(run_batch_split(
+            None, &conn, "case-1", "invalid", "内容", None, "bs-y", 3000,
+        ))
+        .is_err());
+    }
+
     fn suggestion(action: &str, price: Option<f64>, quote: &str) -> ai::ParsedSuggestion {
         ai::ParsedSuggestion {
             card_id: "card-1".to_string(),
@@ -970,6 +1020,163 @@ async fn ai_suggest_bindings(app: AppHandle, context: String, candidate_count: u
     let content = ai::chat_completion_with_retry(&provider, &model, &messages).await?;
     let matches = ai::parse_binding_matches(&content, candidate_count)?;
     Ok(json!({ "schemaVersion": ai::BINDING_PROMPT_VERSION, "matches": matches }))
+}
+
+/// 批量语音拆卡（0.3.0）：一大段口语原文按 K 线锚点 AI 拆成多张卡，直接落库（流畅优先，
+/// 不做预览——拆错了用删卡/改字收拾）。机械校验失败或 AI 不可用时整体退化为一张完整卡，
+/// 绝不丢原文。幂等：clientRequestId 首段存在时视为重放，原样返回已创建的卡。
+pub(crate) async fn run_batch_split(
+    app: Option<&AppHandle>,
+    conn: &rusqlite::Connection,
+    case_id: &str,
+    phase: &str,
+    raw_text: &str,
+    entry_decision: Option<String>,
+    client_request_id: &str,
+    now: u64,
+) -> Result<(Vec<Value>, bool), String> {
+    if db::read_record_by_id(conn, "cases", case_id)?.is_none() {
+        return Err(format!("case not found: {case_id}"));
+    }
+    const PHASES: [&str; 5] = ["pre-entry", "entry", "intermediate", "closing", "reflection"];
+    if !PHASES.contains(&phase) {
+        return Err(format!("invalid phase: {phase}; must be one of {PHASES:?}"));
+    }
+    if raw_text.trim().is_empty() {
+        return Err("request body is missing valid rawText".to_string());
+    }
+    if !client_request_id
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
+        || client_request_id.len() > 48
+    {
+        return Err("invalid clientRequestId: use 1-48 characters of letters, digits, '-' or '_'".to_string());
+    }
+
+    // 幂等重放：{rid}-0 已存在 → 收集 {rid}-{i} 直到断档
+    let replay_first = format!("{client_request_id}-0");
+    if let Some(first) = db::read_record_by_id(conn, "caseCards", &replay_first)? {
+        let mut replayed = vec![first];
+        for index in 1.. {
+            match db::read_record_by_id(conn, "caseCards", &format!("{client_request_id}-{index}"))? {
+                Some(card) => replayed.push(card),
+                None => break,
+            }
+        }
+        return Ok((replayed, false));
+    }
+
+    // 短文本不可能是多卡；无 AppHandle（单测环境）、无默认 Provider 或 AI/解析失败 → 退化为完整单卡
+    let single = || vec![ai::ParsedCardSplit {
+        bar_ref: api::extract_bar_ref(raw_text),
+        text: raw_text.trim().to_string(),
+    }];
+    let splits: Vec<ai::ParsedCardSplit> = if raw_text.chars().count() < 60 {
+        single()
+    } else {
+        match app.and_then(|app| ai::default_provider(app).ok().flatten()) {
+            Some((provider, model)) => {
+                let messages = ai::build_split_messages(phase, raw_text);
+                match ai::chat_completion_with_retry(&provider, &model, &messages).await {
+                    Ok(content) => ai::parse_card_splits(&content, raw_text).unwrap_or_else(|_| single()),
+                    Err(err) => {
+                        if let Some(app) = app {
+                            ai::log_provider_event(app, format!("batch split degraded to single card: {err}"));
+                        }
+                        single()
+                    }
+                }
+            }
+            None => single(),
+        }
+    };
+
+    let mut created: Vec<Value> = Vec::new();
+    for (index, split) in splits.into_iter().enumerate() {
+        let id = format!("{client_request_id}-{index}");
+        // createdAt 逐张 +1ms：前端按 createdAt 排序，避免 10 张以上时 id 字典序错乱
+        let mut data = json!({
+            "id": id,
+            "caseId": case_id,
+            "phase": phase,
+            "rawText": split.text,
+            "createdAt": now + index as u64,
+        });
+        if let Some(bar) = split.bar_ref {
+            data["barRef"] = json!(bar);
+        }
+        if index == 0 {
+            if let Some(decision) = entry_decision.as_deref() {
+                data["entryDecision"] = json!(decision);
+            }
+        }
+        db::save_record_in_tx(conn, "caseCards", &id, data.clone())?;
+        created.push(data);
+    }
+    if let Some(app) = app {
+        ai::log_provider_event(app, format!("batch split for case {case_id}: {} cards", created.len()));
+    }
+    Ok((created, true))
+}
+
+/// REST 批量拆卡入口（由 api server 循环分发；不进 handle_request 路由表——
+/// 它需要 AppHandle 走 AI，而 handle_request 保持无 GUI 依赖、测试二进制可链接）。
+/// 阻塞调用 AI（90s 超时上限；本地 API 单线程，拆分期间其他请求排队——浮窗是
+/// 唯一客户端且本来就在等这次提交）。成功后逐张 spawn 自动分析。
+pub(crate) fn batch_split_endpoint(
+    app: &AppHandle,
+    conn: &rusqlite::Connection,
+    url: &str,
+    auth: Option<&str>,
+    token: &str,
+    body: &[u8],
+    now: u64,
+) -> api::ApiOutcome {
+    if !api::authorized(token, auth) {
+        return api::ApiOutcome { status: 401, body: json!("missing or invalid bearer token"), data_changed: false };
+    }
+    let parsed: Value = match serde_json::from_slice(body) {
+        Ok(value) => value,
+        Err(_) => return api::ApiOutcome { status: 400, body: json!("invalid JSON body"), data_changed: false },
+    };
+    let path = url.split('?').next().unwrap_or("").trim_matches('/');
+    // api/v1/cases/{caseId}/cards/batch-split
+    let case_id = path.split('/').nth(3).unwrap_or_default().to_string();
+    let run = || -> Result<(Vec<Value>, bool), String> {
+        let phase = parsed.get("phase").and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty())
+            .ok_or_else(|| "request body is missing valid phase".to_string())?.to_string();
+        let raw_text = parsed.get("rawText").and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty())
+            .ok_or_else(|| "request body is missing valid rawText".to_string())?.to_string();
+        let client_request_id = parsed.get("clientRequestId").and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty())
+            .ok_or_else(|| "request body is missing valid clientRequestId".to_string())?.to_string();
+        let entry_decision = parsed.get("entryDecision").and_then(Value::as_str).map(str::to_string);
+        tauri::async_runtime::block_on(run_batch_split(
+            Some(app),
+            conn,
+            &case_id,
+            &phase,
+            &raw_text,
+            entry_decision,
+            &client_request_id,
+            now,
+        ))
+    };
+    match run() {
+        Ok((cards, changed)) => {
+            if changed {
+                for card in &cards {
+                    if let Some(id) = card.get("id").and_then(Value::as_str) {
+                        ai::spawn_auto_analysis(app, id.to_string());
+                    }
+                }
+            }
+            api::ApiOutcome { status: 200, body: json!({ "cards": cards }), data_changed: changed }
+        }
+        Err(message) => {
+            let status = api::error_status(&message);
+            api::ApiOutcome { status, body: json!({ "error": message }), data_changed: false }
+        }
+    }
 }
 
 #[derive(Serialize)]

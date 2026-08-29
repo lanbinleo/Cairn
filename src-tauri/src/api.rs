@@ -271,15 +271,23 @@ pub fn start_server(app: AppHandle) {
             let token = current_token(&app);
             let db = app.state::<db::Db>();
             let outcome = match db.conn() {
-                Ok(conn) => handle_request(
-                    &conn,
-                    &token,
-                    &method,
-                    &url,
-                    auth.as_deref(),
-                    &body,
-                    now_ms(),
-                ),
+                Ok(conn) => {
+                    // 批量拆卡在 server 循环层分发（不在 handle_request 的路由表里）：
+                    // 它需要 AppHandle 走 AI，而 handle_request 保持无 GUI 依赖、可单测。
+                    if method == "POST" && url.starts_with("/api/v1/cases/") && url.ends_with("/cards/batch-split") {
+                        crate::batch_split_endpoint(&app, &conn, &url, auth.as_deref(), &token, &body, now_ms())
+                    } else {
+                        handle_request(
+                            &conn,
+                            &token,
+                            &method,
+                            &url,
+                            auth.as_deref(),
+                            &body,
+                            now_ms(),
+                        )
+                    }
+                }
                 Err(err) => ApiOutcome::error(500, &err),
             };
 
@@ -340,7 +348,17 @@ fn token_matches(expected: &str, provided: &str) -> bool {
         == 0
 }
 
-fn error_status(message: &str) -> u16 {
+/// 供 server 循环层分发批量拆卡时的鉴权（与 handle_request 同规则）。
+pub(crate) fn authorized(token: &str, auth: Option<&str>) -> bool {
+    matches!(bearer_token(auth).map(|value| token_matches(token, value)), Some(true))
+}
+
+/// 供 server 循环层分发批量拆卡时的错误码映射。
+pub(crate) fn error_status(message: &str) -> u16 {
+    error_status_impl(message)
+}
+
+fn error_status_impl(message: &str) -> u16 {
     if message.contains("immutable")
         || message.contains("UNIQUE constraint failed")
         || message.contains("already exists")
@@ -438,6 +456,7 @@ pub(crate) fn handle_request(
         ("POST", ["api", "v1", "cases", case_id, "cards"]) => {
             run(|| create_case_card(conn, case_id, &parsed_body, now))
         }
+        // 批量拆卡（POST /cases/:id/cards/batch-split）由 server 循环层分发，见 start_server
         ("PUT", ["api", "v1", "cases", case_id, "cards", card_id]) => {
             run(|| update_case_card(conn, case_id, card_id, &parsed_body))
         }
@@ -471,7 +490,7 @@ fn require_str(body: &Value, key: &str) -> Result<String, String> {
 
 /// 与前端 lib/cases.ts 的 extractExplicitBarRef 同规则：
 /// "bar #38" / "BAR41" / "第 42 根 K 线"，取最早出现的引用。
-fn extract_bar_ref(raw_text: &str) -> Option<i64> {
+pub(crate) fn extract_bar_ref(raw_text: &str) -> Option<i64> {
     let mut best: Option<(usize, i64)> = None;
     let lower = raw_text.to_lowercase();
 

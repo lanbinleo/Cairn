@@ -904,6 +904,81 @@ pub fn parse_binding_matches(content: &str, candidate_count: usize) -> Result<Ve
     Ok(out)
 }
 
+// ==================== 批量语音拆卡 ====================
+
+pub const SPLIT_PROMPT_VERSION: &str = "0.3.0-split-1";
+
+pub fn build_split_messages(phase: &str, raw_text: &str) -> Vec<ChatMessage> {
+    let system = "你是交易日志的拆卡员。交易者用语音一口气讲了几根 K 线的观察，一口气提交了一大段原文。你把这一大段按 K 线锚点拆成多张卡片。
+
+规则：
+- 只输出一个 JSON 对象，不要 markdown 代码块和解释：{\"cards\":[{\"barRef\":<正整数或null>,\"text\":\"<原文逐字连续片段>\"}]}
+- text 必须逐字复制原文（一字不差；可以去掉段首尾的语气词和空白，但不许改字、不许翻译、不许润色），各段按原文出现顺序排列，合起来覆盖全部有信息的内容。
+- 锚点识别的写法：「120号K线」「120 号 K 线」「BAR 120」「bar #120」「第 42 根 K 线」「现在是 254」，以及整段开头的裸数字（「89，价格选择去上涨」）。
+- 「下一根 / 再下一根 / 下一根 K 线」= 上一个 barRef + 1；交易者再次显式报号后以新报的号为准。
+- 回顾更早 K 线的引用不是锚点，以陈述时刻的 K 线为准。
+- 完全没提到 K 线的段落 barRef 为 null。
+- 整段只在讲一根 K 线（或一件事）就输出一张卡，不要硬拆。";
+    let user = format!("记录阶段：{}（{}）\n原文：\n{}", phase_label(phase), phase, raw_text);
+    vec![ChatMessage::system(system), ChatMessage::user(user)]
+}
+
+/// 一段拆分结果：barRef 可缺失，text 是原文逐字片段。
+#[derive(Debug, Clone, PartialEq)]
+pub struct ParsedCardSplit {
+    pub bar_ref: Option<i64>,
+    pub text: String,
+}
+
+/// 机械校验模型拆分：每段 text 必须是原文的子串且按序不重叠；barRef 合法（1-1440）
+/// 且出现时单调递增（违反则该段 barRef 置空）。任一段不是子串 → 整体 Err（调用方退化为单卡）。
+pub fn parse_card_splits(content: &str, raw_text: &str) -> Result<Vec<ParsedCardSplit>, String> {
+    let json_text = extract_json_object(content);
+    let parsed: Value =
+        serde_json::from_str(json_text).map_err(|err| format!("model output is not JSON: {err}"))?;
+    let empty: Vec<Value> = Vec::new();
+    let items = parsed
+        .get("cards")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or(empty);
+    if items.is_empty() {
+        return Err("model output has no cards".to_string());
+    }
+
+    let mut out: Vec<ParsedCardSplit> = Vec::new();
+    let mut search_from = 0usize;
+    let mut last_bar: Option<i64> = None;
+    for item in items.iter().take(20) {
+        let text = item
+            .get("text")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+            .ok_or_else(|| "split text is empty".to_string())?;
+        let position = raw_text[search_from..]
+            .find(text)
+            .map(|offset| search_from + offset)
+            .ok_or_else(|| format!("split text is not a verbatim substring: {text}"))?;
+        search_from = position + text.len();
+
+        let mut bar_ref = item
+            .get("barRef")
+            .and_then(Value::as_i64)
+            .filter(|bar| (1..=1440).contains(bar));
+        if let (Some(bar), Some(last)) = (bar_ref, last_bar) {
+            if bar <= last {
+                bar_ref = None;
+            }
+        }
+        if bar_ref.is_some() {
+            last_bar = bar_ref;
+        }
+        out.push(ParsedCardSplit { bar_ref, text: text.to_string() });
+    }
+    Ok(out)
+}
+
 // ==================== Case 标题代拟 ====================
 
 pub fn build_title_messages(cards: &[(String, String)]) -> Vec<ChatMessage> {
@@ -1093,6 +1168,31 @@ mod tests {
         let summary = parse_summary(content).unwrap();
         assert_eq!(summary["highlights"].as_array().unwrap().len(), 0);
         assert_eq!(summary["narrative"], "");
+    }
+
+    #[test]
+    fn parse_card_splits_validates_substrings_and_bar_monotonic() {
+        let raw = "120号K线收了长上影，上沿又一次失败。下一根直接砸下来，跌破昨天低点。再下一根缩量回抽，空头没有跟随。整体我打算继续等。";
+        let content = r#"{"cards":[
+            {"barRef":120,"text":"120号K线收了长上影，上沿又一次失败。"},
+            {"barRef":121,"text":"下一根直接砸下来，跌破昨天低点。"},
+            {"barRef":119,"text":"再下一根缩量回抽，空头没有跟随。"},
+            {"barRef":null,"text":"整体我打算继续等。"}
+        ]}"#;
+        let splits = parse_card_splits(content, raw).unwrap();
+        assert_eq!(splits.len(), 4);
+        assert_eq!(splits[0].bar_ref, Some(120));
+        assert_eq!(splits[1].bar_ref, Some(121));
+        assert_eq!(splits[2].bar_ref, None, "非递增 barRef 置空");
+        assert_eq!(splits[3].bar_ref, None);
+
+        // 非逐字片段 → 整体 Err（调用方退化为单卡）
+        let bad = r#"{"cards":[{"barRef":1,"text":"模型编的话"}]}"#;
+        assert!(parse_card_splits(bad, raw).is_err());
+        // 乱序片段（后段先于前段出现）→ Err
+        let reversed = r#"{"cards":[{"barRef":2,"text":"再下一根缩量回抽，空头没有跟随。"},{"barRef":1,"text":"120号K线收了长上影，上沿又一次失败。"}]}"#;
+        assert!(parse_card_splits(reversed, raw).is_err());
+        assert!(parse_card_splits("拆不了", raw).is_err());
     }
 
     #[test]
