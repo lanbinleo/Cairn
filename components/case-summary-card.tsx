@@ -1,6 +1,5 @@
 'use client'
 
-import { useState } from 'react'
 import { NotebookPen, RefreshCw, Sparkles } from 'lucide-react'
 
 import { AiRetryLink } from '@/components/ai-retry-button'
@@ -37,27 +36,22 @@ export function CaseSummaryCard({
   variant?: 'full' | 'compact'
   trade?: Trade | null
 }) {
-  const { summarizeCase, updateTrade } = useCairn()
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState('')
+  const { summarizeCase, updateTrade, aiTasks } = useCairn()
+  // busy/error 是 store 级状态：AI 调用长达几十秒，切页回来仍能看到「生成中」或失败原因
+  const busy = aiTasks.summarizingCaseIds.includes(caseRecord.id)
+  const error = aiTasks.summaryErrorByCase[caseRecord.id] ?? ''
   const summary = caseRecord.aiSummary
   const stale = isCaseSummaryStale(caseRecord, cards)
   const caseCards = cards.filter((card) => card.caseId === caseRecord.id)
 
   async function run(instruction?: string) {
-    setBusy(true)
-    setError('')
-    try {
-      await summarizeCase(caseRecord.id, instruction)
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause))
-    } finally {
-      setBusy(false)
-    }
+    // 失败不抛出：store 已记录原因，本组件从 aiTasks 读取显示
+    await summarizeCase(caseRecord.id, instruction)
   }
 
   function fillNote() {
-    if (!trade || trade.note) return
+    if (!trade) return
+    if (trade.note && !window.confirm('重新填入会整体替换当前复盘备注，继续？')) return
     const draft = [
       `【AI 总结草稿】${summary?.overview ?? ''}`,
       '',
@@ -71,13 +65,17 @@ export function CaseSummaryCard({
     if (caseCards.length === 0) return null
     return (
       <Card>
-        <CardContent className="flex flex-wrap items-center justify-between gap-3 pt-6">
-          <p className="text-sm text-muted-foreground">
-            AI 可以串联卡片心路{trade ? '、成交与计划偏差' : ''}，生成一版整单复盘总结（只摆事实，不打分）。
-          </p>
-          <Button size="sm" disabled={busy} onClick={() => void run()}>
-            <Sparkles data-icon="inline-start" />生成总结
-          </Button>
+        <CardContent className="flex flex-col gap-3 pt-6">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <p className="text-sm text-muted-foreground">
+              把卡片记录和实际成交对照，生成一段整单复盘（只摆事实，不打分）。
+            </p>
+            <Button size="sm" disabled={busy} onClick={() => void run()}>
+              <Sparkles className={cn('size-4', busy && 'animate-pulse')} data-icon="inline-start" />
+              {busy ? '生成中…' : '生成总结'}
+            </Button>
+          </div>
+          {error && <p className="rounded-md border border-destructive/40 bg-destructive/10 px-2 py-1.5 text-xs text-destructive">{error}</p>}
         </CardContent>
       </Card>
     )
@@ -99,9 +97,9 @@ export function CaseSummaryCard({
             </CardDescription>
           </div>
           <div className="flex items-center gap-2">
-            {trade && !trade.note && (
+            {trade && (
               <Button size="sm" variant="outline" disabled={busy} onClick={fillNote}>
-                <NotebookPen data-icon="inline-start" />填入复盘备注
+                <NotebookPen data-icon="inline-start" />{trade.note ? '重新填入' : '填入复盘备注'}
               </Button>
             )}
             <Button size="sm" variant="outline" disabled={busy} onClick={() => void run()}>

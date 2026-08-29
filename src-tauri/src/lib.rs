@@ -947,7 +947,12 @@ async fn suggest_case_executions(
     db: tauri::State<'_, db::Db>,
     case_id: String,
 ) -> Result<Value, String> {
-    run_execution_suggestions(&app, &db, &case_id).await
+    let result = run_execution_suggestions(&app, &db, &case_id).await;
+    if let Err(err) = &result {
+        // 手动检查失败必须留痕：前端只显示一句话，原因靠日志页排查
+        ai::log_provider_event(&app, format!("execution suggestions for case {case_id} failed: {err}"));
+    }
+    result
 }
 
 /// 整单总结的 AI 管道：上下文由前端组装（metrics/计划对比在 TS 侧计算），
@@ -965,10 +970,22 @@ async fn ai_summarize_case(
         messages.push(ai::ChatMessage::user(format!("补充总结要求：{extra}")));
     }
     ai::log_provider_event(&app, format!("summarizing case with {model}"));
-    let content = ai::chat_completion_with_retry(&provider, &model, &messages).await?;
-    let mut summary = ai::parse_summary(&content)?;
-    summary["model"] = json!(model);
-    summary["providerId"] = json!(provider.id);
+    let summary = match async {
+        let content = ai::chat_completion_with_retry(&provider, &model, &messages).await?;
+        let mut summary = ai::parse_summary(&content)?;
+        summary["model"] = json!(model);
+        summary["providerId"] = json!(provider.id);
+        Ok::<Value, String>(summary)
+    }
+    .await
+    {
+        Ok(summary) => summary,
+        Err(err) => {
+            // 手动总结失败必须留痕：前端只显示一句话，原因靠日志页排查
+            ai::log_provider_event(&app, format!("case summary failed: {err}"));
+            return Err(err);
+        }
+    };
     Ok(summary)
 }
 

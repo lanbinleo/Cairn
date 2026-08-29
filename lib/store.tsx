@@ -83,8 +83,15 @@ interface CairnStore {
     suggestionId: string,
     patch: { status: CaseExecutionSuggestion['status']; acceptedExecutionId?: string },
   ) => void
-  /** 生成/重跑整单 AI 总结（上下文前端组装；只吸收 aiSummary 字段）。 */
+  /** 生成/重跑整单 AI 总结（上下文前端组装；只吸收 aiSummary 字段）。失败不 reject，写入 aiTasks。 */
   summarizeCase: (caseId: string, instruction?: string) => Promise<void>
+  /** 手动 AI 长任务（整单总结 / 补录建议检查）的运行与失败状态：store 级，切页回来仍可见。 */
+  aiTasks: {
+    summarizingCaseIds: string[]
+    checkingCaseIds: string[]
+    summaryErrorByCase: Record<string, string>
+    checkErrorByCase: Record<string, string>
+  }
   prefillTradePlanFromBoundCase: (tradeId: string) => boolean
   createCaseBinding: (caseId: string, tradeId: string, source?: CaseTradeBinding['source']) => Promise<CaseTradeBinding>
   deleteCaseBinding: (id: string) => Promise<void>
@@ -193,6 +200,14 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
   const [autoCloseTick, setAutoCloseTick] = useState(0)
   const handledAutoCloseTickRef = useRef(0)
   const requestAutoCloseCheck = useCallback(() => setAutoCloseTick((tick) => tick + 1), [])
+
+  /** 手动 AI 长任务的运行/失败状态（store 级：组件卸载后切页回来仍显示「生成中」或失败原因） */
+  const [aiTasks, setAiTasks] = useState<{
+    summarizingCaseIds: string[]
+    checkingCaseIds: string[]
+    summaryErrorByCase: Record<string, string>
+    checkErrorByCase: Record<string, string>
+  }>({ summarizingCaseIds: [], checkingCaseIds: [], summaryErrorByCase: {}, checkErrorByCase: {} })
 
   /* AI 总结用状态镜像：关单自动总结在 setState 同一刻触发，闭包里的 state 还是旧值，
      用 ref 保证组装上下文时读到最新数据。 */
@@ -449,13 +464,32 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
   }, [])
 
   /** 重跑持仓管理补录建议：只吸收 aiExecutionSuggestions 字段——请求期间
-   *  本地的标题/状态/标签修改不被回滚（与 analyzeCaseCard 同一吸收模式）。 */
+   *  本地的标题/状态/标签修改不被回滚（与 analyzeCaseCard 同一吸收模式）。
+   *  失败不 reject，写入 aiTasks.checkErrorByCase，由面板就地显示。 */
   const refreshCaseExecutionSuggestions = useCallback(async (caseId: string): Promise<void> => {
-    const updated = await suggestCaseExecutionsRemote(caseId)
-    setCases((prev) => prev.map((item) => {
-      if (item.id !== updated.id) return item
-      return { ...item, aiExecutionSuggestions: updated.aiExecutionSuggestions }
-    }))
+    setAiTasks((prev) => {
+      const checkErrorByCase = { ...prev.checkErrorByCase }
+      delete checkErrorByCase[caseId]
+      return {
+        ...prev,
+        checkingCaseIds: prev.checkingCaseIds.includes(caseId) ? prev.checkingCaseIds : [...prev.checkingCaseIds, caseId],
+        checkErrorByCase,
+      }
+    })
+    try {
+      const updated = await suggestCaseExecutionsRemote(caseId)
+      setCases((prev) => prev.map((item) => {
+        if (item.id !== updated.id) return item
+        return { ...item, aiExecutionSuggestions: updated.aiExecutionSuggestions }
+      }))
+    } catch (cause) {
+      setAiTasks((prev) => ({
+        ...prev,
+        checkErrorByCase: { ...prev.checkErrorByCase, [caseId]: cause instanceof Error ? cause.message : String(cause) },
+      }))
+    } finally {
+      setAiTasks((prev) => ({ ...prev, checkingCaseIds: prev.checkingCaseIds.filter((id) => id !== caseId) }))
+    }
   }, [])
 
   /** 更新单条建议状态：accepted 需带生成的 executionId，dismissed 记时间。 */
@@ -493,7 +527,8 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
   }, [refreshCaseExecutionSuggestions])
 
   /** 生成/重跑整单总结：上下文在此组装（metrics 在 TS），结果只吸收 aiSummary 字段。
-   *  经 stateRef 读最新数据——关单自动总结在 setState 同一刻触发，闭包 state 是旧的。 */
+   *  经 stateRef 读最新数据——关单自动总结在 setState 同一刻触发，闭包 state 是旧的。
+   *  失败不 reject，写入 aiTasks.summaryErrorByCase，由总结卡就地显示。 */
   const summarizeCase = useCallback(async (caseId: string, instruction?: string): Promise<void> => {
     const current = stateRef.current
     const caseRecord = current.cases.find((item) => item.id === caseId)
@@ -505,16 +540,34 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
     const period = trade ? current.periods.find((item) => item.id === trade.periodId) : undefined
     const symbol = trade ? current.symbols.find((item) => item.id === trade.symbolId) : undefined
     const context = buildCaseSummaryContext({ caseRecord, cards, trade, account, period, symbol })
+    setAiTasks((prev) => {
+      const summaryErrorByCase = { ...prev.summaryErrorByCase }
+      delete summaryErrorByCase[caseId]
+      return {
+        ...prev,
+        summarizingCaseIds: prev.summarizingCaseIds.includes(caseId) ? prev.summarizingCaseIds : [...prev.summarizingCaseIds, caseId],
+        summaryErrorByCase,
+      }
+    })
     // analyzedAt 取发起时刻：AI 期间（几十秒）新建/编辑的卡片才会正确标「总结过期」
     const startedAt = Date.now()
-    const summary = await summarizeCaseRemote(context, instruction)
-    const withMeta: CaseSummary = { ...summary, analyzedAt: startedAt }
-    setCases((prev) => prev.map((item) => {
-      if (item.id !== caseId) return item
-      const next = { ...item, aiSummary: withMeta }
-      void saveLocalRecord('cases', next)
-      return next
-    }))
+    try {
+      const summary = await summarizeCaseRemote(context, instruction)
+      const withMeta: CaseSummary = { ...summary, analyzedAt: startedAt }
+      setCases((prev) => prev.map((item) => {
+        if (item.id !== caseId) return item
+        const next = { ...item, aiSummary: withMeta }
+        void saveLocalRecord('cases', next)
+        return next
+      }))
+    } catch (cause) {
+      setAiTasks((prev) => ({
+        ...prev,
+        summaryErrorByCase: { ...prev.summaryErrorByCase, [caseId]: cause instanceof Error ? cause.message : String(cause) },
+      }))
+    } finally {
+      setAiTasks((prev) => ({ ...prev, summarizingCaseIds: prev.summarizingCaseIds.filter((id) => id !== caseId) }))
+    }
   }, [])
 
   /** Trade 关闭时自动总结（autoSummary 开关控制）。失败静默，手动按钮仍在。 */
@@ -1066,6 +1119,7 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
       refreshCaseExecutionSuggestions,
       setCaseExecutionSuggestionStatus,
       summarizeCase,
+      aiTasks,
       prefillTradePlanFromBoundCase,
       createCaseBinding,
       deleteCaseBinding,
@@ -1096,7 +1150,7 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
       updateCaseTag,
       deleteCaseTag,
     }),
-    [accounts, periods, trades, tagDefs, cases, caseCards, caseBindings, caseTagDefs, importBatches, attachments, chartImports, chartCandles, symbols, notes, updateAccount, updatePeriod, updateTrade, updateNote, createAccount, createPeriod, createSymbol, createNote, createImageAttachment, deleteAttachment, createCase, updateCase, deleteCase, createCaseCard, moveCaseCard, updateCaseCardText, updateCaseCardBarRef, updateCaseCardAnalysis, analyzeCaseCard, prefillTradePlanFromBoundCase, createCaseBinding, deleteCaseBinding, createTrades, createImportBatch, createChartImport, deleteChartImport, rollbackImportBatch, deleteAccount, deletePeriod, deleteTrade, deleteSymbol, deleteNote, restoreState, exportBackup, setTradeStatus, createTag, updateTag, deleteTag, createCaseTag, updateCaseTag, deleteCaseTag],
+    [accounts, periods, trades, tagDefs, cases, caseCards, caseBindings, caseTagDefs, importBatches, attachments, chartImports, chartCandles, symbols, notes, aiTasks, updateAccount, updatePeriod, updateTrade, updateNote, createAccount, createPeriod, createSymbol, createNote, createImageAttachment, deleteAttachment, createCase, updateCase, deleteCase, createCaseCard, moveCaseCard, updateCaseCardText, updateCaseCardBarRef, updateCaseCardAnalysis, analyzeCaseCard, prefillTradePlanFromBoundCase, createCaseBinding, deleteCaseBinding, createTrades, createImportBatch, createChartImport, deleteChartImport, rollbackImportBatch, deleteAccount, deletePeriod, deleteTrade, deleteSymbol, deleteNote, restoreState, exportBackup, setTradeStatus, createTag, updateTag, deleteTag, createCaseTag, updateCaseTag, deleteCaseTag],
   )
 
   return <StoreContext.Provider value={value}>{children}</StoreContext.Provider>

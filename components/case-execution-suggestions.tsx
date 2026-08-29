@@ -1,6 +1,5 @@
 'use client'
 
-import { useState } from 'react'
 import { Check, Pencil, RefreshCw, Sparkles, X } from 'lucide-react'
 
 import { Badge } from '@/components/ui/badge'
@@ -79,9 +78,10 @@ export function CaseExecutionSuggestions({
   /** 「修改后添加」：由页面构造草稿并打开 EditTradeDialog 预填 */
   onEditPrefill: (suggestion: CaseExecutionSuggestion, draft: Execution) => void
 }) {
-  const { updateTrade, refreshCaseExecutionSuggestions, setCaseExecutionSuggestionStatus } = useCairn()
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState('')
+  const { updateTrade, refreshCaseExecutionSuggestions, setCaseExecutionSuggestionStatus, aiTasks } = useCairn()
+  // busy/error 是 store 级状态：检查耗时几十秒，切页回来仍能看到「检查中」或失败原因
+  const busy = aiTasks.checkingCaseIds.includes(caseRecord.id)
+  const error = aiTasks.checkErrorByCase[caseRecord.id] ?? ''
   const blob = caseRecord.aiExecutionSuggestions
   const suggestions = blob?.suggestions ?? []
   // 展示层去重：已接受/已被成交覆盖的建议不再出现在待确认列表
@@ -92,15 +92,8 @@ export function CaseExecutionSuggestions({
   const dismissed = suggestions.filter((item) => item.status === 'dismissed').length
 
   async function refresh() {
-    setBusy(true)
-    setError('')
-    try {
-      await refreshCaseExecutionSuggestions(caseRecord.id)
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause))
-    } finally {
-      setBusy(false)
-    }
+    // 失败不抛出：store 已记录原因，本面板从 aiTasks 读取显示
+    await refreshCaseExecutionSuggestions(caseRecord.id)
   }
 
   function resolvedTime(suggestion: CaseExecutionSuggestion): number {
@@ -129,11 +122,14 @@ export function CaseExecutionSuggestions({
   if (!blob) {
     return (
       <Card>
-        <CardContent className="flex flex-wrap items-center justify-between gap-3 pt-6">
-          <p className="text-sm text-muted-foreground">AI 可以对照卡片原话检查没落库的止盈止损动作。</p>
-          <Button variant="outline" size="sm" disabled={busy} onClick={() => void refresh()}>
-            <Sparkles data-icon="inline-start" />AI 检查持仓动作
-          </Button>
+        <CardContent className="flex flex-col gap-3 pt-6">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <p className="text-sm text-muted-foreground">AI 可以对照卡片原话，找出说过但没记录的止盈/止损调整。</p>
+            <Button variant="outline" size="sm" disabled={busy} onClick={() => void refresh()}>
+              <Sparkles data-icon="inline-start" />{busy ? '检查中…' : 'AI 检查持仓动作'}
+            </Button>
+          </div>
+          {error && <p className="rounded-md border border-destructive/40 bg-destructive/10 px-2 py-1.5 text-xs text-destructive">{error}</p>}
         </CardContent>
       </Card>
     )
