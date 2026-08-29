@@ -71,7 +71,7 @@ export function AiTaskCenter() {
           </span>
         )}
       </PopoverTrigger>
-      <PopoverContent side="right" align="end" sideOffset={-24} className="w-80 p-0">
+      <PopoverContent side="top" align="start" alignOffset={32} sideOffset={6} className="w-72 p-0">
         <Tabs defaultValue="running">
           <div className="flex items-center justify-between gap-2 px-3 pt-2.5 pb-1">
             <TabsList className="h-8">
@@ -80,14 +80,14 @@ export function AiTaskCenter() {
             </TabsList>
             {hasFailed && <span className="pr-1 text-xs text-destructive">有失败</span>}
           </div>
-          <TabsContent value="running" className="px-1.5 pb-2">
+          <TabsContent value="running" className="max-h-80 overflow-y-auto px-1.5 pb-2">
             {running.length === 0
               ? <p className="px-2 py-6 text-center text-sm text-muted-foreground">没有进行中的 AI 任务</p>
               : running.map((task) => (
                 <TaskRow key={task.id} task={task} onJump={jump} />
               ))}
           </TabsContent>
-          <TabsContent value="finished" className="px-1.5 pb-2">
+          <TabsContent value="finished" className="max-h-80 overflow-y-auto px-1.5 pb-2">
             {finished.length === 0
               ? <p className="px-2 py-6 text-center text-sm text-muted-foreground">暂无已完成记录</p>
               : finished.map((task) => (
