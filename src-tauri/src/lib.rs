@@ -15,7 +15,7 @@ use serde::Serialize;
 use tauri::{
     menu::{Menu, MenuItem},
     tray::TrayIconBuilder,
-    AppHandle, Manager, State, WindowEvent,
+    AppHandle, Emitter, Manager, State, WindowEvent,
 };
 
 #[tauri::command]
@@ -955,13 +955,61 @@ async fn suggest_case_executions(
     result
 }
 
+/// 整单总结的流式增量合批器：每个 delta 都发一次 IPC 会洪泛 webview，
+/// 80ms 批量冲刷足够顺滑；大段增量（≥200 字）立即冲。
+struct SummaryStreamBatcher {
+    app: AppHandle,
+    task_id: Option<String>,
+    buffer: std::sync::Mutex<String>,
+    last_ms: std::sync::Mutex<u64>,
+}
+
+impl SummaryStreamBatcher {
+    fn new(app: AppHandle, task_id: Option<String>) -> Self {
+        Self { app, task_id, buffer: std::sync::Mutex::new(String::new()), last_ms: std::sync::Mutex::new(0) }
+    }
+
+    fn emit(&self, delta: String) {
+        let Some(task_id) = self.task_id.as_deref() else { return };
+        let _ = self.app.emit(crate::api::AI_STREAM_EVENT, json!({ "taskId": task_id, "delta": delta }));
+    }
+
+    fn push(&self, delta: &str) {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_millis() as u64)
+            .unwrap_or(0);
+        let payload = {
+            let mut buffer = self.buffer.lock().unwrap();
+            buffer.push_str(delta);
+            if now.saturating_sub(*self.last_ms.lock().unwrap()) >= 80 || buffer.chars().count() >= 200 {
+                std::mem::take(&mut *buffer)
+            } else {
+                return;
+            }
+        };
+        *self.last_ms.lock().unwrap() = now;
+        self.emit(payload);
+    }
+
+    /// 结束前把不足一批的尾巴推出去。
+    fn flush(&self) {
+        let payload = std::mem::take(&mut *self.buffer.lock().unwrap());
+        if !payload.is_empty() {
+            self.emit(payload);
+        }
+    }
+}
+
 /// 整单总结的 AI 管道：上下文由前端组装（metrics/计划对比在 TS 侧计算），
 /// Rust 只负责调用与解析校验；模型/时间等版本字段由前端落库时补齐。
+/// task_id 存在时走流式：增量经 cairn://ai-stream 事件推给前端。
 #[tauri::command]
 async fn ai_summarize_case(
     app: AppHandle,
     context: String,
     instruction: Option<String>,
+    task_id: Option<String>,
 ) -> Result<Value, String> {
     let (provider, model) = ai::default_provider(&app)?
         .ok_or_else(|| "还没有默认 AI Provider，请在 设置 → AI 中配置".to_string())?;
@@ -970,8 +1018,11 @@ async fn ai_summarize_case(
         messages.push(ai::ChatMessage::user(format!("补充总结要求：{extra}")));
     }
     ai::log_provider_event(&app, format!("summarizing case with {model}"));
+    let batcher = SummaryStreamBatcher::new(app.clone(), task_id);
+    let emit_delta = |delta: &str| batcher.push(delta);
+
     let summary = match async {
-        let content = ai::chat_completion_with_retry(&provider, &model, &messages).await?;
+        let content = ai::chat_completion_stream_with_retry(&provider, &model, &messages, &emit_delta).await?;
         let mut summary = ai::parse_summary(&content)?;
         summary["model"] = json!(model);
         summary["providerId"] = json!(provider.id);
@@ -986,6 +1037,7 @@ async fn ai_summarize_case(
             return Err(err);
         }
     };
+    batcher.flush();
     Ok(summary)
 }
 
@@ -1198,6 +1250,8 @@ pub(crate) fn batch_split_endpoint(
     let path = url.split('?').next().unwrap_or("").trim_matches('/');
     // api/v1/cases/{caseId}/cards/batch-split
     let case_id = path.split('/').nth(3).unwrap_or_default().to_string();
+    let split_task_id = ai::next_task_id();
+    ai::emit_task_event(app, &split_task_id, "split", "start", "批量拆卡", Some("case"), Some(&case_id), None);
     let run = || -> Result<(Vec<Value>, bool), String> {
         let phase = parsed.get("phase").and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty())
             .ok_or_else(|| "request body is missing valid phase".to_string())?.to_string();
@@ -1219,6 +1273,7 @@ pub(crate) fn batch_split_endpoint(
     };
     match run() {
         Ok((cards, changed)) => {
+            ai::emit_task_event(app, &split_task_id, "split", "succeeded", "批量拆卡", Some("case"), Some(&case_id), None);
             if changed {
                 for card in &cards {
                     if let Some(id) = card.get("id").and_then(Value::as_str) {
@@ -1229,6 +1284,7 @@ pub(crate) fn batch_split_endpoint(
             api::ApiOutcome { status: 200, body: json!({ "cards": cards, "version": ai::SPLIT_PROMPT_VERSION }), data_changed: changed }
         }
         Err(message) => {
+            ai::emit_task_event(app, &split_task_id, "split", "failed", "批量拆卡", Some("case"), Some(&case_id), Some(&message));
             let status = api::error_status(&message);
             api::ApiOutcome { status, body: json!({ "error": message }), data_changed: false }
         }

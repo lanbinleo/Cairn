@@ -142,15 +142,14 @@ pub async fn fetch_models(base_url: String, api_key: String) -> Result<Vec<Strin
     let response = request
         .send()
         .await
-        .map_err(|err| format!("request failed: {err}"))?;
+        .map_err(|err| format!("request failed: {}", describe_request_error(&err)))?;
     let status = response.status();
     let body = response
         .text()
         .await
-        .map_err(|err| format!("read response failed: {err}"))?;
+        .map_err(|err| format!("read response failed: {}", describe_read_error(&err)))?;
     if !status.is_success() {
-        let snippet: String = body.chars().take(300).collect();
-        return Err(format!("provider returned {status}: {snippet}"));
+        return Err(http_error_message(status, &body));
     }
     let parsed: Value = serde_json::from_str(&body).map_err(|err| format!("invalid response: {err}"))?;
     let mut models: Vec<String> = parsed
@@ -173,6 +172,74 @@ pub async fn fetch_models(base_url: String, api_key: String) -> Result<Vec<Strin
 
 pub fn log_provider_event(app: &AppHandle, message: String) {
     diagnostics::app_log(app, format!("ai: {message}"));
+}
+
+// ==================== 网络错误详情 ====================
+
+/// 拼接错误 source 链（最多 3 层）：reqwest 的 Display 只说 "error sending request for url"，
+/// 真正原因（DNS/连接/TLS/IO）藏在 source 链里，不取出来用户永远看不到为什么连不上。
+fn join_source_chain(err: &dyn std::error::Error) -> String {
+    let mut detail = String::new();
+    let mut source = err.source();
+    let mut depth = 0;
+    while let Some(cause) = source {
+        if depth > 0 {
+            detail.push_str(" ← ");
+        }
+        let cause_text = cause.to_string();
+        if !cause_text.is_empty() {
+            detail.push_str(&cause_text);
+            depth += 1;
+        }
+        source = cause.source();
+        if depth >= 3 {
+            break;
+        }
+    }
+    detail
+}
+
+/// 请求发送失败 → 分类 + 地址 + 底层原因的中文详情。
+/// 保持 "request failed:" 前缀：is_retryable_error 靠前缀分类。
+fn describe_request_error(err: &reqwest::Error) -> String {
+    let url = err.url().map(|url| url.to_string()).unwrap_or_default();
+    let chain = join_source_chain(err);
+    let chain_text = if chain.is_empty() { String::new() } else { format!("（{chain}）") };
+    if err.is_timeout() {
+        format!("请求超时：服务端长时间无响应 {url}{chain_text}")
+    } else if err.is_connect() {
+        format!("无法建立连接：DNS 解析失败、网络不通或被 VPN/代理拦截，请检查网络 {url}{chain_text}")
+    } else {
+        format!("请求发送失败 {url}{chain_text}")
+    }
+}
+
+/// 响应体读取失败 → 详情。保持 "read response failed:" 前缀。
+fn describe_read_error(err: &reqwest::Error) -> String {
+    let chain = join_source_chain(err);
+    let chain_text = if chain.is_empty() { String::new() } else { format!("（{chain}）") };
+    if err.is_timeout() {
+        format!("读取响应超时{chain_text}")
+    } else if err.is_decode() {
+        format!("响应内容异常{chain_text}")
+    } else {
+        format!("读取响应中断{chain_text}")
+    }
+}
+
+/// HTTP 非 2xx 的状态提示；空串表示无补充。
+fn http_status_hint(status: reqwest::StatusCode) -> &'static str {
+    match status.as_u16() {
+        401 | 403 => "（API Key 无效或无权限，去 设置 → AI 检查）",
+        404 => "（路径不存在，检查 Base URL 是否正确）",
+        429 => "（限流或额度不足，稍后再试）",
+        _ => "",
+    }
+}
+
+fn http_error_message(status: reqwest::StatusCode, body: &str) -> String {
+    let snippet: String = body.chars().take(300).collect();
+    format!("模型服务返回 {status}{}: {snippet}", http_status_hint(status))
 }
 
 // ==================== Chat Completion ====================
@@ -219,17 +286,21 @@ pub async fn chat_completion(
     let response = request
         .send()
         .await
-        .map_err(|err| format!("request failed: {err}"))?;
+        .map_err(|err| format!("request failed: {}", describe_request_error(&err)))?;
     let status = response.status();
     let body = response
         .text()
         .await
-        .map_err(|err| format!("read response failed: {err}"))?;
+        .map_err(|err| format!("read response failed: {}", describe_read_error(&err)))?;
     if !status.is_success() {
-        let snippet: String = body.chars().take(300).collect();
-        return Err(format!("provider returned {status}: {snippet}"));
+        return Err(http_error_message(status, &body));
     }
-    let parsed: Value = serde_json::from_str(&body)
+    extract_message_content(&body)
+}
+
+/// 从非流式响应体提取 choices[0].message.content（chat_completion 与流式降级路径共用）。
+fn extract_message_content(body: &str) -> Result<String, String> {
+    let parsed: Value = serde_json::from_str(body)
         .map_err(|err| format!("invalid response: {err}"))?;
     let content = parsed
         .get("choices")
@@ -287,8 +358,152 @@ pub async fn chat_completion_with_retry(
 fn is_retryable_error(message: &str) -> bool {
     message.starts_with("request failed")
         || message.starts_with("read response failed")
-        || message.starts_with("provider returned 5")
+        || message.starts_with("模型服务返回 5")
         || message.starts_with("provider returned empty content")
+}
+
+// ==================== 流式 Chat Completion ====================
+
+/// SSE 增量累积器：chunk 边界不与换行对齐，也不与 UTF-8 字符边界对齐，
+/// 所以按字节缓冲、只在完整行（\n 之前）上做 UTF-8 解码与 JSON 解析。
+struct SseAccumulator {
+    buffer: Vec<u8>,
+    content: String,
+    done: bool,
+}
+
+impl SseAccumulator {
+    fn new() -> Self {
+        Self { buffer: Vec::new(), content: String::new(), done: false }
+    }
+
+    /// 喂入一个网络 chunk，返回本次新产生的 delta.content 增量（可能为空）。
+    fn push_chunk(&mut self, chunk: &[u8]) -> String {
+        self.buffer.extend_from_slice(chunk);
+        let mut delta = String::new();
+        while let Some(pos) = self.buffer.iter().position(|&byte| byte == b'\n') {
+            let line = String::from_utf8_lossy(&self.buffer[..pos]).to_string();
+            self.buffer.drain(..=pos);
+            let line = line.trim_end_matches('\r');
+            let Some(data) = line.strip_prefix("data:") else { continue };
+            let data = data.trim();
+            if data == "[DONE]" {
+                self.done = true;
+                break;
+            }
+            if data.is_empty() {
+                continue;
+            }
+            // 单个事件解析失败不致命（role-only/usage 等无 delta 的帧直接跳过）
+            if let Ok(event) = serde_json::from_str::<Value>(data) {
+                if let Some(text) = event.pointer("/choices/0/delta/content").and_then(Value::as_str) {
+                    delta.push_str(text);
+                }
+            }
+        }
+        self.content.push_str(&delta);
+        delta
+    }
+}
+
+/// 流式 chat completion：stream: true，每个增量经 on_delta 吐出，返回累积全文
+/// （喂给与非流式相同的解析器，提示词零改动）。
+/// 超时口径：connect 15s + 两次 chunk 间隔 30s（read_timeout），无总时长限制——
+/// 总超时会掐断长输出。provider 忽略 stream 参数时自动降级整段读。
+pub async fn chat_completion_stream(
+    provider: &AiProvider,
+    model: &str,
+    messages: &[ChatMessage],
+    on_delta: &(dyn Fn(&str) + Send + Sync),
+) -> Result<String, String> {
+    let url = format!("{}/chat/completions", provider.base_url);
+    let client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(15))
+        .read_timeout(Duration::from_secs(30))
+        .build()
+        .map_err(|err| err.to_string())?;
+    let mut request = client.post(&url).json(&json!({
+        "model": model,
+        "messages": messages,
+        "temperature": 0,
+        "stream": true,
+    }));
+    if !provider.api_key.is_empty() {
+        request = request.bearer_auth(&provider.api_key);
+    }
+    let mut response = request
+        .send()
+        .await
+        .map_err(|err| format!("request failed: {}", describe_request_error(&err)))?;
+
+    let is_event_stream = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.contains("text/event-stream"));
+    if !is_event_stream {
+        // provider 不支持流式：当普通响应整段读，并整体作为一次增量吐给回调
+        let status = response.status();
+        let body = response
+            .text()
+            .await
+            .map_err(|err| format!("read response failed: {}", describe_read_error(&err)))?;
+        if !status.is_success() {
+            return Err(http_error_message(status, &body));
+        }
+        let content = extract_message_content(&body)?;
+        on_delta(&content);
+        return Ok(content);
+    }
+
+    let status = response.status();
+    if !status.is_success() {
+        let body = response.text().await.unwrap_or_default();
+        return Err(http_error_message(status, &body));
+    }
+
+    let mut acc = SseAccumulator::new();
+    while !acc.done {
+        let chunk = response
+            .chunk()
+            .await
+            .map_err(|err| {
+                if acc.content.is_empty() {
+                    format!("request failed: {}", describe_request_error(&err))
+                } else {
+                    let received = acc.content.chars().count();
+                    format!("流式输出中断（已接收 {received} 字）：{}", describe_read_error(&err))
+                }
+            })?;
+        let Some(chunk) = chunk else { break };
+        let delta = acc.push_chunk(&chunk);
+        if !delta.is_empty() {
+            on_delta(&delta);
+        }
+    }
+    if acc.content.trim().is_empty() {
+        return Err("provider returned empty content".to_string());
+    }
+    Ok(acc.content)
+}
+
+/// 流式重试：网络类失败且**尚未收到任何内容**时整体重试一次；
+/// 已输出过内容后中断不重试（流文本会重复），错误直接返回。
+pub async fn chat_completion_stream_with_retry(
+    provider: &AiProvider,
+    model: &str,
+    messages: &[ChatMessage],
+    on_delta: &(dyn Fn(&str) + Send + Sync),
+) -> Result<String, String> {
+    match chat_completion_stream(provider, model, messages, on_delta).await {
+        Ok(content) => Ok(content),
+        Err(first) if is_retryable_error(&first) => {
+            chat_completion_stream(provider, model, messages, on_delta)
+                .await
+                .map_err(|second| format!("{first}；重试一次后仍失败：{second}"))
+        }
+        Err(first) => Err(first),
+    }
 }
 
 // ==================== AI 通用设置 ====================
@@ -344,6 +559,46 @@ pub fn save_settings(app: &AppHandle, value: AiSettings) -> Result<AiSettings, S
     Ok(value)
 }
 
+// ==================== 后台 AI 任务事件（前端任务中心） ====================
+
+static TASK_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+pub fn next_task_id() -> String {
+    let seq = TASK_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    format!("bg-{:x}-{seq:x}", now_ms())
+}
+
+/// 后台 AI 任务生命周期事件（cairn://ai-task）：前端任务中心据此合并展示
+/// 「哪些在进行、哪些成功/失败」。GUI 发起的任务由前端自行注册，不走这里。
+pub fn emit_task_event(
+    app: &AppHandle,
+    id: &str,
+    kind: &str,
+    status: &str,
+    label: &str,
+    target_type: Option<&str>,
+    target_id: Option<&str>,
+    error: Option<&str>,
+) {
+    let mut payload = json!({
+        "id": id,
+        "kind": kind,
+        "status": status,
+        "label": label,
+        "at": now_ms(),
+    });
+    if let Some(target_type) = target_type {
+        payload["targetType"] = json!(target_type);
+    }
+    if let Some(target_id) = target_id {
+        payload["targetId"] = json!(target_id);
+    }
+    if let Some(error) = error {
+        payload["error"] = json!(error);
+    }
+    let _ = app.emit(crate::api::AI_TASK_EVENT, payload);
+}
+
 /// 浮窗/REST 新建 Card 后的后台自动整理入口：开关关闭时跳过；
 /// 完成后 emit data-changed 让前端刷新，失败只记日志不打扰录制。
 /// 用户已手动修正过派生数据（userAdjusted）时放弃写回，避免覆盖。
@@ -354,14 +609,21 @@ pub fn spawn_auto_analysis(app: &AppHandle, card_id: String) {
     let app = app.clone();
     std::thread::spawn(move || {
         let db = app.state::<crate::db::Db>();
+        let task_id = next_task_id();
+        emit_task_event(&app, &task_id, "analysis", "start", "识别卡片", Some("card"), Some(&card_id), None);
         let result =
             tauri::async_runtime::block_on(crate::run_card_analysis(&app, &db, &card_id, None, false));
         match result {
             Ok(Some(card)) => {
+                emit_task_event(&app, &task_id, "analysis", "succeeded", "识别卡片", Some("card"), Some(&card_id), None);
                 let _ = app.emit(crate::api::DATA_CHANGED_EVENT, &card);
             }
-            Ok(None) => {}
+            // userAdjusted 放弃写回：不是失败，任务正常完成
+            Ok(None) => {
+                emit_task_event(&app, &task_id, "analysis", "succeeded", "识别卡片", Some("card"), Some(&card_id), None);
+            }
             Err(err) => {
+                emit_task_event(&app, &task_id, "analysis", "failed", "识别卡片", Some("card"), Some(&card_id), Some(&err));
                 diagnostics::app_log(&app, format!("auto analysis failed for card {card_id}: {err}"));
             }
         }
@@ -377,13 +639,17 @@ pub fn spawn_auto_suggestions(app: &AppHandle, case_id: String) {
     let app = app.clone();
     std::thread::spawn(move || {
         let db = app.state::<crate::db::Db>();
+        let task_id = next_task_id();
+        emit_task_event(&app, &task_id, "suggestions", "start", "补录建议", Some("case"), Some(&case_id), None);
         let result =
             tauri::async_runtime::block_on(crate::run_execution_suggestions(&app, &db, &case_id));
         match result {
             Ok(case) => {
+                emit_task_event(&app, &task_id, "suggestions", "succeeded", "补录建议", Some("case"), Some(&case_id), None);
                 let _ = app.emit(crate::api::DATA_CHANGED_EVENT, &case);
             }
             Err(err) => {
+                emit_task_event(&app, &task_id, "suggestions", "failed", "补录建议", Some("case"), Some(&case_id), Some(&err));
                 diagnostics::app_log(&app, format!("auto suggestions failed for case {case_id}: {err}"));
             }
         }
@@ -1029,19 +1295,84 @@ mod tests {
 
     #[test]
     fn retryable_errors_are_network_like() {
-        assert!(is_retryable_error("request failed: connection reset"));
-        assert!(is_retryable_error("read response failed: unexpected eof"));
-        assert!(is_retryable_error("provider returned 502: bad gateway"));
+        assert!(is_retryable_error("request failed: 请求超时：服务端长时间无响应"));
+        assert!(is_retryable_error("read response failed: 读取响应中断"));
+        assert!(is_retryable_error("模型服务返回 502 Bad Gateway: upstream"));
         assert!(is_retryable_error("provider returned empty content"));
     }
 
     #[test]
     fn config_and_parse_errors_are_not_retried() {
-        assert!(!is_retryable_error("provider returned 401: unauthorized"));
-        assert!(!is_retryable_error("provider returned 400: bad request"));
+        assert!(!is_retryable_error("模型服务返回 401 Unauthorized（API Key 无效或无权限，去 设置 → AI 检查）:"));
+        assert!(!is_retryable_error("模型服务返回 400 Bad Request: bad json"));
         assert!(!is_retryable_error("invalid response: expected value"));
         assert!(!is_retryable_error("response has no message content"));
         assert!(!is_retryable_error("model output is not JSON: trailing chars"));
+    }
+
+    #[test]
+    fn source_chain_joins_up_to_three_levels() {
+        use std::fmt;
+
+        #[derive(Debug)]
+        struct Level(&'static str, Option<Box<dyn std::error::Error + 'static>>);
+        impl fmt::Display for Level {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                write!(f, "{}", self.0)
+            }
+        }
+        impl std::error::Error for Level {
+            fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+                self.1.as_deref().map(|cause| cause as &(dyn std::error::Error + 'static))
+            }
+        }
+
+        let leaf = Level("dns error: lookup failed", None);
+        let mid = Level("connect failed", Some(Box::new(leaf)));
+        let root = Level("hyper client error", Some(Box::new(mid)));
+        let deep = Level("outermost", Some(Box::new(root)));
+        // 三层取满，第四层截断
+        assert_eq!(join_source_chain(&deep), "hyper client error ← connect failed ← dns error: lookup failed");
+
+        let single = Level("only me", None);
+        assert_eq!(join_source_chain(&single), "");
+    }
+
+    #[test]
+    fn http_status_hint_maps_common_codes() {
+        assert!(http_status_hint(reqwest::StatusCode::UNAUTHORIZED).contains("API Key"));
+        assert!(http_status_hint(reqwest::StatusCode::TOO_MANY_REQUESTS).contains("限流"));
+        assert!(http_status_hint(reqwest::StatusCode::NOT_FOUND).contains("Base URL"));
+        assert_eq!(http_status_hint(reqwest::StatusCode::BAD_REQUEST), "");
+        assert!(http_error_message(reqwest::StatusCode::from_u16(502).unwrap(), "upstream down")
+            .starts_with("模型服务返回 502"));
+    }
+
+    #[test]
+    fn sse_accumulator_handles_multi_event_chunks_and_done() {
+        let mut acc = SseAccumulator::new();
+        // 注释行/事件行忽略；一个 chunk 内多事件 + 空行分隔；[DONE] 终止后续解析
+        let delta = acc.push_chunk(
+            b": keepalive\nevent: message\ndata: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\ndata: {\"choices\":[{\"delta\":{}}]}\ndata: [DONE]\ndata: {\"choices\":[{\"delta\":{\"content\":\"ignored\"}}]}\n",
+        );
+        assert_eq!(delta, "hi");
+        assert!(acc.done);
+        assert_eq!(acc.content, "hi");
+    }
+
+    #[test]
+    fn sse_accumulator_splits_lines_and_multibyte_across_chunks() {
+        let mut acc = SseAccumulator::new();
+        // 「观察」是 UTF-8 多字节字符，故意从字符中间切开验证按字节缓冲；
+        // 行没结束（无换行）时整段留在缓冲，不产出
+        let line = b"data: {\"choices\":[{\"delta\":{\"content\":\"\xe8\xa7\x82\xe5\xaf\x9f\"}}]}\n".to_vec();
+        let split = line.len() - 2;
+        let d1 = acc.push_chunk(&line[..split]);
+        assert_eq!(d1, "");
+        let d2 = acc.push_chunk(&line[split..]);
+        assert_eq!(d2, "观察");
+        assert_eq!(acc.content, "观察");
+        assert!(!acc.done);
     }
 
     #[test]
@@ -1320,5 +1651,54 @@ mod tests {
                 .is_some_and(|value| value.contains("41650")),
             "instruction should put 41650 into stopLoss"
         );
+    }
+
+    /// 验证流式链路：增量回调逐段吐出，累积全文与非流式解析结果一致。
+    /// 运行：CAIRN_AI_E2E=1 cargo test --manifest-path src-tauri/Cargo.toml ai_chat_e2e -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn ai_chat_e2e_stream() {
+        use std::env;
+        if env::var("CAIRN_AI_E2E").unwrap_or_default() != "1" {
+            panic!("set CAIRN_AI_E2E=1 to run");
+        }
+        let path = env::var("LOCALAPPDATA")
+            .map(|base| PathBuf::from(base).join("Cairn").join("dev-profile").join("ai-providers.json"))
+            .expect("LOCALAPPDATA");
+        let content = fs::read_to_string(&path).expect("dev-profile ai-providers.json");
+        let file: ProviderFile = serde_json::from_str(&content).expect("parse providers");
+        let provider = file
+            .providers
+            .iter()
+            .find(|item| item.is_default)
+            .expect("no default provider configured");
+        let model = provider.default_model.as_deref().expect("no default model");
+
+        let text = "BAR38 这里第三次测试区间上沿失败收回，我决定做空，止损放在区间上沿上方 41650，目标先看区间中轨 40800，这个把握我给七成，如果重新站上 41700 说明我判断错了收手，本来还想做多以太但大级别偏空放弃了，说实话有点兴奋";
+        let messages = build_analysis_messages("entry", text, "");
+        let deltas: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+        let collect = |delta: &str| {
+            deltas.lock().unwrap().push(delta.to_string());
+        };
+        let output = tauri::async_runtime::block_on(async {
+            chat_completion_stream_with_retry(provider, model, &messages, &collect).await
+        })
+        .expect("stream chat completion");
+        let delta_count = deltas.lock().unwrap().len();
+        let joined = deltas.lock().unwrap().concat();
+        println!(
+            "--- stream output ({delta_count} deltas, {} chars) ---\n{output}\n------------------------",
+            output.chars().count()
+        );
+        assert!(!output.trim().is_empty());
+        // 增量拼接必须等于返回的累积全文（流式完整性）
+        assert_eq!(joined, output);
+        // 真流式（event-stream）应产生多个增量；单增量说明 provider 降级了，也允许但打印提示
+        if delta_count <= 1 {
+            println!("NOTE: provider likely ignored stream=true and returned one body");
+        }
+        let analysis = parse_analysis("entry", text, &output, model, &provider.id, 0)
+            .expect("parse analysis from streamed content");
+        assert!(!analysis["labels"].as_array().unwrap().is_empty());
     }
 }

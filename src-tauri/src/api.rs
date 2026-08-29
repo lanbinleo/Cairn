@@ -21,6 +21,11 @@ use crate::{db, diagnostics, paths};
 
 const DEFAULT_PORT: u16 = 8787;
 pub const DATA_CHANGED_EVENT: &str = "cairn://data-changed";
+/// AI 任务生命周期事件（Rust 后台任务 → 前端任务中心）：
+/// payload = { id, kind, status: start|succeeded|failed, label, targetType?, targetId?, error?, at }
+pub const AI_TASK_EVENT: &str = "cairn://ai-task";
+/// 流式输出增量事件（GUI 发起的流式调用 → 前端实时显示）：payload = { taskId, delta }
+pub const AI_STREAM_EVENT: &str = "cairn://ai-stream";
 
 const CASE_PHASES: [&str; 5] = [
     "pre-entry",
