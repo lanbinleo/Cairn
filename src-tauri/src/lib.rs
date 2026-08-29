@@ -271,6 +271,177 @@ async fn fetch_ai_models(base_url: String, api_key: String) -> Result<Vec<String
     ai::fetch_models(base_url, api_key).await
 }
 
+fn execution_action_label(action: &str) -> &'static str {
+    match action {
+        "entry" => "开仓",
+        "scale-in" => "加仓",
+        "scale-out" => "减仓",
+        "exit" => "平仓",
+        "stop" | "stop-moved" => "移动止损",
+        "stop-set" => "设置止损",
+        "target-set" => "设置止盈",
+        "target-moved" => "移动止盈",
+        "order-edit" => "修改订单",
+        _ => "订单动作",
+    }
+}
+
+fn trade_event_label(event_type: &str) -> &'static str {
+    match event_type {
+        "sl-set" => "设置止损",
+        "sl-moved" => "移动止损",
+        "tp-set" => "设置止盈",
+        "tp-moved" => "移动止盈",
+        _ => "图表备注",
+    }
+}
+
+fn format_utc_compact(epoch_ms: u64) -> String {
+    chrono::DateTime::from_timestamp_millis(epoch_ms as i64)
+        .map(|time| time.format("%m-%d %H:%M UTC").to_string())
+        .unwrap_or_else(|| "-".to_string())
+}
+
+fn truncate_chars(text: &str, limit: usize) -> String {
+    text.chars().take(limit).collect()
+}
+
+/// 卡片分析（prompt v3）的背景资料块：品种、绑定交易的成交动作、同 Case 前情卡片。
+/// 任一来源读取失败都降级为跳过该段——背景资料是辅助，绝不阻塞分析本身。
+fn card_context(conn: &rusqlite::Connection, card: &Value) -> String {
+    let Some(case_id) = card.get("caseId").and_then(Value::as_str) else {
+        return String::new();
+    };
+    let card_created = card.get("createdAt").and_then(Value::as_u64).unwrap_or(0);
+    let mut lines: Vec<String> = Vec::new();
+
+    if let Ok(binding) = db::read_simple_collection(conn, "caseBindings") {
+        let binding = binding
+            .into_iter()
+            .find(|item| item.get("caseId").and_then(Value::as_str) == Some(case_id));
+        if let Some(binding) = binding {
+            if let Some(trade_id) = binding.get("tradeId").and_then(Value::as_str) {
+                if let Ok(Some(trade)) = db::read_trade_with_children(conn, trade_id) {
+                    let symbol_label = trade
+                        .get("symbolId")
+                        .and_then(Value::as_str)
+                        .and_then(|symbol_id| db::read_record_by_id(conn, "symbols", symbol_id).ok().flatten())
+                        .map(|symbol| {
+                            format!(
+                                "{} {}",
+                                symbol.get("exchange").and_then(Value::as_str).unwrap_or_default(),
+                                symbol.get("code").and_then(Value::as_str).unwrap_or_default()
+                            )
+                            .trim()
+                            .to_string()
+                        });
+                    let direction = match trade.get("direction").and_then(Value::as_str) {
+                        Some("long") => "做多",
+                        Some("short") => "做空",
+                        _ => "交易",
+                    };
+                    let status = match trade.get("status").and_then(Value::as_str) {
+                        Some("closed") => "已平仓",
+                        _ => "持仓中",
+                    };
+                    let mut summary = format!("绑定交易：{direction}");
+                    if let Some(symbol_label) = symbol_label {
+                        summary.push_str(&format!("（{symbol_label}）"));
+                    }
+                    summary.push_str(&format!("，{status}"));
+                    if let Some(stop) = trade.get("initialStopLoss").and_then(Value::as_f64) {
+                        summary.push_str(&format!("，初始止损 {stop}"));
+                    }
+                    lines.push(summary);
+                    if let Some(events) = trade.get("executions").and_then(Value::as_array) {
+                        let mut action_lines: Vec<(u64, String)> = events
+                            .iter()
+                            .filter_map(|execution| {
+                                let time = execution.get("time").and_then(Value::as_u64)?;
+                                let action = execution.get("action").and_then(Value::as_str)?;
+                                let mut line = execution_action_label(action).to_string();
+                                if let Some(price) = execution.get("price").and_then(Value::as_f64) {
+                                    line.push_str(&format!(" {price}"));
+                                }
+                                if let Some(quantity) = execution.get("quantity").and_then(Value::as_f64) {
+                                    line.push_str(&format!(" ×{quantity}"));
+                                }
+                                Some((time, line))
+                            })
+                            .collect();
+                        if let Some(events) = trade.get("events").and_then(Value::as_array) {
+                            action_lines.extend(events.iter().filter_map(|event| {
+                                let time = event.get("time").and_then(Value::as_u64)?;
+                                let event_type = event.get("type").and_then(Value::as_str)?;
+                                let mut line = trade_event_label(event_type).to_string();
+                                if let Some(price) = event.get("price").and_then(Value::as_f64) {
+                                    line.push_str(&format!(" {price}"));
+                                }
+                                Some((time, line))
+                            }));
+                        }
+                        action_lines.sort_by_key(|(time, _)| *time);
+                        for (time, line) in action_lines.iter().take(24) {
+                            lines.push(format!("{line}（{}）", format_utc_compact(*time)));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if let Ok(cards) = db::read_case_cards_for_case(conn, case_id) {
+        let previous: Vec<&Value> = cards
+            .iter()
+            .filter(|item| {
+                item.get("id") != card.get("id")
+                    && item.get("createdAt").and_then(Value::as_u64).unwrap_or(0) < card_created
+            })
+            .collect();
+        if !previous.is_empty() {
+            lines.push("前情（同 Case 更早的卡片）：".to_string());
+            for item in previous.iter().rev().take(6).rev() {
+                let phase = item.get("phase").and_then(Value::as_str).unwrap_or("");
+                let phase_name = match phase {
+                    "pre-entry" => "观察",
+                    "entry" => "入场",
+                    "intermediate" => "过程",
+                    "closing" => "离场",
+                    "reflection" => "复盘",
+                    other => other,
+                };
+                let digest = item
+                    .get("aiAnalysis")
+                    .and_then(|analysis| analysis.get("digest"))
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+                    .unwrap_or_else(|| {
+                        item.get("rawText")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .split('\n')
+                            .map(str::trim)
+                            .find(|line| !line.is_empty())
+                            .unwrap_or_default()
+                            .to_string()
+                    });
+                if digest.is_empty() {
+                    continue;
+                }
+                match item.get("barRef").and_then(Value::as_u64) {
+                    Some(bar) => lines.push(format!("[{phase_name}] BAR{bar} {}", truncate_chars(&digest, 40))),
+                    None => lines.push(format!("[{phase_name}] {}", truncate_chars(&digest, 40))),
+                }
+            }
+        }
+    }
+
+    if lines.is_empty() {
+        return String::new();
+    }
+    format!("背景资料（仅供理解，不是本卡内容）：\n{}", lines.join("\n"))
+}
+
 /// AI 秘书整理一张 Card 的完整链路：读卡 → 请求（失败自动重试一次）→ 解析 → 写回
 /// 版本化派生数据 card.aiAnalysis；原文永不改写。手动按钮与 REST 自动整理共用。
 /// instruction 是用户重试时的补充要求，例如"止损不是 41650，注意口语里的位置词"。
@@ -282,13 +453,14 @@ pub(crate) async fn run_card_analysis(
     instruction: Option<String>,
     allow_overwrite_adjusted: bool,
 ) -> Result<Option<Value>, String> {
-    let (card, provider, model) = {
+    let (card, provider, model, context) = {
         let conn = db.conn()?;
         let card = db::read_record_by_id(&conn, "caseCards", card_id)?
             .ok_or_else(|| format!("case card not found: {card_id}"))?;
         let (provider, model) = ai::default_provider(app)?
             .ok_or_else(|| "还没有默认 AI Provider，请在 设置 → AI 中配置".to_string())?;
-        (card, provider, model)
+        let context = card_context(&conn, &card);
+        (card, provider, model, context)
     };
     let raw_text = card
         .get("rawText")
@@ -300,7 +472,7 @@ pub(crate) async fn run_card_analysis(
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_string();
-    let mut messages = ai::build_analysis_messages(&phase, &raw_text);
+    let mut messages = ai::build_analysis_messages(&phase, &raw_text, &context);
     if let Some(extra) = instruction.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         messages.push(ai::ChatMessage::user(format!("补充整理要求：{extra}")));
     }

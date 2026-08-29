@@ -129,6 +129,8 @@ export interface CaseCardAnalysis {
   model: string
   providerId: string
   analyzedAt: number
+  /** 一句话提炼（0.3.0 schema-3 起）；旧分析无此字段，UI 回退原文截断 */
+  digest?: string | null
   barRef: { bar: number; quote?: string } | null
   labels: CaseCardLabel[]
   memo: CaseCardMemo | null

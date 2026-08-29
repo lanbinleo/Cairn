@@ -15,7 +15,7 @@ import { logFrontendError, logFrontendMessage } from './frontend-log'
 import { parseNoteMentions } from './note-mentions'
 import { extractExplicitBarRef, isDefaultCaseTitle } from './cases'
 import { findTagByName, normalizeTagDefs, normalizeTagName, normalizeTradeTagNames, uniqueTagNames, tagNamesEqual } from './tags'
-import { firstNumberIn } from './process-score'
+import { firstPlausibleNumberIn } from './process-score'
 import { computeTradeMetrics } from './metrics'
 import type { Account, Attachment, CaseCard, CaseCardAnalysis, CaseTagDef, CaseTradeBinding, ChartCandle, ChartImport, ChartTimeframe, ImportBatch, Period, Trade, TradeCase, TagDef, TagColor } from './types'
 
@@ -690,24 +690,27 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
     if (patch.status != null || patch.executions != null) requestAutoCloseCheck()
   }, [tagDefs, requestAutoCloseCheck])
 
-  /** 从绑定 Case 的 Entry memo 机械回填 Trade 计划价（入场价/止损/止盈）；只填空字段，绝不覆盖已填值。 */
+  /** 从绑定 Case 的 Entry memo 机械回填 Trade 计划价（入场价/止损/止盈）；只填空字段，绝不覆盖已填值。
+   * 提取时以实际成交均价为数量级参照，过滤 K 线号/倍数被误读成价格的情况。 */
   const prefillTradePlanFromBoundCase = useCallback((tradeId: string): boolean => {
     const binding = caseBindings.find((item) => item.tradeId === tradeId)
     const trade = trades.find((item) => item.id === tradeId)
     if (!binding || !trade) return false
     const memo = caseCards.find((card) => card.caseId === binding.caseId && card.phase === 'entry')?.aiAnalysis?.memo
     if (!memo) return false
+    const avgEntry = computeTradeMetrics(trade).avgEntry
+    const reference = avgEntry > 0 ? avgEntry : null
     const patch: Partial<Trade> = {}
     if (trade.initialEntryPrice == null) {
-      const value = memo.entryPrice ? firstNumberIn(memo.entryPrice.value) : null
+      const value = memo.entryPrice ? firstPlausibleNumberIn(memo.entryPrice.value, reference) : null
       if (value != null) patch.initialEntryPrice = value
     }
     if (trade.initialStopLoss == null) {
-      const value = memo.stopLoss ? firstNumberIn(memo.stopLoss.value) : null
+      const value = memo.stopLoss ? firstPlausibleNumberIn(memo.stopLoss.value, reference) : null
       if (value != null) patch.initialStopLoss = value
     }
     if (trade.initialTakeProfit == null) {
-      const value = memo.target ? firstNumberIn(memo.target.value) : null
+      const value = memo.target ? firstPlausibleNumberIn(memo.target.value, reference) : null
       if (value != null) patch.initialTakeProfit = value
     }
     if (Object.keys(patch).length === 0) return false

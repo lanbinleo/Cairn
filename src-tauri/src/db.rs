@@ -1024,6 +1024,23 @@ pub(crate) fn read_record_by_id(
     }
 }
 
+/// 读单笔 Trade 并合并子表（executions / trade_events），供 AI 上下文与建议检查使用。
+pub(crate) fn read_trade_with_children(
+    conn: &Connection,
+    trade_id: &str,
+) -> Result<Option<Value>, String> {
+    let Some(mut trade) = read_record_by_id(conn, "trades", trade_id)? else {
+        return Ok(None);
+    };
+    let executions = read_child_rows(conn, "executions", trade_id, "time ASC, id ASC")?;
+    let events = read_child_rows(conn, "trade_events", trade_id, "time ASC, id ASC")?;
+    if let Value::Object(map) = &mut trade {
+        map.insert("executions".to_string(), Value::Array(executions));
+        map.insert("events".to_string(), Value::Array(events));
+    }
+    Ok(Some(trade))
+}
+
 fn read_trades(conn: &Connection) -> Result<Vec<Value>, String> {
     let mut stmt = conn
         .prepare("SELECT id, data FROM trades WHERE deleted_at IS NULL ORDER BY seq ASC, id ASC")
