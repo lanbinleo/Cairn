@@ -13,7 +13,7 @@ import { EditTradeDialog } from '@/components/edit-trade-dialog'
 import { TagBadge } from '@/components/tag-badge'
 import { TradeProcessScoreCard } from '@/components/trade-process-score'
 import { TradePlanCompareCard } from '@/components/trade-plan-compare'
-import { CaseSummaryCard } from '@/components/case-summary-card'
+import { InfoHint } from '@/components/info-hint'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
@@ -355,9 +355,9 @@ export default function TradeDetailPage() {
 
       <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as TradeDetailTab)} className="gap-6">
         <TabsList className="h-10">
-          <TabsTrigger value="overview" className="px-4">Overview</TabsTrigger>
-          <TabsTrigger value="case" className="px-4">Case</TabsTrigger>
-          <TabsTrigger value="trade" className="px-4">Trade</TabsTrigger>
+          <TabsTrigger value="overview" className="px-4">复盘</TabsTrigger>
+          <TabsTrigger value="case" className="px-4">案例</TabsTrigger>
+          <TabsTrigger value="trade" className="px-4">评估</TabsTrigger>
         </TabsList>
 
         <TabsContent value="overview">
@@ -384,14 +384,14 @@ export default function TradeDetailPage() {
                     size="sm"
                     onClick={() => setShowTrailLines((value) => !value)}
                   >
-                    Trail line
+                    轨迹线
                   </Button>
                   <Button
                     variant={showEntryLine ? 'secondary' : 'ghost'}
                     size="sm"
                     onClick={() => setShowEntryLine((value) => !value)}
                   >
-                    Entry line
+                    入场线
                   </Button>
                 </div>
               </div>
@@ -409,38 +409,16 @@ export default function TradeDetailPage() {
                   setActiveTab('case')
                 }}
               />
-              {inRangeCaseMarkers.length > 0 && (
-                <div className="mt-3 flex flex-wrap items-center gap-1.5" aria-label="Case Card BAR 标记">
-                  <span className="mr-1 text-xs text-muted-foreground">Case Cards</span>
-                  {inRangeCaseMarkers.map((marker) => (
-                    <Button
-                      key={`${marker.cardId}-${marker.barNumber}`}
-                      variant="outline"
-                      size="sm"
-                      onClick={() => {
-                        setTargetCaseCardId(marker.cardId)
-                        setActiveTab('case')
-                      }}
-                    >
-                      {marker.label ?? marker.phase}
-                      {marker.invalid ? ' · BAR 异常' : ` · BAR ${marker.barNumber}`}
-                    </Button>
-                  ))}
-                  {outOfRangeCaseMarkerCount > 0 && (
-                    <span className="ml-1 text-xs text-muted-foreground">{outOfRangeCaseMarkerCount} 张卡片时间在图表范围外</span>
-                  )}
-                </div>
-              )}
               <p className="mt-2 text-xs text-muted-foreground">
-                {chartTimeframeLabel(chartTimeframe)} · UTC · EMA · 箭头为仓位 Execution，圆点为管理 Execution，方块为 Case Card，Trail line 显示止损/止盈轨迹
+                {chartTimeframeLabel(chartTimeframe)} · UTC · EMA · 箭头为仓位成交，圆点为管理动作，方块为 Case Card（可点击），虚线为止损/止盈轨迹
+                {outOfRangeCaseMarkerCount > 0 && ` · ${outOfRangeCaseMarkerCount} 张卡片时间在图表范围外`}
               </p>
             </CardContent>
           </Card>
 
           <Card>
             <CardHeader>
-              <CardTitle className="text-base">Timeline</CardTitle>
-              <p className="text-sm text-muted-foreground">Execution、TradeEvent 和 Case Card 按时间合并展示。</p>
+              <CardTitle className="text-base">时间线</CardTitle>
             </CardHeader>
             <CardContent>
               {timeline.length === 0 ? <p className="text-sm text-muted-foreground">暂无时间线记录。</p> : (
@@ -606,59 +584,35 @@ export default function TradeDetailPage() {
                 </span>
               </div>
               <div className="flex items-baseline justify-between gap-2">
-                <span className="shrink-0 text-sm text-muted-foreground">总仓位</span>
-                <span className="font-mono text-sm tabular-nums">{m.totalQuantity}</span>
-              </div>
-              <div className="flex items-baseline justify-between gap-2">
                 <span className="shrink-0 text-sm text-muted-foreground">持仓时长</span>
                 <span className="whitespace-nowrap font-mono text-sm tabular-nums">
                   {fmtDuration(m.durationMs)}
-                  <span className="text-muted-foreground"> · {Math.max(1, Math.round(m.durationMs / 300_000))} bars</span>
+                  <span className="text-muted-foreground"> · {Math.max(1, Math.round(m.durationMs / 300_000))} 根K线</span>
                 </span>
-              </div>
-              {trade.initialStopLoss != null && (
-                <div className="flex items-baseline justify-between">
-                  <span className="text-sm text-muted-foreground">初始止损</span>
-                  <span className="font-mono text-sm tabular-nums">
-                    {fmtPrice(trade.initialStopLoss, symbol?.pricePrecision)}
-                  </span>
-                </div>
-              )}
-              {trade.initialTakeProfit != null && (
-                <div className="flex items-baseline justify-between">
-                  <span className="text-sm text-muted-foreground">初始止盈</span>
-                  <span className="font-mono text-sm tabular-nums">
-                    {fmtPrice(trade.initialTakeProfit, symbol?.pricePrecision)}
-                  </span>
-                </div>
-              )}
-              <div className="flex items-baseline justify-between">
-                <span className="text-sm text-muted-foreground">Execution 数</span>
-                <span className="font-mono text-sm tabular-nums">{trade.executions.length}</span>
               </div>
             </CardContent>
           </Card>
 
-          {trade.note && (
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-base">交易备注</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <p className="text-sm leading-relaxed text-pretty">{trade.note}</p>
-              </CardContent>
-            </Card>
-          )}
-
           <Card>
             <CardHeader>
-              <CardTitle className="text-base">提及此交易的笔记</CardTitle>
+              <CardTitle className="text-base">交易备注</CardTitle>
             </CardHeader>
-            <CardContent className="flex flex-col gap-1">
-              {mentioningNotes.length === 0 ? (
-                <p className="text-sm text-muted-foreground">暂无笔记提及</p>
+            <CardContent>
+              {trade.note ? (
+                <p className="text-sm leading-relaxed text-pretty">{trade.note}</p>
               ) : (
-                mentioningNotes.map((note) => (
+                <p className="text-sm text-muted-foreground">还没有备注；可在案例 tab 用 AI 总结的「填入复盘备注」生成草稿。</p>
+              )}
+            </CardContent>
+          </Card>
+
+          {mentioningNotes.length > 0 && (
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base">提及此交易的笔记</CardTitle>
+              </CardHeader>
+              <CardContent className="flex flex-col gap-1">
+                {mentioningNotes.map((note) => (
                   <Link
                     key={note.id}
                     to={`/notes?note=${note.id}`}
@@ -667,16 +621,16 @@ export default function TradeDetailPage() {
                     <span className="text-sm font-medium">{note.title}</span>
                     <span className="text-xs text-muted-foreground">{fmtUtcDate(note.updatedAt)} 更新</span>
                   </Link>
-                ))
-              )}
-            </CardContent>
-          </Card>
+                ))}
+              </CardContent>
+            </Card>
+          )}
 
           <Card>
             <CardHeader>
-              <CardTitle className="text-base">归属</CardTitle>
+              <CardTitle className="text-base">元信息</CardTitle>
             </CardHeader>
-            <CardContent className="flex flex-col gap-2 text-sm">
+            <CardContent className="flex flex-col text-sm">
               <Link
                 to={`/accounts/${trade.accountId}`}
                 className="flex items-center justify-between rounded-lg px-2 py-1.5 transition-colors hover:bg-muted/60"
@@ -719,15 +673,27 @@ export default function TradeDetailPage() {
 
         <TabsContent value="trade">
           <div className="flex flex-col gap-6">
-            {boundCase && <CaseSummaryCard caseRecord={boundCase} cards={caseCards} variant="full" trade={trade} />}
             <Card>
-              <CardHeader><CardTitle className="text-base">结果事实</CardTitle><p className="text-sm text-muted-foreground">结果只记录，不参与过程评分。</p></CardHeader>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-1.5 text-base">
+                  结果事实
+                  <InfoHint>
+                    初始风险锚定首笔入场与初始止损（计划的 1R）；实际风险按每笔加仓当时的生效止损分段累加。两个 R 只并列，不判断。
+                  </InfoHint>
+                </CardTitle>
+                <p className="text-sm text-muted-foreground">结果只记录，不参与过程评分。</p>
+              </CardHeader>
               <CardContent className="flex flex-col gap-3">
                 <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
                   <div className="rounded-lg border p-4"><p className="text-xs text-muted-foreground">PnL</p>{trade.status === 'closed' ? <PnlText value={m.pnl} currency={account?.currency} className="mt-1 text-lg font-semibold" /> : <p className="mt-1 text-lg font-semibold text-muted-foreground">持仓中</p>}</div>
                   <div className="rounded-lg border p-4"><p className="text-xs text-muted-foreground">R 倍数（初始风险）</p><RText value={m.rMultiple} className="mt-1 text-lg font-semibold" /></div>
                   <div className="rounded-lg border p-4"><p className="text-xs text-muted-foreground">Execution</p><p className="mt-1 font-mono text-lg font-semibold">{trade.executions.length}</p></div>
                   <div className="rounded-lg border p-4"><p className="text-xs text-muted-foreground">持仓时长</p><p className="mt-1 font-mono text-lg font-semibold">{fmtDuration(m.durationMs)}</p></div>
+                </div>
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                  <div className="rounded-lg border p-4"><p className="text-xs text-muted-foreground">总仓位</p><p className="mt-1 font-mono text-lg font-semibold tabular-nums">{m.totalQuantity}</p></div>
+                  <div className="rounded-lg border p-4"><p className="text-xs text-muted-foreground">初始止损</p><p className="mt-1 font-mono text-lg font-semibold tabular-nums">{trade.initialStopLoss == null ? '—' : fmtPrice(trade.initialStopLoss, symbol?.pricePrecision)}</p></div>
+                  <div className="rounded-lg border p-4"><p className="text-xs text-muted-foreground">初始止盈</p><p className="mt-1 font-mono text-lg font-semibold tabular-nums">{trade.initialTakeProfit == null ? '—' : fmtPrice(trade.initialTakeProfit, symbol?.pricePrecision)}</p></div>
                 </div>
                 {m.initialRisk != null && (
                   <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
@@ -737,7 +703,6 @@ export default function TradeDetailPage() {
                     <div className="rounded-lg border p-4"><p className="text-xs text-muted-foreground">最终止损</p><p className="mt-1 font-mono text-lg font-semibold tabular-nums">{m.finalStop == null ? '—' : fmtPrice(m.finalStop, symbol?.pricePrecision)}</p></div>
                   </div>
                 )}
-                <p className="text-xs text-muted-foreground">初始风险锚定首笔入场与初始止损（计划的 1R）；实际风险按每笔加仓当时的生效止损分段累加。两个 R 只并列，不判断。</p>
               </CardContent>
             </Card>
             <TradePlanCompareCard trade={trade} m={m} entryMemo={entryMemo} pricePrecision={symbol?.pricePrecision} />

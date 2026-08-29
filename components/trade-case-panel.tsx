@@ -4,9 +4,9 @@ import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { ArrowRight, Link2, Plus, Unlink } from 'lucide-react'
 
-import { CaseTagBadge } from '@/components/case-tag-badge'
 import { CaseCardTimeline } from '@/components/case-card-timeline'
 import { CaseExecutionSuggestions } from '@/components/case-execution-suggestions'
+import { CaseSummaryCard } from '@/components/case-summary-card'
 import { BindingSuggestForTrade } from '@/components/binding-suggestions'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -14,49 +14,37 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Field, FieldDescription, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { CASE_PROVENANCE_OPTIONS, caseProvenanceLabel, caseStatusLabel } from '@/lib/cases'
+import { CASE_PROVENANCE_OPTIONS, caseStatusLabel } from '@/lib/cases'
 import { useCairn } from '@/lib/store'
 import type { CaseProvenance, Execution, Trade } from '@/lib/types'
 
+/** 复盘侧栏的 Case 单行链接：标题（跳 Case 页）+ 状态；细节都在案例 tab 和时间线里。 */
 export function TradeCaseSummaryCard({ trade, onOpenCaseTab }: { trade: Trade; onOpenCaseTab: () => void }) {
-  const { cases, caseCards, caseBindings } = useCairn()
+  const { cases, caseBindings } = useCairn()
   const binding = caseBindings.find((item) => item.tradeId === trade.id)
   const caseRecord = binding ? cases.find((item) => item.id === binding.caseId) : undefined
-  const cards = caseRecord ? caseCards.filter((item) => item.caseId === caseRecord.id) : []
 
   return (
-    <Card>
-      <CardHeader>
-        <div className="flex items-center justify-between gap-3">
-          <CardTitle className="text-base">Case</CardTitle>
+    <div className="flex items-center justify-between gap-2 rounded-xl bg-card px-4 py-2.5 ring-1 ring-foreground/10">
+      {caseRecord ? (
+        <>
+          <div className="flex min-w-0 items-center gap-2">
+            <span className="shrink-0 text-xs text-muted-foreground">Case</span>
+            <Link to={`/cases/${caseRecord.id}`} className="min-w-0 truncate text-sm font-medium transition-colors hover:text-primary">
+              {caseRecord.title}
+            </Link>
+          </div>
+          <Badge variant="secondary" className="shrink-0">{caseStatusLabel[caseRecord.status]}</Badge>
+        </>
+      ) : (
+        <>
+          <span className="text-sm text-muted-foreground">尚未关联 Case</span>
           <Button variant="ghost" size="sm" onClick={onOpenCaseTab}>
             查看 <ArrowRight data-icon="inline-end" />
           </Button>
-        </div>
-      </CardHeader>
-      <CardContent>
-        {caseRecord ? (
-          <div className="flex flex-col gap-3">
-            <div>
-              <Link to={`/cases/${caseRecord.id}`} className="font-medium hover:text-primary">{caseRecord.title}</Link>
-              <p className="mt-1 text-xs text-muted-foreground">
-                {caseStatusLabel[caseRecord.status]} · {caseProvenanceLabel[caseRecord.provenance]} · {cards.length} Cards
-              </p>
-            </div>
-            {caseRecord.tagIds.length > 0 && (
-              <div className="flex flex-wrap gap-1.5">
-                {caseRecord.tagIds.map((tagId) => <CaseTagBadge key={tagId} tagId={tagId} />)}
-              </div>
-            )}
-            <div className="flex flex-wrap gap-1.5">
-              {cards.filter((card) => card.barRef != null).map((card) => <Badge key={card.id} variant="outline">BAR {card.barRef}</Badge>)}
-            </div>
-          </div>
-        ) : (
-          <p className="rounded-lg border border-dashed px-4 py-5 text-center text-sm text-muted-foreground">尚未关联 Case</p>
-        )}
-      </CardContent>
-    </Card>
+        </>
+      )}
+    </div>
   )
 }
 
@@ -232,34 +220,29 @@ export function TradeCasePanel({
   return (
     <div className="flex flex-col gap-6">
       <Card>
-        <CardHeader>
-          <div className="flex flex-wrap items-start justify-between gap-4">
-            <div>
-              <CardTitle>{caseRecord.title}</CardTitle>
-              <CardDescription className="mt-1">
-                {caseStatusLabel[caseRecord.status]} · {caseProvenanceLabel[caseRecord.provenance]} · {cards.length} Cards
-              </CardDescription>
-            </div>
-            <div className="flex items-center gap-2">
-              <Button variant="outline" nativeButton={false} render={<Link to={`/cases/${caseRecord.id}`} />}>打开 Case 页面</Button>
-              <Button
-                variant="ghost"
-                className="text-muted-foreground hover:text-destructive"
-                disabled={busy}
-                onClick={() => void unbindCase()}
-              >
-                <Unlink data-icon="inline-start" />解除关联
-              </Button>
-            </div>
+        <CardHeader className="flex flex-row flex-wrap items-center justify-between gap-3">
+          <CardTitle className="flex min-w-0 flex-wrap items-center gap-2 text-base">
+            <span className="min-w-0 truncate">{caseRecord.title}</span>
+            <Badge variant="secondary">{caseStatusLabel[caseRecord.status]}</Badge>
+            <Badge variant="outline">{cards.length} Cards</Badge>
+          </CardTitle>
+          <div className="flex shrink-0 items-center gap-2">
+            <Button variant="outline" size="sm" nativeButton={false} render={<Link to={`/cases/${caseRecord.id}`} />}>打开 Case 页面</Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="text-muted-foreground hover:text-destructive"
+              disabled={busy}
+              onClick={() => void unbindCase()}
+            >
+              <Unlink data-icon="inline-start" />解除关联
+            </Button>
           </div>
         </CardHeader>
-        {caseRecord.tagIds.length > 0 && (
-          <CardContent className="flex flex-wrap gap-1.5 pt-0">
-            {caseRecord.tagIds.map((tagId) => <CaseTagBadge key={tagId} tagId={tagId} />)}
-          </CardContent>
-        )}
         {error && <p className="px-6 pb-4 text-sm text-destructive" role="alert">{error}</p>}
       </Card>
+
+      <CaseSummaryCard caseRecord={caseRecord} cards={cards} variant="full" trade={trade} />
 
       <CaseExecutionSuggestions
         trade={trade}
