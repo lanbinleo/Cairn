@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Cairn 记一笔
 // @namespace    cairn
-// @version      0.2.4
+// @version      0.3.0
 // @description  TradingView 悬浮记录浮窗：口述或打字记录交易思考，实时写入本地 Cairn（127.0.0.1 本地 API）
 // @author       Cairn
 // @match        https://*.tradingview.com/*
@@ -530,8 +530,10 @@
   #cairn-cw-wrap .cw-card.fresh { animation: cw-fresh .5s ease; }
   @keyframes cw-fresh { from { background: rgba(38,166,154,.14); } }
 
-  /* 卡片行内编辑：常驻 ✎ 进入，改 rawText（错字修正，原文进历史）与 barRef（留空清除） */
-  #cairn-cw-wrap .cw-card .mc-edit {
+  /* 卡片行内编辑：常驻 ✎ 进入，改 rawText（错字修正，原文进历史）与 barRef（留空清除）；
+     ✕ 删除整卡（软删，可从备份恢复） */
+  #cairn-cw-wrap .cw-card .mc-edit,
+  #cairn-cw-wrap .cw-card .mc-del {
     background: none; border: none;
     color: var(--text-dim);
     cursor: pointer; font-size: 11px;
@@ -539,6 +541,7 @@
     flex-shrink: 0; margin-left: 4px;
   }
   #cairn-cw-wrap .cw-card .mc-edit:hover { color: var(--text); }
+  #cairn-cw-wrap .cw-card .mc-del:hover { color: var(--red); }
   #cairn-cw-wrap .cw-card.editing { display: flex; flex-direction: column; gap: 6px; }
   #cairn-cw-wrap .cw-card.editing .ec-text {
     width: 100%;
@@ -1070,12 +1073,14 @@
             ${barHtml}
             <span class="mc-time"></span>
             <button type="button" class="mc-edit" title="修改这张卡">✎</button>
+            <button type="button" class="mc-del" title="删除这张卡（可从备份恢复）">✕</button>
           </div>
           <div class="mc-text"></div>`;
         el.querySelector('.mc-phase').textContent = meta.label;
         el.querySelector('.mc-time').textContent = card.createdAt ? fmtTime(card.createdAt) : '';
         el.querySelector('.mc-text').textContent = card.rawText || '';
         el.querySelector('.mc-edit').addEventListener('click', () => startEditCard(card.id));
+        el.querySelector('.mc-del').addEventListener('click', () => deleteCard(card.id));
       }
       list.appendChild(el);
     }
@@ -1214,6 +1219,43 @@
   }
 
   /* ================= 修改已登记卡片 ================= */
+
+  // 卡片删除（软删，可从备份恢复）：清理误录/拆错的卡。
+  // 契约：DELETE /cases/{caseId}/cards/{cardId}；0.3.0 起提供，旧后端 404/405 提示升级。
+  async function deleteCard(id) {
+    const card = state.cards.find((c) => c.id === id);
+    if (!card || state.busy) return;
+    if (!window.confirm('删除这张卡片？原文与分析一起移除（可从备份恢复）。')) return;
+    if (!state.connected) {
+      const err = await connect({ silent: true });
+      if (err) { showToast('无法连接 Cairn', 'err'); showSettings(true); return; }
+    }
+    state.busy = true;
+    try {
+      const caseId = card.caseId || state.caseId;
+      const res = await api('DELETE', '/cases/' + encodeURIComponent(caseId) + '/cards/' + encodeURIComponent(id));
+      if (res.status === 401) {
+        state.connected = false;
+        showToast('Token 无效', 'err');
+        showSettings(true);
+        return;
+      }
+      if (res.status === 200) {
+        state.cards = state.cards.filter((c) => c.id !== id);
+        if (state.editingCardId === id) state.editingCardId = '';
+        renderCards();
+        showToast('✓ 已删除');
+      } else if (res.status === 404 || res.status === 405) {
+        showToast('当前 Cairn 版本还不支持删除卡片，请更新 Cairn（0.3.0+）后重试', 'err');
+      } else {
+        showToast((res.json && res.json.error) || '删除失败', 'err');
+      }
+    } catch {
+      showToast('无法连接 Cairn', 'err');
+    } finally {
+      state.busy = false;
+    }
+  }
 
   function startEditCard(id) {
     state.editingCardId = id;

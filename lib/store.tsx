@@ -71,6 +71,7 @@ interface CairnStore {
   moveCaseCard: (cardId: string, targetCaseId: string) => CaseCard | undefined
   updateCaseCardText: (cardId: string, rawText: string) => CaseCard | undefined
   updateCaseCardBarRef: (cardId: string, barRef: number | null) => CaseCard | undefined
+  deleteCaseCard: (cardId: string) => void
   updateCaseCardAnalysis: (cardId: string, updater: (prev: CaseCardAnalysis) => CaseCardAnalysis) => CaseCard | undefined
   analyzeCaseCard: (cardId: string, instruction?: string) => Promise<CaseCard | undefined>
   prefillTradePlanFromBoundCase: (tradeId: string) => boolean
@@ -375,6 +376,24 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
       .sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id)))
     void saveLocalRecord('caseCards', next)
     return next
+  }, [caseCards])
+
+  /** 删除卡片（软删，备份可恢复）：用户调整权的一部分，用于清理误录/拆错的卡。
+   *  「原文不可改写」约束的是 AI，不是用户。 */
+  const deleteCaseCard = useCallback((cardId: string): void => {
+    const card = caseCards.find((item) => item.id === cardId)
+    if (!card) return
+    setCaseCards((prev) => prev.filter((item) => item.id !== cardId))
+    void deleteLocalRecord('caseCards', cardId)
+    const now = Date.now()
+    setCases((prev) =>
+      prev.map((caseRecord) => {
+        if (caseRecord.id !== card.caseId) return caseRecord
+        const next = { ...caseRecord, updatedAt: now }
+        void saveLocalRecord('cases', next)
+        return next
+      }),
+    )
   }, [caseCards])
 
   /** AI 派生数据人工修正（标签/memo/过期忽略）：标记 userAdjusted，重新识别前会提示覆盖。 */
@@ -924,6 +943,7 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
       moveCaseCard,
       updateCaseCardText,
       updateCaseCardBarRef,
+      deleteCaseCard,
       updateCaseCardAnalysis,
       analyzeCaseCard,
       prefillTradePlanFromBoundCase,

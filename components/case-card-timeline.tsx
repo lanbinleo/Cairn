@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { ArrowRightLeft, ChevronDown, ChevronRight, Pencil, Sparkles } from 'lucide-react'
+import { ArrowRightLeft, ChevronDown, ChevronRight, Pencil, Sparkles, Trash2 } from 'lucide-react'
 
 import { CaseCardAnalysisView, EditableHighlightedCaseCardText, HighlightedCaseCardText } from '@/components/case-card-analysis'
 import { RelativeTime } from '@/components/relative-time'
@@ -51,7 +51,7 @@ interface CaseCardTimelineProps {
  * 排列按展示阶段分组、组内按创建顺序。
  */
 export function CaseCardTimeline({ cards, showMoveToCase = true, showBatchAnalyze = true, targetCardId }: CaseCardTimelineProps) {
-  const { cases, analyzeCaseCard, updateCaseCardText, updateCaseCardBarRef, updateCaseCardAnalysis, moveCaseCard } = useCairn()
+  const { cases, analyzeCaseCard, updateCaseCardText, updateCaseCardBarRef, deleteCaseCard, updateCaseCardAnalysis, moveCaseCard } = useCairn()
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set())
   const [editingCardId, setEditingCardId] = useState<string | null>(null)
   const [editText, setEditText] = useState('')
@@ -277,6 +277,19 @@ export function CaseCardTimeline({ cards, showMoveToCase = true, showBatchAnalyz
                                 <ArrowRightLeft className="size-3.5" />
                               </Button>
                             )}
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="h-7 w-7 p-0 text-muted-foreground hover:text-destructive"
+                              title="删除这张卡（软删，备份可恢复）"
+                              onClick={() => {
+                                if (window.confirm('删除这张卡片？原文与 AI 分析一起移除（软删除，可从备份恢复）。')) {
+                                  deleteCaseCard(card.id)
+                                }
+                              }}
+                            >
+                              <Trash2 className="size-3.5" />
+                            </Button>
                           </div>
                         </div>
                         {editingBarCardId === card.id && (

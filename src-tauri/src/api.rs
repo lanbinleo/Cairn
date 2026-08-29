@@ -435,6 +435,9 @@ pub(crate) fn handle_request(
         ("PUT", ["api", "v1", "cases", case_id, "cards", card_id]) => {
             run(|| update_case_card(conn, case_id, card_id, &parsed_body))
         }
+        ("DELETE", ["api", "v1", "cases", case_id, "cards", card_id]) => {
+            run(|| delete_case_card(conn, case_id, card_id))
+        }
         ("POST", ["api", "v1", "bindings"]) => run(|| create_binding(conn, &parsed_body, now)),
         ("DELETE", ["api", "v1", "bindings", binding_id]) => {
             run(|| delete_binding(conn, binding_id))
@@ -725,6 +728,24 @@ fn update_case_card(
     let updated = db::read_record_by_id(conn, "caseCards", card_id)?
         .ok_or_else(|| format!("case card not found after update: {card_id}"))?;
     Ok((updated, true))
+}
+
+/// 删除卡片（软删，备份可恢复）：清理误录/拆错的卡。连带软删其附件。
+fn delete_case_card(conn: &Connection, case_id: &str, card_id: &str) -> Result<(Value, bool), String> {
+    db::read_record_by_id(conn, "caseCards", card_id)?
+        .filter(|card| card.get("caseId").and_then(Value::as_str) == Some(case_id))
+        .ok_or_else(|| format!("case card not found: {card_id}"))?;
+    conn.execute(
+        "UPDATE case_cards SET deleted_at = unixepoch() * 1000 WHERE id = ?1 AND deleted_at IS NULL",
+        params![card_id],
+    )
+    .map_err(|err| err.to_string())?;
+    conn.execute(
+        "UPDATE attachments SET deleted_at = unixepoch() * 1000 WHERE owner_type = 'case-card' AND owner_id = ?1 AND deleted_at IS NULL",
+        params![card_id],
+    )
+    .map_err(|err| err.to_string())?;
+    Ok((json!({ "deleted": true, "cardId": card_id }), true))
 }
 
 fn create_binding(conn: &Connection, body: &Value, now: u64) -> Result<(Value, bool), String> {
@@ -1114,6 +1135,58 @@ mod tests {
             cards.body["cards"][0]["rawText"],
             "BAR 38 做多，止损位 5295"
         );
+    }
+
+    #[test]
+    fn delete_card_soft_deletes_and_404s_on_mismatch() {
+        let conn = setup_conn();
+        call(
+            &conn,
+            "POST",
+            "/api/v1/cases",
+            json!({ "id": "case-1", "title": "T", "accountId": "acct-1", "periodId": "period-1" }),
+        );
+        let created = call(
+            &conn,
+            "POST",
+            "/api/v1/cases/case-1/cards",
+            json!({ "id": "card-1", "phase": "intermediate", "rawText": "持有观察" }),
+        );
+        assert_eq!(created.status, 200);
+
+        let deleted = call(&conn, "DELETE", "/api/v1/cases/case-1/cards/card-1", json!({}));
+        assert_eq!(deleted.status, 200);
+        assert!(deleted.data_changed);
+        assert_eq!(deleted.body["deleted"], true);
+
+        // 列表不再包含；重复删除 → 404
+        let cards = call(&conn, "GET", "/api/v1/cases/case-1/cards", json!({}));
+        assert_eq!(cards.body["cards"].as_array().map(Vec::len), Some(0));
+        assert_eq!(
+            call(&conn, "DELETE", "/api/v1/cases/case-1/cards/card-1", json!({})).status,
+            404
+        );
+
+        // 卡挂在别的 Case 下 → 404，原卡不受影响
+        call(
+            &conn,
+            "POST",
+            "/api/v1/cases",
+            json!({ "id": "case-2", "title": "T2", "accountId": "acct-1", "periodId": "period-1" }),
+        );
+        let other = call(
+            &conn,
+            "POST",
+            "/api/v1/cases/case-2/cards",
+            json!({ "id": "card-2", "phase": "entry", "rawText": "BAR10 做多" }),
+        );
+        assert_eq!(other.status, 200);
+        assert_eq!(
+            call(&conn, "DELETE", "/api/v1/cases/case-1/cards/card-2", json!({})).status,
+            404
+        );
+        let cards = call(&conn, "GET", "/api/v1/cases/case-2/cards", json!({}));
+        assert_eq!(cards.body["cards"].as_array().map(Vec::len), Some(1));
     }
 
     #[test]
