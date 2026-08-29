@@ -5,6 +5,7 @@ import { Check, Pencil, RefreshCw, Sparkles, X } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { InfoHint } from '@/components/info-hint'
 import { fmtUtcDateTime } from '@/lib/format'
 import { useCairn } from '@/lib/store'
 import type { CaseCard, CaseExecutionSuggestion, Execution, Trade, TradeCase } from '@/lib/types'
@@ -124,14 +125,32 @@ export function CaseExecutionSuggestions({
       <Card>
         <CardContent className="flex flex-col gap-3 pt-6">
           <div className="flex flex-wrap items-center justify-between gap-3">
-            <p className="text-sm text-muted-foreground">AI 可以对照卡片原话，找出说过但没记录的止盈/止损调整。</p>
+            <p className="flex items-center gap-1 text-sm text-muted-foreground">
+              AI 可以对照卡片原话，找出说过但没记录的止盈/止损调整。
+              <InfoHint>建议永远是候选：直接添加 / 修改后添加 / 忽略，不会自动改动数据；开平仓以导入成交为准。</InfoHint>
+            </p>
             <Button variant="outline" size="sm" disabled={busy} onClick={() => void refresh()}>
-              <Sparkles data-icon="inline-start" />{busy ? '检查中…' : 'AI 检查持仓动作'}
+              <Sparkles data-icon="inline-start" />{busy ? '检查中…' : 'AI 补录建议'}
             </Button>
           </div>
           {error && <p className="rounded-md border border-destructive/40 bg-destructive/10 px-2 py-1.5 text-xs text-destructive">{error}</p>}
         </CardContent>
       </Card>
+    )
+  }
+
+  // 全部处理完且没有新错误：收成一行，不再占整卡
+  if (pending.length === 0 && !error) {
+    return (
+      <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl bg-card px-4 py-2 ring-1 ring-foreground/10">
+        <p className="text-sm text-muted-foreground">
+          AI 补录建议：管理动作都已记录{accepted + dismissed > 0 ? `（${accepted} 已添加 · ${dismissed} 已忽略）` : ''}。
+        </p>
+        <Button variant="ghost" size="sm" disabled={busy} onClick={() => void refresh()}>
+          <RefreshCw className={cn('size-3.5', busy && 'animate-spin')} data-icon="inline-start" />
+          重新检查
+        </Button>
+      </div>
     )
   }
 
@@ -141,13 +160,13 @@ export function CaseExecutionSuggestions({
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div className="flex flex-col gap-1.5">
             <CardTitle className="flex items-center gap-2 text-base">
-              <Sparkles className="size-4 text-amber-500" />AI 检查
+              <Sparkles className="size-4 text-amber-500" />AI 补录建议
+              <InfoHint>对照卡片原话找出没记录的止盈/止损/改单动作；建议永远是候选，不会自动改动数据；开平仓以导入成交为准。</InfoHint>
               {pending.length > 0 && <Badge variant="secondary">{pending.length} 条待确认</Badge>}
             </CardTitle>
-            <CardDescription>
-              卡片里说过、但成交记录里没有的管理动作（止盈/止损/改单）；开平仓以导入成交为准。
-              {accepted + dismissed > 0 && ` 已处理 ${accepted + dismissed} 条（${accepted} 已添加 · ${dismissed} 已忽略）。`}
-            </CardDescription>
+            {accepted + dismissed > 0 && (
+              <CardDescription>已处理 {accepted + dismissed} 条（{accepted} 已添加 · {dismissed} 已忽略）。</CardDescription>
+            )}
           </div>
           <Button variant="outline" size="sm" disabled={busy} onClick={() => void refresh()}>
             <RefreshCw className={cn('size-3.5', busy && 'animate-spin')} data-icon="inline-start" />
@@ -157,11 +176,7 @@ export function CaseExecutionSuggestions({
       </CardHeader>
       <CardContent className="flex flex-col gap-3">
         {error && <p className="rounded-md border border-destructive/40 bg-destructive/10 px-2 py-1.5 text-xs text-destructive">{error}</p>}
-        {pending.length === 0 ? (
-          <p className="rounded-lg border border-dashed px-4 py-5 text-center text-sm text-muted-foreground">
-            没有待确认的建议{accepted + dismissed === 0 ? '——卡片提到的管理动作都已落库' : ''}。
-          </p>
-        ) : pending.map((suggestion) => {
+        {pending.map((suggestion) => {
           const time = resolvedTime(suggestion)
           return (
             <div key={suggestion.id} className="flex flex-col gap-2 rounded-lg border border-amber-500/25 bg-amber-500/5 p-3">
