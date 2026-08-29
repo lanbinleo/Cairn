@@ -1,8 +1,12 @@
 'use client'
 
-import { useEffect, useRef } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useTheme } from 'next-themes'
-import { createChart, AreaSeries, BaselineSeries, LineType, type IChartApi, type UTCTimestamp } from 'lightweight-charts'
+import { Activity } from 'lucide-react'
+import { createChart, AreaSeries, BaselineSeries, LineSeries, LineType, type IChartApi, type UTCTimestamp } from 'lightweight-charts'
+
+import { Button } from '@/components/ui/button'
+import { computeEquityMaByDays, computeEquityMaByTrades } from '@/lib/metrics'
 import type { EquityPoint } from '@/lib/types'
 
 const palettes = {
@@ -30,10 +34,25 @@ const palettes = {
   },
 }
 
+/** 均线开关循环：关 → 按笔数 → 按天数 */
+type MaMode = 'off' | 'trades' | 'days'
+const MA_TRADES_N = 20
+const MA_DAYS_N = 30
+const MA_LABEL: Record<MaMode, string> = { off: '关', trades: `${MA_TRADES_N} 笔`, days: `${MA_DAYS_N} 天` }
+
 export function EquityChart({ points, height = 260, baseline }: { points: EquityPoint[]; height?: number; baseline?: number }) {
   const containerRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<IChartApi | null>(null)
   const { resolvedTheme } = useTheme()
+  const [maMode, setMaMode] = useState<MaMode>('off')
+
+  const maData = useMemo(
+    () =>
+      maMode === 'trades' ? computeEquityMaByTrades(points, MA_TRADES_N)
+        : maMode === 'days' ? computeEquityMaByDays(points, MA_DAYS_N)
+          : [],
+    [maMode, points],
+  )
 
   useEffect(() => {
     const el = containerRef.current
@@ -97,6 +116,25 @@ export function EquityChart({ points, height = 260, baseline }: { points: Equity
         .sort((a, b) => a[0] - b[0])
         .map(([time, value]) => ({ time: time as UTCTimestamp, value })),
     )
+    if (maData.length > 0) {
+      const ma = chart.addSeries(LineSeries, {
+        color: resolvedTheme === 'dark' ? '#d4a72c' : '#b45309',
+        lineWidth: 1,
+        lineType: LineType.Simple,
+        priceLineVisible: false,
+        lastValueVisible: false,
+        crosshairMarkerVisible: false,
+      })
+      const maBySecond = new Map<number, number>()
+      for (const pt of maData) {
+        maBySecond.set(Math.floor(pt.time / 1000), pt.value)
+      }
+      ma.setData(
+        [...maBySecond.entries()]
+          .sort((a, b) => a[0] - b[0])
+          .map(([time, value]) => ({ time: time as UTCTimestamp, value })),
+      )
+    }
     chart.timeScale().fitContent()
 
     const ro = new ResizeObserver(() => {
@@ -110,7 +148,7 @@ export function EquityChart({ points, height = 260, baseline }: { points: Equity
       chart.remove()
       chartRef.current = null
     }
-  }, [points, height, baseline, resolvedTheme])
+  }, [points, height, baseline, resolvedTheme, maData])
 
   if (points.length === 0) {
     return (
@@ -123,5 +161,20 @@ export function EquityChart({ points, height = 260, baseline }: { points: Equity
     )
   }
 
-  return <div ref={containerRef} className="w-full" style={{ height }} />
+  return (
+    <div className="flex flex-col gap-1">
+      <div className="flex items-center justify-end">
+        <Button
+          variant="ghost"
+          size="sm"
+          className="h-6 gap-1 px-2 text-xs text-muted-foreground"
+          onClick={() => setMaMode((prev) => (prev === 'off' ? 'trades' : prev === 'trades' ? 'days' : 'off'))}
+        >
+          <Activity className="size-3" />
+          均线：{MA_LABEL[maMode]}
+        </Button>
+      </div>
+      <div ref={containerRef} className="w-full" style={{ height }} />
+    </div>
+  )
 }

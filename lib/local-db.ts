@@ -203,6 +203,10 @@ export interface AiProvider {
   presetId?: string
   defaultModel?: string
   isDefault: boolean
+  /** 思考模式（0.3.1）：auto = 不发参数（模型默认）；on/off = 显式开/关（仅支持的端点生效） */
+  thinking?: 'auto' | 'on' | 'off'
+  /** 并发上限（0.3.1）：「全部识别」批量与后台自动识别共用，默认 10 */
+  concurrency?: number
   createdAt: number
   updatedAt: number
 }
@@ -228,10 +232,16 @@ export async function fetchAiModels(baseUrl: string, apiKey: string): Promise<st
   return invoke<string[]>('fetch_ai_models', { baseUrl, apiKey })
 }
 
-/** AI 秘书整理一张 Card；instruction 为重试时的补充要求。返回更新后的 Card。 */
+/** 默认 Provider 的并发上限（「全部识别」批量 worker 数，默认 10）。 */
+export async function getDefaultAiConcurrency(): Promise<number> {
+  if (!isTauriRuntime()) return 10
+  return invoke<number>('default_ai_concurrency')
+}
+
+/** AI 秘书识别一张 Card；instruction 为重试时的补充要求。返回更新后的 Card。 */
 export async function analyzeCaseCard(cardId: string, instruction?: string): Promise<CaseCard> {
   if (!isTauriRuntime()) {
-    throw new Error('AI 整理需要桌面版运行')
+    throw new Error('AI 识别需要桌面版运行')
   }
   return invoke<CaseCard>('analyze_case_card', { cardId, instruction: instruction ?? null })
 }
@@ -252,12 +262,13 @@ export async function suggestCaseExecutions(caseId: string): Promise<TradeCase> 
   return invoke<TradeCase>('suggest_case_executions', { caseId })
 }
 
-/** 整单总结：上下文由前端组装，Rust 只做 AI 管道；返回总结 blob（analyzedAt 由调用方补）。 */
-export async function summarizeCase(context: string, instruction?: string): Promise<CaseSummary> {
+/** 整单总结：上下文由前端组装，Rust 只做 AI 管道；返回总结 blob（analyzedAt 由调用方补）。
+ *  taskId 存在时 Rust 走流式，增量经 cairn://ai-stream 事件推送。 */
+export async function summarizeCase(context: string, instruction?: string, taskId?: string): Promise<CaseSummary> {
   if (!isTauriRuntime()) {
     throw new Error('AI 总结需要桌面版运行')
   }
-  return invoke<CaseSummary>('ai_summarize_case', { context, instruction: instruction ?? null })
+  return invoke<CaseSummary>('ai_summarize_case', { context, instruction: instruction ?? null, taskId: taskId ?? null })
 }
 
 /** 关联推荐：AI 只排序+给理由，绑定由用户确认。 */

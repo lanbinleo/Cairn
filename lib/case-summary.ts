@@ -64,7 +64,7 @@ export function buildCaseSummaryContext(input: CaseSummaryContextInput): string 
     if (m.entryTime > 0 && m.exitTime > 0) {
       lines.push(`开仓 ${fmtUtcDateTime(m.entryTime, false)} @ ${m.avgEntry} · 平仓 ${fmtUtcDateTime(m.exitTime, false)} @ ${m.avgExit} · 持仓 ${fmtDuration(m.durationMs)}`)
     }
-    lines.push(`总仓位 ${m.totalQuantity} · 盈亏 ${fmtMoney(m.pnl)} · R ${fmtR(m.rMultiple)}（实际风险口径 ${fmtR(m.rActual)}）`)
+    lines.push(`总仓位 ${m.totalQuantity} · 盈亏 ${fmtMoney(m.pnl)} · R（初始风险）${fmtR(m.rMultiple)} · R（实际风险）${fmtR(m.rActual)}`)
     const plan: string[] = []
     if (trade.initialEntryPrice != null) plan.push(`入场 ${trade.initialEntryPrice}`)
     if (trade.initialStopLoss != null) plan.push(`止损 ${trade.initialStopLoss}`)

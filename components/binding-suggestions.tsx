@@ -50,7 +50,7 @@ function SuggestionRows<T extends { id: string }>({
  * onBound 回传新建立的 binding（导入页据此更新行状态，避免读 stale 闭包）。
  */
 export function BindingSuggestForTrade({ trade, onBound }: { trade: Trade; onBound?: (binding: CaseTradeBinding) => void }) {
-  const { cases, caseCards, caseBindings, createCaseBinding } = useCairn()
+  const { cases, caseCards, caseBindings, createCaseBinding, beginAiTask, completeAiTask } = useCairn()
   const [open, setOpen] = useState(false)
   const [busy, setBusy] = useState(false)
   const [binding, setBinding] = useState(false)
@@ -61,16 +61,21 @@ export function BindingSuggestForTrade({ trade, onBound }: { trade: Trade; onBou
     setOpen(true)
     setBusy(true)
     setError('')
+    let taskId = ''
     try {
       const { context, cases: candidates } = bindingContextForTrade(trade, cases, caseCards, caseBindings)
       if (candidates.length === 0) {
         setSuggestions([])
         return
       }
+      taskId = beginAiTask({ kind: 'binding', label: 'AI 找 Case', targetType: 'trade', targetId: trade.id })
       const { matches } = await suggestBindings(context, candidates.length)
       setSuggestions(zipBindingSuggestions(candidates, matches))
+      completeAiTask(taskId, { ok: true })
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause))
+      const message = cause instanceof Error ? cause.message : String(cause)
+      setError(message)
+      if (taskId) completeAiTask(taskId, { ok: false, error: message })
     } finally {
       setBusy(false)
     }
@@ -99,7 +104,7 @@ export function BindingSuggestForTrade({ trade, onBound }: { trade: Trade; onBou
         error ? (
           <p className="text-xs text-destructive">{error}</p>
         ) : suggestions.length === 0 ? (
-          <p className="text-xs text-muted-foreground">没有找到合适的 Case（候选为空或都不匹配）。</p>
+          <p className="text-xs text-muted-foreground">没有找到合适的 Case，可在上方手动选择。</p>
         ) : (
           <SuggestionRows
             suggestions={suggestions}
@@ -115,7 +120,7 @@ export function BindingSuggestForTrade({ trade, onBound }: { trade: Trade; onBou
 
 /** AI 找 Trade（给一个 Case 推荐未绑定 Trade），用在 Case 页 Trade Binding 卡。 */
 export function BindingSuggestForCase({ caseRecord, onBound }: { caseRecord: TradeCase; onBound?: (binding: CaseTradeBinding) => void }) {
-  const { trades, caseCards, caseBindings, createCaseBinding } = useCairn()
+  const { trades, caseCards, caseBindings, createCaseBinding, beginAiTask, completeAiTask } = useCairn()
   const [open, setOpen] = useState(false)
   const [busy, setBusy] = useState(false)
   const [binding, setBinding] = useState(false)
@@ -126,6 +131,7 @@ export function BindingSuggestForCase({ caseRecord, onBound }: { caseRecord: Tra
     setOpen(true)
     setBusy(true)
     setError('')
+    let taskId = ''
     try {
       const cards = caseCards.filter((card) => card.caseId === caseRecord.id)
       const { context, candidates } = bindingContextForCase(caseRecord, cards, trades, caseBindings)
@@ -133,10 +139,14 @@ export function BindingSuggestForCase({ caseRecord, onBound }: { caseRecord: Tra
         setSuggestions([])
         return
       }
+      taskId = beginAiTask({ kind: 'binding', label: 'AI 找 Trade', targetType: 'case', targetId: caseRecord.id })
       const { matches } = await suggestBindings(context, candidates.length)
       setSuggestions(zipBindingSuggestions(candidates, matches))
+      completeAiTask(taskId, { ok: true })
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause))
+      const message = cause instanceof Error ? cause.message : String(cause)
+      setError(message)
+      if (taskId) completeAiTask(taskId, { ok: false, error: message })
     } finally {
       setBusy(false)
     }
@@ -165,7 +175,7 @@ export function BindingSuggestForCase({ caseRecord, onBound }: { caseRecord: Tra
         error ? (
           <p className="text-xs text-destructive">{error}</p>
         ) : suggestions.length === 0 ? (
-          <p className="text-xs text-muted-foreground">没有找到合适的 Trade（候选为空或都不匹配）。</p>
+          <p className="text-xs text-muted-foreground">没有找到合适的 Trade，可到 Trade 详情页手动关联本 Case。</p>
         ) : (
           <SuggestionRows
             suggestions={suggestions}

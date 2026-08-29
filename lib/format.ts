@@ -16,6 +16,24 @@ export function fmtSignedMoney(value: number, currency = 'USD', digits = 2): str
   return `${prefix}${fmtMoney(value, currency, digits)}`
 }
 
+/** 紧凑金额（统计卡单行用）：|值| ≥ 1 万时用 K/M/B 后缀（$12.4K / $1.23M），否则完整格式。
+ *  完整值由调用处通过 title 提示展示。 */
+export function fmtCompactMoney(value: number, currency = 'USD'): string {
+  const abs = Math.abs(value)
+  if (abs < 10_000) return fmtMoney(value, currency)
+  const sign = value < 0 ? '-' : ''
+  const symbol = currency === 'USD' ? '$' : currency === 'USDT' ? '' : `${currency} `
+  const suffix = currency === 'USDT' ? ' USDT' : ''
+  const compact = (div: number, unit: string) => {
+    const scaled = abs / div
+    const digits = scaled >= 10 ? 1 : 2
+    return `${sign}${symbol}${scaled.toLocaleString('en-US', { minimumFractionDigits: digits, maximumFractionDigits: digits })}${unit}${suffix}`
+  }
+  if (abs >= 1_000_000_000) return compact(1_000_000_000, 'B')
+  if (abs >= 1_000_000) return compact(1_000_000, 'M')
+  return compact(1_000, 'K')
+}
+
 export function fmtPct(value: number, digits = 1): string {
   return `${(value * 100).toFixed(digits)}%`
 }

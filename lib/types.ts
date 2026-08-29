@@ -116,6 +116,43 @@ export interface CaseExecutionSuggestions {
   suggestions: CaseExecutionSuggestion[]
 }
 
+/** AI 任务中心（0.3.1）的单条任务：GUI 发起的由前端注册，
+ *  REST 后台任务（自动识别/补录建议/批量拆卡）经 cairn://ai-task 事件合并。
+ *  「需重试」不算完成——只有内建重试后的最终结果才落到 succeeded/failed。 */
+export interface AiTask {
+  id: string
+  kind: 'analysis' | 'summary' | 'suggestions' | 'binding' | 'title' | 'split'
+  label: string
+  status: 'running' | 'succeeded' | 'failed'
+  startedAt: number
+  endedAt?: number
+  /** 跳转目标：card → 所属 Case 页；case → Case 页；trade → Trade 页 */
+  targetType?: 'case' | 'trade' | 'card'
+  targetId?: string
+  error?: string
+  /** 流式累积文本（整单总结） */
+  streamText?: string
+  /** 流式进度（整单总结）：思考时长与输出量 */
+  thinkingMs?: number
+  outputChars?: number
+  outputTokens?: number
+  phase?: 'thinking' | 'writing'
+  /** 完成后未查看（点开任务中心清零，驱动徽标） */
+  unread?: boolean
+}
+
+/** cairn://ai-task 事件 payload（Rust emit_task_event） */
+export interface AiTaskEventPayload {
+  id: string
+  kind: AiTask['kind'] | string
+  status: 'start' | 'succeeded' | 'failed'
+  label: string
+  at: number
+  targetType?: string
+  targetId?: string
+  error?: string
+}
+
 /** 一段围绕潜在或已完成 Trade 的连续决策记录。 */
 export interface TradeCase {
   id: string

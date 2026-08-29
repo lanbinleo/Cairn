@@ -17,6 +17,7 @@ import {
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
+import { AiTaskCenter } from '@/components/ai-task-center'
 
 const navItems = [
   { href: '/', label: '总览', icon: LayoutDashboard },
@@ -73,18 +74,21 @@ export function AppSidebar() {
 
       <div className="flex items-center justify-between border-t border-sidebar-border px-5 py-4">
         <span className="text-xs text-muted-foreground">交易复盘日志</span>
-        {mounted ? (
-          <Button
-            variant="ghost"
-            size="icon-sm"
-            onClick={() => setTheme(resolvedTheme === 'dark' ? 'light' : 'dark')}
-            aria-label={resolvedTheme === 'dark' ? '切换到浅色主题' : '切换到深色主题'}
-          >
-            {resolvedTheme === 'dark' ? <Sun /> : <Moon />}
-          </Button>
-        ) : (
-          <div className="size-8" aria-hidden="true" />
-        )}
+        <div className="flex items-center gap-0.5">
+          <AiTaskCenter />
+          {mounted ? (
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              onClick={() => setTheme(resolvedTheme === 'dark' ? 'light' : 'dark')}
+              aria-label={resolvedTheme === 'dark' ? '切换到浅色主题' : '切换到深色主题'}
+            >
+              {resolvedTheme === 'dark' ? <Sun /> : <Moon />}
+            </Button>
+          ) : (
+            <div className="size-8" aria-hidden="true" />
+          )}
+        </div>
       </div>
     </aside>
   )

@@ -15,7 +15,7 @@ use serde::Serialize;
 use tauri::{
     menu::{Menu, MenuItem},
     tray::TrayIconBuilder,
-    AppHandle, Manager, State, WindowEvent,
+    AppHandle, Emitter, Manager, State, WindowEvent,
 };
 
 #[tauri::command]
@@ -947,16 +947,162 @@ async fn suggest_case_executions(
     db: tauri::State<'_, db::Db>,
     case_id: String,
 ) -> Result<Value, String> {
-    run_execution_suggestions(&app, &db, &case_id).await
+    let result = run_execution_suggestions(&app, &db, &case_id).await;
+    if let Err(err) = &result {
+        // 手动检查失败必须留痕：前端只显示一句话，原因靠日志页排查
+        ai::log_provider_event(&app, format!("execution suggestions for case {case_id} failed: {err}"));
+    }
+    result
+}
+
+/// 整单总结的流式输出状态机：
+/// - 正文增量 80ms 合批经 cairn://ai-stream 推送（每个 delta 一次 IPC 会洪泛 webview）；
+/// - 思考文本不外发（太长且噪音大），只报进度：思考时长 / 已输出字数（tokens 有则报 tokens）。
+struct SummaryStreamBatcher {
+    app: AppHandle,
+    task_id: Option<String>,
+    buffer: std::sync::Mutex<String>,
+    last_flush_ms: std::sync::Mutex<u64>,
+    started_at: std::sync::Mutex<Option<std::time::Instant>>,
+    first_content_at: std::sync::Mutex<Option<std::time::Instant>>,
+    output_chars: std::sync::atomic::AtomicUsize,
+    last_progress_ms: std::sync::Mutex<u64>,
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+impl SummaryStreamBatcher {
+    fn new(app: AppHandle, task_id: Option<String>) -> Self {
+        Self {
+            app,
+            task_id,
+            buffer: std::sync::Mutex::new(String::new()),
+            last_flush_ms: std::sync::Mutex::new(0),
+            started_at: std::sync::Mutex::new(None),
+            first_content_at: std::sync::Mutex::new(None),
+            output_chars: std::sync::atomic::AtomicUsize::new(0),
+            last_progress_ms: std::sync::Mutex::new(0),
+        }
+    }
+
+    fn emit(&self, payload: Value) {
+        let Some(task_id) = self.task_id.as_deref() else { return };
+        let _ = self.app.emit(crate::api::AI_STREAM_EVENT, json!({ "taskId": task_id, "progress": payload }));
+    }
+
+    fn thinking_ms(&self) -> u64 {
+        // 思考时长 = 首个正文增量 − 首个思考增量（还没开始写正文就一直计到当前）
+        let started = *self.started_at.lock().unwrap();
+        let Some(started) = started else { return 0 };
+        let anchor = self
+            .first_content_at
+            .lock()
+            .unwrap()
+            .unwrap_or_else(std::time::Instant::now);
+        anchor.duration_since(started).as_millis() as u64
+    }
+
+    /// 思考阶段进度（500ms 节流，避免长思考刷屏 IPC）。
+    fn note_reasoning(&self) {
+        let mut started = self.started_at.lock().unwrap();
+        if started.is_none() {
+            *started = Some(std::time::Instant::now());
+        }
+        drop(started);
+        let now = now_ms();
+        let mut last = self.last_progress_ms.lock().unwrap();
+        if now.saturating_sub(*last) < 500 {
+            return;
+        }
+        *last = now;
+        drop(last);
+        self.emit(json!({
+            "phase": "thinking",
+            "thinkingMs": self.thinking_ms(),
+            "outputChars": self.output_chars.load(std::sync::atomic::Ordering::Relaxed),
+        }));
+    }
+
+    /// 正文增量：合批冲刷 + 输出量进度。
+    fn note_content(&self, text: &str) {
+        {
+            let mut started = self.started_at.lock().unwrap();
+            if started.is_none() {
+                *started = Some(std::time::Instant::now());
+            }
+        }
+        let first_just_set = {
+            let mut first = self.first_content_at.lock().unwrap();
+            let was_none = first.is_none();
+            if was_none {
+                *first = Some(std::time::Instant::now());
+            }
+            was_none
+        };
+
+        self.output_chars.fetch_add(text.chars().count(), std::sync::atomic::Ordering::Relaxed);
+        self.buffer.lock().unwrap().push_str(text);
+        // 首个正文增量：思考刚结束，立即报一次带思考时长的进度
+        if first_just_set {
+            *self.last_progress_ms.lock().unwrap() = 0;
+        }
+        let now = now_ms();
+        if now.saturating_sub(*self.last_flush_ms.lock().unwrap()) >= 80
+            || self.buffer.lock().unwrap().chars().count() >= 200
+        {
+            self.flush_delta(now);
+        }
+        if now.saturating_sub(*self.last_progress_ms.lock().unwrap()) >= 500 {
+            *self.last_progress_ms.lock().unwrap() = now;
+            self.emit(json!({
+                "phase": "writing",
+                "thinkingMs": self.thinking_ms(),
+                "outputChars": self.output_chars.load(std::sync::atomic::Ordering::Relaxed),
+            }));
+        }
+    }
+
+    fn flush_delta(&self, now: u64) {
+        let payload = std::mem::take(&mut *self.buffer.lock().unwrap());
+        *self.last_flush_ms.lock().unwrap() = now;
+        if payload.is_empty() {
+            return;
+        }
+        if let Some(task_id) = self.task_id.as_deref() {
+            let _ = self.app.emit(crate::api::AI_STREAM_EVENT, json!({ "taskId": task_id, "delta": payload }));
+        }
+    }
+
+    /// 结束：冲掉正文尾巴 + 最终进度（带 token 与思考量统计）。
+    fn finish(&self, outcome: &ai::StreamOutcome) {
+        self.flush_delta(now_ms());
+        let mut progress = json!({
+            "phase": "writing",
+            "thinkingMs": self.thinking_ms(),
+            "outputChars": self.output_chars.load(std::sync::atomic::Ordering::Relaxed),
+            "reasoningChars": outcome.reasoning_chars,
+        });
+        if let Some(tokens) = outcome.completion_tokens {
+            progress["outputTokens"] = json!(tokens);
+        }
+        self.emit(progress);
+    }
 }
 
 /// 整单总结的 AI 管道：上下文由前端组装（metrics/计划对比在 TS 侧计算），
 /// Rust 只负责调用与解析校验；模型/时间等版本字段由前端落库时补齐。
+/// task_id 存在时走流式：思考进度与正文增量经 cairn://ai-stream 事件推给前端。
 #[tauri::command]
 async fn ai_summarize_case(
     app: AppHandle,
     context: String,
     instruction: Option<String>,
+    task_id: Option<String>,
 ) -> Result<Value, String> {
     let (provider, model) = ai::default_provider(&app)?
         .ok_or_else(|| "还没有默认 AI Provider，请在 设置 → AI 中配置".to_string())?;
@@ -965,16 +1111,50 @@ async fn ai_summarize_case(
         messages.push(ai::ChatMessage::user(format!("补充总结要求：{extra}")));
     }
     ai::log_provider_event(&app, format!("summarizing case with {model}"));
-    let content = ai::chat_completion_with_retry(&provider, &model, &messages).await?;
-    let mut summary = ai::parse_summary(&content)?;
-    summary["model"] = json!(model);
-    summary["providerId"] = json!(provider.id);
+    let batcher = std::sync::Arc::new(SummaryStreamBatcher::new(app.clone(), task_id));
+    let weak = std::sync::Arc::downgrade(&batcher);
+    let on_chunk = move |chunk: &ai::StreamChunk| {
+        // WeakRef：命令返回后（理论上回调不会再触发）批处理器允许被释放
+        let Some(batcher) = weak.upgrade() else { return };
+        match chunk.kind {
+            ai::StreamChunkKind::Reasoning => batcher.note_reasoning(),
+            ai::StreamChunkKind::Content => batcher.note_content(&chunk.text),
+        }
+    };
+
+    let summary = match async {
+        let outcome = ai::chat_completion_stream_with_retry(&provider, &model, &messages, &on_chunk).await?;
+        let mut summary = ai::parse_summary(&outcome.content)?;
+        summary["model"] = json!(model);
+        summary["providerId"] = json!(provider.id);
+        Ok::<(Value, ai::StreamOutcome), String>((summary, outcome))
+    }
+    .await
+    {
+        Ok((summary, outcome)) => {
+            batcher.finish(&outcome);
+            summary
+        }
+        Err(err) => {
+            // 手动总结失败必须留痕：前端只显示一句话，原因靠日志页排查
+            ai::log_provider_event(&app, format!("case summary failed: {err}"));
+            return Err(err);
+        }
+    };
     Ok(summary)
 }
 
 #[tauri::command]
 fn get_ai_settings(app: AppHandle) -> Result<ai::AiSettings, String> {
     Ok(ai::settings(&app))
+}
+
+/// 默认 Provider 的并发上限：「全部识别」批量 worker 数与后台自动识别闸门共用（默认 10）。
+#[tauri::command]
+fn default_ai_concurrency(app: AppHandle) -> Result<usize, String> {
+    Ok(ai::default_provider(&app)?
+        .map(|(provider, _)| ai::concurrency_of(&provider))
+        .unwrap_or(10))
 }
 
 #[tauri::command]
@@ -1181,6 +1361,8 @@ pub(crate) fn batch_split_endpoint(
     let path = url.split('?').next().unwrap_or("").trim_matches('/');
     // api/v1/cases/{caseId}/cards/batch-split
     let case_id = path.split('/').nth(3).unwrap_or_default().to_string();
+    let split_task_id = ai::next_task_id();
+    ai::emit_task_event(app, &split_task_id, "split", "start", "批量拆卡", Some("case"), Some(&case_id), None);
     let run = || -> Result<(Vec<Value>, bool), String> {
         let phase = parsed.get("phase").and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty())
             .ok_or_else(|| "request body is missing valid phase".to_string())?.to_string();
@@ -1202,6 +1384,7 @@ pub(crate) fn batch_split_endpoint(
     };
     match run() {
         Ok((cards, changed)) => {
+            ai::emit_task_event(app, &split_task_id, "split", "succeeded", "批量拆卡", Some("case"), Some(&case_id), None);
             if changed {
                 for card in &cards {
                     if let Some(id) = card.get("id").and_then(Value::as_str) {
@@ -1212,6 +1395,7 @@ pub(crate) fn batch_split_endpoint(
             api::ApiOutcome { status: 200, body: json!({ "cards": cards, "version": ai::SPLIT_PROMPT_VERSION }), data_changed: changed }
         }
         Err(message) => {
+            ai::emit_task_event(app, &split_task_id, "split", "failed", "批量拆卡", Some("case"), Some(&case_id), Some(&message));
             let status = api::error_status(&message);
             api::ApiOutcome { status, body: json!({ "error": message }), data_changed: false }
         }
@@ -1385,6 +1569,7 @@ pub fn run() {
             draft_case_title,
             get_ai_settings,
             save_ai_settings,
+            default_ai_concurrency,
             save_attachment_file,
             read_attachment_file,
             save_chart_source_file

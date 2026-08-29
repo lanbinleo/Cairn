@@ -5,7 +5,8 @@ import { Save } from 'lucide-react'
 
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { InfoHint } from '@/components/info-hint'
 import { RelativeTime } from '@/components/relative-time'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
@@ -112,9 +113,9 @@ export function TradeProcessScoreCard({ trade, rMultiple }: { trade: Trade; rMul
   const savedTotal = savedProcessScoreTotal(saved)
 
   const memoHint = !binding
-    ? '未绑定 Case；在 Trade 的 Case 面板绑定后自动推导'
+    ? '未绑定 Case；在 Trade 的案例 tab 绑定后自动推导'
     : facts.memoMissing == null
-      ? '入场卡尚未 AI 整理；去 Case 页整理后自动推导'
+      ? '入场卡尚未 AI 识别；识别后自动推导'
       : facts.memoMissing.length === 0
         ? '六字段齐全'
         : `缺：${facts.memoMissing.map((key) => CASE_MEMO_FIELD_LABEL[key] ?? key).join('、')}`
@@ -155,10 +156,10 @@ export function TradeProcessScoreCard({ trade, rMultiple }: { trade: Trade; rMul
       <CardHeader>
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
-            <CardTitle className="text-base">过程分</CardTitle>
-            <CardDescription>
-              只用决策时刻可得的信息评分；R（{rMultiple == null ? '—' : `${rMultiple.toFixed(2)}R`}）只记录，不进标签。
-            </CardDescription>
+            <CardTitle className="flex items-center gap-1.5 text-base">
+              过程分
+              <InfoHint>只用决策时刻可得的信息评分，防止事后诸葛；R（结果）只记录，不参与评分。</InfoHint>
+            </CardTitle>
           </div>
           {saved && savedTotal != null && (
             <div className="text-right">
@@ -176,7 +177,7 @@ export function TradeProcessScoreCard({ trade, rMultiple }: { trade: Trade; rMul
         <div className="flex flex-col gap-2">
           <ScoreRow
             title="结构成立"
-            hint="判断项 · 对着入场 BAR 冻结图按定义复查（防 hindsight）"
+            hint="判断项 · 对着入场 BAR 冻结图按定义复查（防事后诸葛）"
             control={<ScoreSelect value={structureValid} max={2} onChange={setStructureValid} />}
             score={structureValid ?? null}
             max={2}
@@ -204,7 +205,7 @@ export function TradeProcessScoreCard({ trade, rMultiple }: { trade: Trade; rMul
           />
           <ScoreRow
             title="持仓零即兴"
-            hint="人记次数 · 每个 unplanned 动作扣 1"
+            hint="人记次数 · 每个计划外动作扣 1"
             evidence={unplannedCount != null ? `计划外动作 ${unplannedCount} 次` : undefined}
             control={
               <Input

@@ -170,7 +170,6 @@ export default function TradesPage() {
     <div className="flex flex-col gap-6 p-6 lg:p-8">
       <PageHeader
         title="交易"
-        description="全部账户的交易记录，可筛选后逐笔进入复盘"
         actions={
           <div className="flex items-center gap-2">
             <ManageTagsDialog />

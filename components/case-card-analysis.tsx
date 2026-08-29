@@ -322,11 +322,11 @@ export function CaseCardAnalysisView({ card, busy, onRetry, onEditAnalysis }: Ca
               <button
                 type="button"
                 className="rounded-sm bg-amber-500/10 px-1.5 py-0.5 text-amber-600 hover:bg-amber-500/20 dark:text-amber-400"
-                title="原文在整理后修改过；可重新识别或忽略本次过期"
+                title="原文在识别后修改过；可重新识别或忽略本次过期"
               />
             }
           >
-            已过期 ▾
+            需重新识别 ▾
           </DropdownMenuTrigger>
           <DropdownMenuContent align="start">
             <DropdownMenuItem onClick={() => onRetry()}>重新识别</DropdownMenuItem>

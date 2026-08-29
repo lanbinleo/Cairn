@@ -15,8 +15,8 @@ export const CASE_STATUS_OPTIONS: Array<{ value: CaseStatus; label: string }> = 
 ]
 
 export const CASE_PROVENANCE_OPTIONS: Array<{ value: CaseProvenance; label: string }> = [
-  { value: 'forward', label: 'Forward · 当时记录' },
-  { value: 'retrospective', label: 'Retrospective · 事后记录' },
+  { value: 'forward', label: '当时记录' },
+  { value: 'retrospective', label: '事后补录' },
 ]
 
 export const CASE_ENTRY_DECISION_OPTIONS: Array<{ value: CaseEntryDecision; label: string }> = [
