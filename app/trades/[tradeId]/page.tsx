@@ -35,7 +35,7 @@ import { readFileAsDataUrl } from '@/lib/tradingview-import'
 import { createTradeTransferPayload, stringifyTradeTransfer } from '@/lib/trade-transfer'
 import { CHART_TIMEFRAMES, chartTimeframeLabel, chartTimeframeMinutes } from '@/lib/chart-timeframes'
 import { logFrontendError } from '@/lib/frontend-log'
-import { casePhaseLabel } from '@/lib/cases'
+import { caseCardDigest, casePhaseLabel } from '@/lib/cases'
 import type { CaseCardPhase, ChartTimeframe } from '@/lib/types'
 
 type TradeDetailTab = 'overview' | 'case' | 'trade'
@@ -225,7 +225,8 @@ export default function TradeDetailPage() {
         kind: 'case' as const,
         time,
         title: `${casePhaseLabel[card.phase]}${resolved?.invalid ? ' · BAR 异常' : ''}`,
-        detail: card.rawText,
+        // 时间线上先看一句话提炼（点击跳 Case Tab 看原文）；无 digest 回退原文
+        detail: caseCardDigest(card) ?? card.rawText,
         tone: 'case' as const,
         cardId: card.id,
         barNumber: timeToBarNumber(time, barMinutes),

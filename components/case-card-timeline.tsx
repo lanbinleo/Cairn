@@ -11,7 +11,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
-import { CASE_PHASE_OPTIONS, caseEntryDecisionLabel, casePhaseLabel, displayPhaseForCaseCard } from '@/lib/cases'
+import { CASE_PHASE_OPTIONS, caseCardDigest, caseEntryDecisionLabel, casePhaseLabel, displayPhaseForCaseCard, isCaseCardAnalysisStale } from '@/lib/cases'
 import { useCairn } from '@/lib/store'
 import type { CaseCard, CaseCardPhase } from '@/lib/types'
 import { cn } from '@/lib/utils'
@@ -27,14 +27,10 @@ const PHASE_TONES: Record<CaseCardPhase, string> = {
 /** BAR 合法区间：bar 序号按 UTC 日重置，最小周期 1 分钟 → 一天最多 1440 根。 */
 const MAX_BAR_NUMBER = 1440
 
-function isStale(card: CaseCard): boolean {
-  const analysis = card.aiAnalysis
-  if (!analysis || card.rawTextEditedAt == null) return false
-  if (analysis.analyzedAt >= card.rawTextEditedAt) return false
-  return (analysis.staleDismissedAt ?? 0) < card.rawTextEditedAt
-}
-
+/** 折叠行文字：优先用未过期的 AI digest，否则回退原文首行。 */
 function summaryLine(card: CaseCard): string {
+  const digest = caseCardDigest(card)
+  if (digest) return digest.length > 72 ? `${digest.slice(0, 72)}…` : digest
   const first = card.rawText.split('\n').find((line) => line.trim()) ?? ''
   return first.length > 72 ? `${first.slice(0, 72)}…` : first
 }
@@ -81,7 +77,7 @@ export function CaseCardTimeline({ cards, showMoveToCase = true, showBatchAnalyz
     return groups
   }, [cards])
   const missingBarCount = useMemo(() => cards.filter((card) => card.barRef == null).length, [cards])
-  const staleCount = useMemo(() => cards.filter(isStale).length, [cards])
+  const staleCount = useMemo(() => cards.filter(isCaseCardAnalysisStale).length, [cards])
   const otherCases = useMemo(
     () => cases.filter((item) => cards.length === 0 || item.id !== cards[0]?.caseId).sort((a, b) => b.createdAt - a.createdAt),
     [cases, cards],
@@ -409,7 +405,7 @@ export function CaseCardTimeline({ cards, showMoveToCase = true, showBatchAnalyz
                         >
                           {card.barRef != null ? `BAR ${card.barRef}` : '缺 BAR'}
                         </span>
-                        {isStale(card) && <span className="shrink-0 rounded-sm bg-amber-500/10 px-1.5 py-0.5 text-xs text-amber-600 dark:text-amber-400">过期</span>}
+                        {isCaseCardAnalysisStale(card) && <span className="shrink-0 rounded-sm bg-amber-500/10 px-1.5 py-0.5 text-xs text-amber-600 dark:text-amber-400">过期</span>}
                         <span className="min-w-0 flex-1 truncate text-sm text-muted-foreground">{summaryLine(card)}</span>
                         <RelativeTime ms={card.createdAt} className="shrink-0 text-xs text-muted-foreground" />
                       </button>

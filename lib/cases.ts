@@ -51,6 +51,20 @@ export function displayPhaseForCaseCard(card: CaseCard): CaseCardPhase {
   return card.phase === 'entry' && card.entryDecision === 'continue-observing' ? 'pre-entry' : card.phase
 }
 
+/** 分析已过期：原文在分析后被修正过，且用户没有忽略这次过期。 */
+export function isCaseCardAnalysisStale(card: CaseCard): boolean {
+  const analysis = card.aiAnalysis
+  if (!analysis || card.rawTextEditedAt == null) return false
+  if (analysis.analyzedAt >= card.rawTextEditedAt) return false
+  return (analysis.staleDismissedAt ?? 0) < card.rawTextEditedAt
+}
+
+/** 卡片一句话提炼：仅有未过期的 digest 时返回，否则 null（调用方回退原文）。 */
+export function caseCardDigest(card: CaseCard): string | null {
+  const digest = card.aiAnalysis?.digest
+  return digest && !isCaseCardAnalysisStale(card) ? digest : null
+}
+
 export function extractExplicitBarRef(rawText: string): number | undefined {
   const refs: Array<{ index: number; value: number }> = []
   const patterns = [
