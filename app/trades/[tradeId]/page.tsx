@@ -36,7 +36,7 @@ import { createTradeTransferPayload, stringifyTradeTransfer } from '@/lib/trade-
 import { CHART_TIMEFRAMES, chartTimeframeLabel, chartTimeframeMinutes } from '@/lib/chart-timeframes'
 import { logFrontendError } from '@/lib/frontend-log'
 import { caseCardDigest, casePhaseLabel } from '@/lib/cases'
-import type { CaseCardPhase, ChartTimeframe } from '@/lib/types'
+import type { CaseCardPhase, ChartTimeframe, Execution } from '@/lib/types'
 
 type TradeDetailTab = 'overview' | 'case' | 'trade'
 
@@ -71,6 +71,8 @@ export default function TradeDetailPage() {
   const [planPromptOpen, setPlanPromptOpen] = useState(false)
   const [planPrefillHint, setPlanPrefillHint] = useState('')
   const [editOpenRequest, setEditOpenRequest] = useState(0)
+  /* AI 补录建议「修改后添加」：nonce 触发 EditTradeDialog 打开并预填草稿 */
+  const [suggestPrefill, setSuggestPrefill] = useState<{ execution: Execution; nonce: number } | null>(null)
   const planPromptShownRef = useRef<string | null>(null)
   const { getTrade, getAccount, getPeriod, getSymbol, getNotesMentioningTrade, symbolLabel, setTradeStatus, updateTrade, createNote, createImageAttachment, deleteAttachment, getChartCandles, tagDefs, cases, caseCards, caseBindings, prefillTradePlanFromBoundCase } = useCairn()
   /* 缺失计划价提醒：每笔 Trade 每次访问最多弹一次；「忽略」持久化，「待会儿提醒」下次访问再弹 */
@@ -294,7 +296,7 @@ export default function TradeDetailPage() {
               标记为已平仓
             </Button>
           )}
-          <EditTradeDialog trade={trade} openRequest={editOpenRequest} />
+          <EditTradeDialog trade={trade} openRequest={editOpenRequest} prefill={suggestPrefill} />
         </div>
       </header>
 
@@ -705,7 +707,13 @@ export default function TradeDetailPage() {
         </TabsContent>
 
         <TabsContent value="case">
-          <TradeCasePanel trade={trade} targetCardId={targetCaseCardId} />
+          <TradeCasePanel
+            trade={trade}
+            targetCardId={targetCaseCardId}
+            cardTimes={cardBarTimes}
+            onJumpCard={(cardId) => setTargetCaseCardId(cardId)}
+            onSuggestEditPrefill={(draft) => setSuggestPrefill({ execution: draft, nonce: Date.now() })}
+          />
         </TabsContent>
 
         <TabsContent value="trade">

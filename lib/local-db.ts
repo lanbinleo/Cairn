@@ -2,7 +2,7 @@ import { invoke } from '@tauri-apps/api/core'
 
 import type { CairnStateSnapshot } from './seed'
 import { seedState } from './seed'
-import type { CaseCard } from './types'
+import type { CaseCard, TradeCase } from './types'
 
 type CollectionName =
   | 'accounts'
@@ -243,12 +243,24 @@ export async function draftCaseTitle(caseId: string): Promise<string> {
   return invoke<string>('draft_case_title', { caseId })
 }
 
+/** AI 持仓管理补录建议：检查绑定 Trade 的卡片动作覆盖情况，返回更新后的 Case。 */
+export async function suggestCaseExecutions(caseId: string): Promise<TradeCase> {
+  if (!isTauriRuntime()) {
+    throw new Error('AI 建议需要桌面版运行')
+  }
+  return invoke<TradeCase>('suggest_case_executions', { caseId })
+}
+
 export interface AiSettings {
   autoAnalyze: boolean
+  /** 0.3.0：绑定后自动建议 / 导入后自动关联推荐 */
+  autoSuggest?: boolean
+  /** 0.3.0：Trade 关闭时自动整单总结 */
+  autoSummary?: boolean
 }
 
 export async function getAiSettings(): Promise<AiSettings> {
-  if (!isTauriRuntime()) return { autoAnalyze: true }
+  if (!isTauriRuntime()) return { autoAnalyze: true, autoSuggest: true, autoSummary: true }
   return invoke<AiSettings>('get_ai_settings')
 }
 

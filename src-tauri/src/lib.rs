@@ -10,7 +10,7 @@ use std::{
 };
 
 use base64::{engine::general_purpose, Engine as _};
-use serde_json::Value;
+use serde_json::{json, Value};
 use serde::Serialize;
 use tauri::{
     menu::{Menu, MenuItem},
@@ -237,6 +237,65 @@ mod tests {
         assert!(!version_gt("0.2.3", "0.2.4"));
         assert!(!version_gt("0.2", "0.2.0"));
     }
+
+    fn suggestion(action: &str, price: Option<f64>, quote: &str) -> ai::ParsedSuggestion {
+        ai::ParsedSuggestion {
+            card_id: "card-1".to_string(),
+            action: action.to_string(),
+            order_type: "stop-loss".to_string(),
+            price,
+            anchor_text: None,
+            signal: None,
+            quote: quote.to_string(),
+        }
+    }
+
+    #[test]
+    fn suggestion_dedup_drops_prices_already_on_the_trade() {
+        let trade = json!({
+            "direction": "long",
+            "initialStopLoss": 90364,
+            "initialTakeProfit": 90729,
+            "executions": [
+                { "action": "entry", "time": 1, "price": 90873.76, "quantity": 2.9 },
+                { "action": "stop", "time": 2, "price": 90820.36 }
+            ],
+            "events": [{ "type": "tp-moved", "time": 3, "price": 91000 }]
+        });
+        let kept = dedup_suggestions_against_trade(
+            vec![
+                suggestion("stop", Some(90820.36), "q1"),        // 与已落库 stop 同价 → 丢弃
+                suggestion("stop", Some(90364.0), "q2"),          // 与 initialStopLoss 同 → 丢弃
+                suggestion("target-moved", Some(91000.5), "q3"),  // 与 tp-moved 91000 差 0.5 < 容差 → 丢弃
+                suggestion("target-moved", Some(90800.0), "q4"),  // 未覆盖 → 保留
+                suggestion("stop", None, "q5"),                   // 无价格无法确认覆盖 → 保留
+            ],
+            &trade,
+        );
+        assert_eq!(kept.len(), 2);
+        assert_eq!(kept[0].quote, "q4");
+        assert_eq!(kept[1].quote, "q5");
+    }
+
+    #[test]
+    fn suggestion_context_lists_cards_with_indices() {
+        let trade = json!({
+            "direction": "long",
+            "status": "closed",
+            "executions": [{ "action": "entry", "time": 1, "price": 90873.76, "quantity": 2.9 }],
+            "events": []
+        });
+        let cards = vec![json!({
+            "id": "card-1",
+            "phase": "intermediate",
+            "barRef": 152,
+            "rawText": "我决定把止损移动到 90820.36"
+        })];
+        let context = suggestion_context(&rusqlite::Connection::open_in_memory().unwrap(), &trade, &cards);
+        assert!(context.contains("交易背景：做多"));
+        assert!(context.contains("首笔入场 90873.76"));
+        assert!(context.contains("1. [过程] BAR152 我决定把止损移动到 90820.36"), "cardIndex/phase/bar/rawText");
+    }
 }
 
 #[tauri::command]
@@ -306,6 +365,54 @@ fn truncate_chars(text: &str, limit: usize) -> String {
     text.chars().take(limit).collect()
 }
 
+fn symbol_label_for_trade(conn: &rusqlite::Connection, trade: &Value) -> Option<String> {
+    trade
+        .get("symbolId")
+        .and_then(Value::as_str)
+        .and_then(|symbol_id| db::read_record_by_id(conn, "symbols", symbol_id).ok().flatten())
+        .map(|symbol| {
+            format!(
+                "{} {}",
+                symbol.get("exchange").and_then(Value::as_str).unwrap_or_default(),
+                symbol.get("code").and_then(Value::as_str).unwrap_or_default()
+            )
+            .trim()
+            .to_string()
+        })
+        .filter(|label| !label.is_empty())
+}
+
+fn trade_action_lines(trade: &Value) -> Vec<(u64, String)> {
+    let mut lines: Vec<(u64, String)> = Vec::new();
+    if let Some(executions) = trade.get("executions").and_then(Value::as_array) {
+        for execution in executions {
+            let Some(time) = execution.get("time").and_then(Value::as_u64) else { continue };
+            let Some(action) = execution.get("action").and_then(Value::as_str) else { continue };
+            let mut line = execution_action_label(action).to_string();
+            if let Some(price) = execution.get("price").and_then(Value::as_f64) {
+                line.push_str(&format!(" {price}"));
+            }
+            if let Some(quantity) = execution.get("quantity").and_then(Value::as_f64) {
+                line.push_str(&format!(" ×{quantity}"));
+            }
+            lines.push((time, line));
+        }
+    }
+    if let Some(events) = trade.get("events").and_then(Value::as_array) {
+        for event in events {
+            let Some(time) = event.get("time").and_then(Value::as_u64) else { continue };
+            let Some(event_type) = event.get("type").and_then(Value::as_str) else { continue };
+            let mut line = trade_event_label(event_type).to_string();
+            if let Some(price) = event.get("price").and_then(Value::as_f64) {
+                line.push_str(&format!(" {price}"));
+            }
+            lines.push((time, line));
+        }
+    }
+    lines.sort_by_key(|(time, _)| *time);
+    lines
+}
+
 /// 卡片分析（prompt v3）的背景资料块：品种、绑定交易的成交动作、同 Case 前情卡片。
 /// 任一来源读取失败都降级为跳过该段——背景资料是辅助，绝不阻塞分析本身。
 fn card_context(conn: &rusqlite::Connection, card: &Value) -> String {
@@ -322,19 +429,7 @@ fn card_context(conn: &rusqlite::Connection, card: &Value) -> String {
         if let Some(binding) = binding {
             if let Some(trade_id) = binding.get("tradeId").and_then(Value::as_str) {
                 if let Ok(Some(trade)) = db::read_trade_with_children(conn, trade_id) {
-                    let symbol_label = trade
-                        .get("symbolId")
-                        .and_then(Value::as_str)
-                        .and_then(|symbol_id| db::read_record_by_id(conn, "symbols", symbol_id).ok().flatten())
-                        .map(|symbol| {
-                            format!(
-                                "{} {}",
-                                symbol.get("exchange").and_then(Value::as_str).unwrap_or_default(),
-                                symbol.get("code").and_then(Value::as_str).unwrap_or_default()
-                            )
-                            .trim()
-                            .to_string()
-                        });
+                    let symbol_label = symbol_label_for_trade(conn, &trade);
                     let direction = match trade.get("direction").and_then(Value::as_str) {
                         Some("long") => "做多",
                         Some("short") => "做空",
@@ -353,37 +448,8 @@ fn card_context(conn: &rusqlite::Connection, card: &Value) -> String {
                         summary.push_str(&format!("，初始止损 {stop}"));
                     }
                     lines.push(summary);
-                    if let Some(events) = trade.get("executions").and_then(Value::as_array) {
-                        let mut action_lines: Vec<(u64, String)> = events
-                            .iter()
-                            .filter_map(|execution| {
-                                let time = execution.get("time").and_then(Value::as_u64)?;
-                                let action = execution.get("action").and_then(Value::as_str)?;
-                                let mut line = execution_action_label(action).to_string();
-                                if let Some(price) = execution.get("price").and_then(Value::as_f64) {
-                                    line.push_str(&format!(" {price}"));
-                                }
-                                if let Some(quantity) = execution.get("quantity").and_then(Value::as_f64) {
-                                    line.push_str(&format!(" ×{quantity}"));
-                                }
-                                Some((time, line))
-                            })
-                            .collect();
-                        if let Some(events) = trade.get("events").and_then(Value::as_array) {
-                            action_lines.extend(events.iter().filter_map(|event| {
-                                let time = event.get("time").and_then(Value::as_u64)?;
-                                let event_type = event.get("type").and_then(Value::as_str)?;
-                                let mut line = trade_event_label(event_type).to_string();
-                                if let Some(price) = event.get("price").and_then(Value::as_f64) {
-                                    line.push_str(&format!(" {price}"));
-                                }
-                                Some((time, line))
-                            }));
-                        }
-                        action_lines.sort_by_key(|(time, _)| *time);
-                        for (time, line) in action_lines.iter().take(24) {
-                            lines.push(format!("{line}（{}）", format_utc_compact(*time)));
-                        }
+                    for (time, line) in trade_action_lines(&trade).into_iter().take(24) {
+                        lines.push(format!("{line}（{}）", format_utc_compact(time)));
                     }
                 }
             }
@@ -530,6 +596,300 @@ async fn analyze_case_card(
     run_card_analysis(&app, &db, &card_id, instruction, true)
         .await?
         .ok_or_else(|| "已手动修正过的分析未被覆盖；如需重新识别请从界面确认".to_string())
+}
+
+/// 管理动作分类：stop 家族 / target 家族 / 其他。建议与已落库动作按此比对。
+fn management_class(action: &str) -> &'static str {
+    match action {
+        "stop" | "stop-set" | "stop-moved" | "sl-set" | "sl-moved" => "stop",
+        "target-set" | "target-moved" | "tp-set" | "tp-moved" => "target",
+        _ => "other",
+    }
+}
+
+/// 建议上下文：交易背景 + 已落库动作 + 编号卡片清单（原话供 quote 逐字校验）。
+fn suggestion_context(
+    conn: &rusqlite::Connection,
+    trade: &Value,
+    cards: &[Value],
+) -> String {
+    let mut out = String::new();
+    let direction = match trade.get("direction").and_then(Value::as_str) {
+        Some("long") => "做多",
+        Some("short") => "做空",
+        _ => "交易",
+    };
+    let status = match trade.get("status").and_then(Value::as_str) {
+        Some("closed") => "已平仓",
+        _ => "持仓中",
+    };
+    out.push_str(&format!("交易背景：{direction}"));
+    if let Some(label) = symbol_label_for_trade(conn, trade) {
+        out.push_str(&format!(" {label}"));
+    }
+    out.push_str(&format!("（{status}）"));
+    if let Some(entry) = trade
+        .get("executions")
+        .and_then(Value::as_array)
+        .and_then(|items| {
+            items
+                .iter()
+                .filter(|e| e.get("action").and_then(Value::as_str) == Some("entry"))
+                .filter_map(|e| e.get("price").and_then(Value::as_f64))
+                .next()
+        })
+    {
+        out.push_str(&format!("，首笔入场 {entry}"));
+    }
+    if let Some(stop) = trade.get("initialStopLoss").and_then(Value::as_f64) {
+        out.push_str(&format!("，初始止损 {stop}"));
+    }
+    if let Some(target) = trade.get("initialTakeProfit").and_then(Value::as_f64) {
+        out.push_str(&format!("，初始止盈 {target}"));
+    }
+    out.push_str("\n已落库动作（来自交易所导出与手动记录）：\n");
+    let actions = trade_action_lines(trade);
+    if actions.is_empty() {
+        out.push_str("- 无\n");
+    } else {
+        for (time, line) in actions.into_iter().take(30) {
+            out.push_str(&format!("- {line}（{}）\n", format_utc_compact(time)));
+        }
+    }
+    out.push_str("卡片记录（每张开头是 cardIndex 编号，quote 必须逐字来自该卡原文）：\n");
+    for (index, card) in cards.iter().enumerate() {
+        let phase = card.get("phase").and_then(Value::as_str).unwrap_or("");
+        let phase_name = match phase {
+            "pre-entry" => "观察",
+            "entry" => "入场",
+            "intermediate" => "过程",
+            "closing" => "离场",
+            "reflection" => "复盘",
+            other => other,
+        };
+        let bar = card
+            .get("barRef")
+            .and_then(Value::as_u64)
+            .map(|bar| format!(" BAR{bar}"))
+            .unwrap_or_default();
+        let text = card
+            .get("rawText")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        out.push_str(&format!("{}. [{}]{} {}\n", index + 1, phase_name, bar, truncate_chars(text, 500)));
+    }
+    out
+}
+
+/// 机械去重：与已落库管理动作/初始止损止盈比对，同分类且价格基本相同（相对 0.02%）
+/// 的建议视为已覆盖，丢弃。比对参照价取首笔入场价，无成交时取建议价本身。
+fn dedup_suggestions_against_trade(
+    suggestions: Vec<ai::ParsedSuggestion>,
+    trade: &Value,
+) -> Vec<ai::ParsedSuggestion> {
+    let reference = trade
+        .get("executions")
+        .and_then(Value::as_array)
+        .and_then(|items| {
+            items
+                .iter()
+                .filter(|e| e.get("action").and_then(Value::as_str) == Some("entry"))
+                .filter_map(|e| e.get("price").and_then(Value::as_f64))
+                .next()
+        })
+        .unwrap_or(0.0);
+
+    let mut existing: Vec<(&str, f64)> = Vec::new();
+    if let Some(executions) = trade.get("executions").and_then(Value::as_array) {
+        for execution in executions {
+            let action = execution.get("action").and_then(Value::as_str).unwrap_or("");
+            let class = management_class(action);
+            if class == "other" {
+                continue;
+            }
+            if let Some(price) = execution.get("price").and_then(Value::as_f64) {
+                existing.push((class, price));
+            }
+        }
+    }
+    if let Some(events) = trade.get("events").and_then(Value::as_array) {
+        for event in events {
+            let event_type = event.get("type").and_then(Value::as_str).unwrap_or("");
+            let class = management_class(event_type);
+            if class == "other" {
+                continue;
+            }
+            if let Some(price) = event.get("price").and_then(Value::as_f64) {
+                existing.push((class, price));
+            }
+        }
+    }
+    if let Some(stop) = trade.get("initialStopLoss").and_then(Value::as_f64) {
+        existing.push(("stop", stop));
+    }
+    if let Some(target) = trade.get("initialTakeProfit").and_then(Value::as_f64) {
+        existing.push(("target", target));
+    }
+
+    suggestions
+        .into_iter()
+        .filter(|suggestion| {
+            let Some(price) = suggestion.price else { return true };
+            let tolerance = (reference.abs().max(price) * 0.0002).max(1e-9);
+            !existing
+                .iter()
+                .any(|(class, existing_price)| {
+                    *class == management_class(&suggestion.action)
+                        && (existing_price - price).abs() <= tolerance
+                })
+        })
+        .collect()
+}
+
+fn suggestion_fingerprint(item: &ai::ParsedSuggestion) -> String {
+    format!(
+        "{}|{}|{}|{}",
+        item.card_id,
+        item.action,
+        item.quote,
+        item.price.map(|price| price.to_string()).unwrap_or_else(|| "-".to_string())
+    )
+}
+
+/// 持仓管理补录建议完整链路：读 Case/卡片/绑定 Trade → 组装上下文 → 一次 AI 调用 →
+/// 机械校验（quote 逐字、白名单、去重）→ 与上一轮的 accepted/dismissed 状态按指纹合并 →
+/// 写回 case.aiExecutionSuggestions（版本化派生数据）。建议永远只是候选，落地由用户确认。
+pub(crate) async fn run_execution_suggestions(
+    app: &AppHandle,
+    db: &db::Db,
+    case_id: &str,
+) -> Result<Value, String> {
+    let (trade, cards, provider, model, context) = {
+        let conn = db.conn()?;
+        db::read_record_by_id(&conn, "cases", case_id)?
+            .ok_or_else(|| format!("case not found: {case_id}"))?;
+        let cards = db::read_case_cards_for_case(&conn, case_id)?;
+        let binding = db::read_simple_collection(&conn, "caseBindings")?
+            .into_iter()
+            .find(|item| item.get("caseId").and_then(Value::as_str) == Some(case_id))
+            .ok_or_else(|| "该 Case 尚未绑定 Trade，无法检查持仓动作".to_string())?;
+        let trade_id = binding
+            .get("tradeId")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "binding is missing tradeId".to_string())?
+            .to_string();
+        let trade = db::read_trade_with_children(&conn, &trade_id)?
+            .ok_or_else(|| format!("trade not found: {trade_id}"))?;
+        let (provider, model) = ai::default_provider(app)?
+            .ok_or_else(|| "还没有默认 AI Provider，请在 设置 → AI 中配置".to_string())?;
+        let context = suggestion_context(&conn, &trade, &cards);
+        (trade, cards, provider, model, context)
+    };
+
+    let messages = ai::build_suggestion_messages(&context);
+    ai::log_provider_event(app, format!("checking execution suggestions for case {case_id} with {model}"));
+    let content = ai::chat_completion_with_retry(&provider, &model, &messages).await?;
+    let card_pairs: Vec<(String, String)> = cards
+        .iter()
+        .map(|card| {
+            (
+                card.get("id").and_then(Value::as_str).unwrap_or_default().to_string(),
+                card.get("rawText").and_then(Value::as_str).unwrap_or_default().to_string(),
+            )
+        })
+        .collect();
+    let parsed = ai::parse_execution_suggestions(&content, &card_pairs)?;
+    let deduped = dedup_suggestions_against_trade(parsed, &trade);
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0);
+
+    // 写回前重读 Case：只替换 aiExecutionSuggestions 字段，不回滚并发修改（标题等）
+    let conn = db.conn()?;
+    let mut current = db::read_record_by_id(&conn, "cases", case_id)?
+        .ok_or_else(|| format!("case not found: {case_id}"))?;
+    let previous: Vec<Value> = current
+        .get("aiExecutionSuggestions")
+        .and_then(|value| value.get("suggestions"))
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let previous_by_fingerprint: std::collections::HashMap<String, Value> = previous
+        .into_iter()
+        .filter_map(|item| {
+            let fingerprint = format!(
+                "{}|{}|{}|{}",
+                item.get("cardId").and_then(Value::as_str).unwrap_or_default(),
+                item.get("action").and_then(Value::as_str).unwrap_or_default(),
+                item.get("quote").and_then(Value::as_str).unwrap_or_default(),
+                item.get("price").and_then(Value::as_f64).map(|price| price.to_string()).unwrap_or_else(|| "-".to_string())
+            );
+            Some((fingerprint, item))
+        })
+        .collect();
+
+    let mut suggestions: Vec<Value> = Vec::new();
+    for (index, item) in deduped.into_iter().enumerate() {
+        let fingerprint = suggestion_fingerprint(&item);
+        let status = previous_by_fingerprint
+            .get(&fingerprint)
+            .and_then(|old| old.get("status")).cloned();
+        let accepted_execution_id = previous_by_fingerprint
+            .get(&fingerprint)
+            .and_then(|old| old.get("acceptedExecutionId")).cloned();
+        let dismissed_at = previous_by_fingerprint
+            .get(&fingerprint)
+            .and_then(|old| old.get("dismissedAt")).cloned();
+        let bar_ref = cards
+            .iter()
+            .find(|card| card.get("id").and_then(Value::as_str) == Some(item.card_id.as_str()))
+            .and_then(|card| card.get("barRef").cloned());
+        let mut suggestion = json!({
+            "id": format!("{}-{}", item.card_id, index),
+            "action": item.action,
+            "orderType": item.order_type,
+            "price": item.price,
+            "anchorText": item.anchor_text,
+            "signal": item.signal,
+            "cardId": item.card_id,
+            "quote": item.quote,
+            "status": status.unwrap_or(json!("pending")),
+        });
+        if let Some(bar) = bar_ref {
+            suggestion["barRef"] = bar;
+        }
+        if let Some(execution_id) = accepted_execution_id {
+            suggestion["acceptedExecutionId"] = execution_id;
+        }
+        if let Some(dismissed) = dismissed_at {
+            suggestion["dismissedAt"] = dismissed;
+        }
+        suggestions.push(suggestion);
+    }
+
+    let blob = json!({
+        "schemaVersion": ai::SUGGESTION_PROMPT_VERSION,
+        "promptVersion": ai::SUGGESTION_PROMPT_VERSION,
+        "model": model,
+        "providerId": provider.id,
+        "analyzedAt": now,
+        "suggestions": suggestions,
+    });
+    current["aiExecutionSuggestions"] = blob;
+    db::save_record_in_tx(&conn, "cases", case_id, current.clone())?;
+    ai::log_provider_event(app, format!("case {case_id} execution suggestions updated"));
+    Ok(current)
+}
+
+#[tauri::command]
+async fn suggest_case_executions(
+    app: AppHandle,
+    db: tauri::State<'_, db::Db>,
+    case_id: String,
+) -> Result<Value, String> {
+    run_execution_suggestions(&app, &db, &case_id).await
 }
 
 #[tauri::command]
@@ -738,6 +1098,7 @@ pub fn run() {
             delete_ai_provider,
             fetch_ai_models,
             analyze_case_card,
+            suggest_case_executions,
             draft_case_title,
             get_ai_settings,
             save_ai_settings,

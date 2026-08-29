@@ -7,7 +7,7 @@
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import { listen } from '@tauri-apps/api/event'
-import { loadLocalState, saveLocalRecord, saveLocalRecords, deleteLocalRecord, restoreLocalState, exportLocalBackup, saveAttachmentFile, isTauriRuntime, analyzeCaseCard as analyzeCaseCardRemote, draftCaseTitle as draftCaseTitleRemote } from './local-db'
+import { loadLocalState, saveLocalRecord, saveLocalRecords, deleteLocalRecord, restoreLocalState, exportLocalBackup, saveAttachmentFile, isTauriRuntime, analyzeCaseCard as analyzeCaseCardRemote, draftCaseTitle as draftCaseTitleRemote, suggestCaseExecutions as suggestCaseExecutionsRemote, getAiSettings } from './local-db'
 import { deriveAutoCloseCases } from './case-auto-close'
 import type { CairnStateSnapshot } from './seed'
 import { seedState } from './seed'
@@ -17,7 +17,7 @@ import { extractExplicitBarRef, isDefaultCaseTitle } from './cases'
 import { findTagByName, normalizeTagDefs, normalizeTagName, normalizeTradeTagNames, uniqueTagNames, tagNamesEqual } from './tags'
 import { firstPlausibleNumberIn } from './process-score'
 import { computeTradeMetrics } from './metrics'
-import type { Account, Attachment, CaseCard, CaseCardAnalysis, CaseTagDef, CaseTradeBinding, ChartCandle, ChartImport, ChartTimeframe, ImportBatch, Period, Trade, TradeCase, TagDef, TagColor } from './types'
+import type { Account, Attachment, CaseCard, CaseCardAnalysis, CaseExecutionSuggestion, CaseTagDef, CaseTradeBinding, ChartCandle, ChartImport, ChartTimeframe, ImportBatch, Period, Trade, TradeCase, TagDef, TagColor } from './types'
 
 /* ---------- Context ---------- */
 
@@ -74,6 +74,14 @@ interface CairnStore {
   deleteCaseCard: (cardId: string) => void
   updateCaseCardAnalysis: (cardId: string, updater: (prev: CaseCardAnalysis) => CaseCardAnalysis) => CaseCard | undefined
   analyzeCaseCard: (cardId: string, instruction?: string) => Promise<CaseCard | undefined>
+  /** 重跑 AI 持仓管理补录建议（绑定 Trade 后自动触发，也可手动）。只吸收建议字段。 */
+  refreshCaseExecutionSuggestions: (caseId: string) => Promise<void>
+  /** 更新单条建议状态（accepted 带生成的 executionId / dismissed 带时间）。 */
+  setCaseExecutionSuggestionStatus: (
+    caseId: string,
+    suggestionId: string,
+    patch: { status: CaseExecutionSuggestion['status']; acceptedExecutionId?: string },
+  ) => void
   prefillTradePlanFromBoundCase: (tradeId: string) => boolean
   createCaseBinding: (caseId: string, tradeId: string, source?: CaseTradeBinding['source']) => Promise<CaseTradeBinding>
   deleteCaseBinding: (id: string) => Promise<void>
@@ -424,6 +432,50 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
     return updated
   }, [])
 
+  /** 重跑持仓管理补录建议：只吸收 aiExecutionSuggestions 字段——请求期间
+   *  本地的标题/状态/标签修改不被回滚（与 analyzeCaseCard 同一吸收模式）。 */
+  const refreshCaseExecutionSuggestions = useCallback(async (caseId: string): Promise<void> => {
+    const updated = await suggestCaseExecutionsRemote(caseId)
+    setCases((prev) => prev.map((item) => {
+      if (item.id !== updated.id) return item
+      return { ...item, aiExecutionSuggestions: updated.aiExecutionSuggestions }
+    }))
+  }, [])
+
+  /** 更新单条建议状态：accepted 需带生成的 executionId，dismissed 记时间。 */
+  const setCaseExecutionSuggestionStatus = useCallback((
+    caseId: string,
+    suggestionId: string,
+    patch: { status: CaseExecutionSuggestion['status']; acceptedExecutionId?: string },
+  ): void => {
+    setCases((prev) => prev.map((item) => {
+      if (item.id !== caseId || !item.aiExecutionSuggestions) return item
+      const suggestions = item.aiExecutionSuggestions.suggestions.map((suggestion) => {
+        if (suggestion.id !== suggestionId) return suggestion
+        return {
+          ...suggestion,
+          status: patch.status,
+          acceptedExecutionId: patch.acceptedExecutionId,
+          dismissedAt: patch.status === 'dismissed' ? Date.now() : undefined,
+        }
+      })
+      const next = { ...item, aiExecutionSuggestions: { ...item.aiExecutionSuggestions, suggestions } }
+      void saveLocalRecord('cases', next)
+      return next
+    }))
+  }, [])
+
+  /** 绑定建立后自动检查补录建议（autoSuggest 开关控制；此刻 Case 才拿得到 Trade 上下文）。失败静默。 */
+  const maybeAutoSuggestExecutions = useCallback(async (caseId: string) => {
+    try {
+      const settings = await getAiSettings()
+      if (settings.autoSuggest === false) return
+      await refreshCaseExecutionSuggestions(caseId)
+    } catch {
+      // 自动建议失败静默：Trade 页的「重新检查」按钮仍在
+    }
+  }, [refreshCaseExecutionSuggestions])
+
   /** 绑定 Trade 后自动拟题：只替换默认占位标题，用户起过的名字永不覆盖；失败静默。 */
   const maybeAutoTitleCase = useCallback(async (caseId: string) => {
     const caseRecord = cases.find((item) => item.id === caseId)
@@ -466,8 +518,10 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
     setCaseBindings((prev) => [...prev, created])
     requestAutoCloseCheck()
     void maybeAutoTitleCase(caseId)
+    // 绑定建立 = 卡片首次拿得到 Trade 上下文，自动跑一次补录建议
+    void maybeAutoSuggestExecutions(caseId)
     return created
-  }, [caseBindings, makeId, requestAutoCloseCheck, maybeAutoTitleCase])
+  }, [caseBindings, makeId, requestAutoCloseCheck, maybeAutoTitleCase, maybeAutoSuggestExecutions])
 
   const deleteCaseBinding = useCallback(async (id: string) => {
     await deleteLocalRecord('caseBindings', id)
@@ -946,6 +1000,8 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
       deleteCaseCard,
       updateCaseCardAnalysis,
       analyzeCaseCard,
+      refreshCaseExecutionSuggestions,
+      setCaseExecutionSuggestionStatus,
       prefillTradePlanFromBoundCase,
       createCaseBinding,
       deleteCaseBinding,

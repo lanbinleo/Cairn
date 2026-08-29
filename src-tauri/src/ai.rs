@@ -300,6 +300,12 @@ pub struct AiSettings {
     /// 新 Card（浮窗/REST）提交后自动后台识别；失败重试一次后静默记日志
     #[serde(default = "default_true")]
     pub auto_analyze: bool,
+    /// 绑定建立后自动跑持仓管理补录建议、导入后自动跑关联推荐（0.3.0）
+    #[serde(default = "default_true")]
+    pub auto_suggest: bool,
+    /// Trade 关闭时自动生成整单总结（0.3.0）
+    #[serde(default = "default_true")]
+    pub auto_summary: bool,
 }
 
 fn default_true() -> bool {
@@ -308,7 +314,7 @@ fn default_true() -> bool {
 
 impl Default for AiSettings {
     fn default() -> Self {
-        Self { auto_analyze: true }
+        Self { auto_analyze: true, auto_suggest: true, auto_summary: true }
     }
 }
 
@@ -357,6 +363,28 @@ pub fn spawn_auto_analysis(app: &AppHandle, card_id: String) {
             Ok(None) => {}
             Err(err) => {
                 diagnostics::app_log(&app, format!("auto analysis failed for card {card_id}: {err}"));
+            }
+        }
+    });
+}
+
+/// 绑定建立后的后台建议检查入口：开关关闭时跳过；完成后 emit data-changed，
+/// 失败只记日志。前端 UI 建立绑定走 Tauri 命令自行触发，这里只服务 REST 路径。
+pub fn spawn_auto_suggestions(app: &AppHandle, case_id: String) {
+    if !settings(app).auto_suggest {
+        return;
+    }
+    let app = app.clone();
+    std::thread::spawn(move || {
+        let db = app.state::<crate::db::Db>();
+        let result =
+            tauri::async_runtime::block_on(crate::run_execution_suggestions(&app, &db, &case_id));
+        match result {
+            Ok(case) => {
+                let _ = app.emit(crate::api::DATA_CHANGED_EVENT, &case);
+            }
+            Err(err) => {
+                diagnostics::app_log(&app, format!("auto suggestions failed for case {case_id}: {err}"));
             }
         }
     });
@@ -629,6 +657,131 @@ pub fn parse_analysis(
     }))
 }
 
+// ==================== 持仓管理动作补录建议 ====================
+
+pub const SUGGESTION_PROMPT_VERSION: &str = "0.3.0-suggest-1";
+
+/// 建议只覆盖管理类动作（编辑器规范集：stop / target-moved / order-edit）。
+/// 开仓、加仓、减仓、平仓以交易所导入的成交为准，AI 一律不碰。
+pub const SUGGESTION_ACTIONS: [&str; 3] = ["stop", "target-moved", "order-edit"];
+
+pub fn build_suggestion_messages(context: &str) -> Vec<ChatMessage> {
+    let system = "你是交易日志的持仓管理核对员。交易者在一个 Case 里用口语记录了全过程，这个 Case 绑定了一笔 Trade（成交记录来自交易所导出）。你的任务：找出「交易者明确说过要做、但成交记录里没有对应落库」的持仓管理动作，作为补录建议。
+
+只关注管理类动作：移动/设置止损、移动/设置止盈、修改挂单价格、撤销挂单。开仓、加仓、减仓、平仓一律不管（成交以交易所记录为准）。
+
+判定规则：
+- 只提取「明确说了价格或明确位置」且语气是「已经决定 / 已经发生」的动作（如 我决定、我把、挪到、改到、挂到、撤掉）。
+- 明确的否定不提取（如 不适合移动止盈止损、不向下移动也不向上移动、保持不变）；纯假设不提取（如 如果…就…）。
+- 每条建议必须给出当时原话 quote（逐字复制、一字不差）和来源卡片编号 cardIndex（用户消息里每张卡开头的编号）。
+- 已落库动作里已有同类且价格基本相同的动作、或与初始止损/止盈价相同的，不要建议（视为已覆盖）。
+- price 是明确的数字价格；只说了位置没说价格（如 挪到成本线下方）时 price 为 null，并在 anchorText 里写位置描述。信息不足的动作宁可不建议。
+
+只输出一个 JSON 对象，不要 markdown 代码块和解释：
+{\"suggestions\":[{\"cardIndex\":<卡片编号>,\"action\":\"stop|target|order-edit\",\"price\":<数字或null>,\"anchorText\":\"<位置描述或null>\",\"orderType\":\"stop-loss|take-profit|limit 或null\",\"signal\":\"<不超过12字的简短理由>\",\"quote\":\"<逐字原话>\"}]}
+没有可建议的就输出 {\"suggestions\":[]}。";
+    vec![ChatMessage::system(system), ChatMessage::user(context.to_string())]
+}
+
+/// 单条建议的规范化结果（尚未与既有 Execution 去重，去重在 lib.rs 做机械比对）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct ParsedSuggestion {
+    pub card_id: String,
+    pub action: String,
+    pub order_type: String,
+    pub price: Option<f64>,
+    pub anchor_text: Option<String>,
+    pub signal: Option<String>,
+    pub quote: String,
+}
+
+/// 校验并规范化模型输出：quote 逐字来自对应卡片原文、action/orderType 白名单、
+/// price 必须是正的有限数、cardIndex 必须落在卡片清单内。不可信的一律丢弃。
+pub fn parse_execution_suggestions(
+    content: &str,
+    cards: &[(String, String)],
+) -> Result<Vec<ParsedSuggestion>, String> {
+    let json_text = extract_json_object(content);
+    let parsed: Value =
+        serde_json::from_str(json_text).map_err(|err| format!("model output is not JSON: {err}"))?;
+    let empty: Vec<Value> = Vec::new();
+    let items = parsed
+        .get("suggestions")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or(empty);
+
+    let mut out: Vec<ParsedSuggestion> = Vec::new();
+    for item in items {
+        let index = match item.get("cardIndex").and_then(Value::as_i64) {
+            Some(index) if index >= 1 && (index as usize) <= cards.len() => index as usize - 1,
+            _ => continue,
+        };
+        let (card_id, raw_text) = &cards[index];
+        let Some(quote) = item
+            .get("quote")
+            .and_then(Value::as_str)
+            .filter(|quote| !quote.trim().is_empty() && raw_text.contains(quote))
+        else {
+            continue;
+        };
+        let action = match item.get("action").and_then(Value::as_str) {
+            Some("stop") => "stop",
+            Some("target") => "target-moved",
+            Some("order-edit") => "order-edit",
+            _ => continue,
+        };
+        let price = item
+            .get("price")
+            .and_then(Value::as_f64)
+            .filter(|price| price.is_finite() && *price > 0.0);
+        let anchor_text = item
+            .get("anchorText")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+            .map(|text| text.chars().take(40).collect::<String>());
+        // 没有价格也没有位置描述的建议无法落地，丢弃
+        if price.is_none() && anchor_text.is_none() {
+            continue;
+        }
+        let order_type = match item.get("orderType").and_then(Value::as_str) {
+            Some("stop-loss") => "stop-loss",
+            Some("take-profit") => "take-profit",
+            Some("limit") => "limit",
+            Some("stop") => "stop",
+            Some("market") => "market",
+            _ => match action {
+                "stop" => "stop-loss",
+                "target-moved" => "take-profit",
+                _ => "limit",
+            },
+        };
+        let signal = item
+            .get("signal")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+            .map(|text| text.chars().take(24).collect::<String>());
+        let suggestion = ParsedSuggestion {
+            card_id: card_id.clone(),
+            action: action.to_string(),
+            order_type: order_type.to_string(),
+            price,
+            anchor_text,
+            signal,
+            quote: quote.to_string(),
+        };
+        if !out.contains(&suggestion) {
+            out.push(suggestion);
+        }
+        if out.len() >= 8 {
+            break;
+        }
+    }
+    Ok(out)
+}
+
 // ==================== Case 标题代拟 ====================
 
 pub fn build_title_messages(cards: &[(String, String)]) -> Vec<ChatMessage> {
@@ -769,6 +922,37 @@ mod tests {
     #[test]
     fn parse_analysis_rejects_non_json() {
         assert!(parse_analysis("entry", RAW, "抱歉我不能", "m", "p", 1).is_err());
+    }
+
+    #[test]
+    fn parse_execution_suggestions_validates_and_normalizes() {
+        let raw1 = "BAR152 我决定现在把我的止损价格移动到 90820.36 这个位置";
+        let raw2 = "目前不适合移动止盈止损，也没有什么需要改变的";
+        let cards = vec![
+            ("card-1".to_string(), raw1.to_string()),
+            ("card-2".to_string(), raw2.to_string()),
+        ];
+        let content = r#"{"suggestions":[
+            {"cardIndex":1,"action":"stop","price":90820.36,"anchorText":null,"orderType":null,"signal":"保护利润","quote":"把我的止损价格移动到 90820.36"},
+            {"cardIndex":2,"action":"stop","price":90820.36,"anchorText":null,"orderType":null,"signal":"x","quote":"编的话"},
+            {"cardIndex":3,"action":"target","price":91000,"anchorText":null,"orderType":null,"signal":"y","quote":"BAR152"},
+            {"cardIndex":1,"action":"scale-in","price":1,"anchorText":null,"orderType":null,"signal":"z","quote":"我决定"},
+            {"cardIndex":1,"action":"stop","price":null,"anchorText":"成本线下方","orderType":"stop-loss","signal":"w","quote":"我决定"}
+        ]}"#;
+        let parsed = parse_execution_suggestions(content, &cards).unwrap();
+        // 非逐字 quote、越界 cardIndex、非白名单 action 全部丢弃
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0].card_id, "card-1");
+        assert_eq!(parsed[0].action, "stop");
+        assert_eq!(parsed[0].order_type, "stop-loss", "orderType defaults per action");
+        assert_eq!(parsed[0].price, Some(90820.36));
+        assert_eq!(parsed[0].signal.as_deref(), Some("保护利润"));
+        assert_eq!(parsed[1].price, None);
+        assert_eq!(parsed[1].anchor_text.as_deref(), Some("成本线下方"));
+
+        let empty = parse_execution_suggestions(r#"{"suggestions":[]}"#, &cards).unwrap();
+        assert!(empty.is_empty());
+        assert!(parse_execution_suggestions("我不会", &cards).is_err());
     }
 
     #[test]

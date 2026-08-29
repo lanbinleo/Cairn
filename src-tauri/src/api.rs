@@ -291,6 +291,12 @@ pub fn start_server(app: AppHandle) {
                         crate::ai::spawn_auto_analysis(&app, card_id.to_string());
                     }
                 }
+                // 绑定建立后自动检查持仓管理补录建议（Case 此刻才拿得到 Trade 上下文）
+                if method == "POST" && url == "/api/v1/bindings" {
+                    if let Some(case_id) = outcome.body.get("caseId").and_then(Value::as_str) {
+                        crate::ai::spawn_auto_suggestions(&app, case_id.to_string());
+                    }
+                }
             }
 
             let mut response = tiny_http::Response::from_string(outcome.body.to_string())
