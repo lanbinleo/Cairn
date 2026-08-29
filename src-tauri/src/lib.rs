@@ -140,7 +140,7 @@ fn get_widget_script() -> WidgetScript {
 /// GitHub 上 main 分支的脚本内容（走 api.github.com Contents API：
 /// 本机网络下它通常可达，raw CDN 域名经常超时）。
 async fn fetch_widget_script_remote() -> Result<String, String> {
-    let client = reqwest::Client::builder()
+    let client = ai::http_client()
         .timeout(std::time::Duration::from_secs(8))
         .user_agent("cairn-widget-update-check")
         .build()
@@ -1162,6 +1162,17 @@ fn save_ai_settings(app: AppHandle, settings: ai::AiSettings) -> Result<ai::AiSe
     ai::save_settings(&app, settings)
 }
 
+/// 出站代理设置（0.3.2）：作用于 Rust 侧全部出站请求（AI + GitHub 检查）。
+#[tauri::command]
+fn get_network_settings(app: AppHandle) -> Result<ai::NetworkSettings, String> {
+    Ok(ai::network_settings(&app))
+}
+
+#[tauri::command]
+fn save_network_settings(app: AppHandle, settings: ai::NetworkSettings) -> Result<ai::NetworkSettings, String> {
+    ai::save_network_settings(&app, settings)
+}
+
 /// AI 秘书代拟 Case 标题：读 Case 的全部 Card 原文，返回一个短标题草稿（不落库，由前端确认写入）。
 #[tauri::command]
 async fn draft_case_title(
@@ -1528,6 +1539,7 @@ pub fn run() {
             diagnostics::app_log(app.handle(), "tray setup ok");
             app.manage(api::init_state(app.handle()));
             api::start_server(app.handle().clone());
+            ai::refresh_proxy(app.handle());
             diagnostics::app_log(app.handle(), "local api server thread spawned");
             Ok(())
         })
@@ -1569,6 +1581,8 @@ pub fn run() {
             draft_case_title,
             get_ai_settings,
             save_ai_settings,
+            get_network_settings,
+            save_network_settings,
             default_ai_concurrency,
             save_attachment_file,
             read_attachment_file,

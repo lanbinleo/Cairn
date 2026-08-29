@@ -36,7 +36,7 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { checkWidgetScriptUpdate, deleteAiProvider, getAiSettings, getApiStatus, getWidgetScript, listAiProviders, regenerateApiToken, saveAiSettings, setApiConfig, type AiProvider, type ApiStatus, type WidgetScript, type WidgetScriptUpdate } from '@/lib/local-db'
+import { checkWidgetScriptUpdate, deleteAiProvider, getAiSettings, getApiStatus, getNetworkSettings, getWidgetScript, listAiProviders, regenerateApiToken, saveAiSettings, saveNetworkSettings, setApiConfig, type AiProvider, type ApiStatus, type WidgetScript, type WidgetScriptUpdate } from '@/lib/local-db'
 import { useCairn } from '@/lib/store'
 
 const categoryLabel: Record<string, string> = {
@@ -96,6 +96,10 @@ export default function SettingsPage() {
   const [aiAutoAnalyze, setAiAutoAnalyze] = useState(true)
   const [aiAutoSuggest, setAiAutoSuggest] = useState(true)
   const [aiAutoSummary, setAiAutoSummary] = useState(true)
+  const [proxyEnabled, setProxyEnabled] = useState(false)
+  const [proxyUrlDraft, setProxyUrlDraft] = useState('http://127.0.0.1:7890')
+  const [networkMessage, setNetworkMessage] = useState('')
+  const [savingNetwork, setSavingNetwork] = useState(false)
 
   useEffect(() => setMounted(true), [])
 
@@ -120,7 +124,27 @@ export default function SettingsPage() {
         setAiAutoSummary(settings.autoSummary !== false)
       })
       .catch(() => undefined)
+    void getNetworkSettings()
+      .then((settings) => {
+        setProxyEnabled(settings.proxyEnabled)
+        setProxyUrlDraft(settings.proxyUrl)
+      })
+      .catch(() => undefined)
   }, [])
+
+  async function saveProxyConfig() {
+    setSavingNetwork(true)
+    setNetworkMessage('')
+    try {
+      const saved = await saveNetworkSettings({ proxyEnabled, proxyUrl: proxyUrlDraft })
+      setProxyUrlDraft(saved.proxyUrl)
+      setNetworkMessage('已保存，出站请求立即走新配置。')
+    } catch (error) {
+      setNetworkMessage(`保存失败：${String(error)}`)
+    } finally {
+      setSavingNetwork(false)
+    }
+  }
 
   function applyApiStatus(status: ApiStatus) {
     setApiStatus(status)
@@ -235,6 +259,7 @@ export default function SettingsPage() {
           <TabsTrigger value="data" className="px-4">数据</TabsTrigger>
           <TabsTrigger value="docs" className="px-4">文档</TabsTrigger>
           <TabsTrigger value="api" className="px-4">本地 API</TabsTrigger>
+          <TabsTrigger value="network" className="px-4">网络</TabsTrigger>
           <TabsTrigger value="ai" className="px-4">AI</TabsTrigger>
           <TabsTrigger value="logs" className="px-4">日志</TabsTrigger>
           <TabsTrigger value="about" className="px-4">关于</TabsTrigger>
@@ -604,6 +629,37 @@ export default function SettingsPage() {
           </Card>
         </TabsContent>
 
+        <TabsContent value="network">
+          <Card>
+            <CardHeader>
+              <CardTitle>网络</CardTitle>
+              <CardDescription>AI 调用与浮窗脚本更新检查可以走代理服务器</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="flex max-w-2xl flex-col">
+                <SettingRow title="出站代理" description="开启后 AI 请求与 GitHub 检查经代理转发；关闭则直连">
+                  <Switch checked={proxyEnabled} onCheckedChange={(checked) => setProxyEnabled(checked === true)} />
+                </SettingRow>
+                <SettingRow title="代理地址" description="http(s):// 开头；默认本机 7890 端口（Clash 等常用）">
+                  <div className="flex items-center gap-2">
+                    <Input
+                      className="w-64 font-mono text-xs"
+                      value={proxyUrlDraft}
+                      onChange={(event) => setProxyUrlDraft(event.target.value)}
+                      spellCheck={false}
+                    />
+                    <Button variant="outline" size="sm" disabled={savingNetwork || !isTauriRuntime()} onClick={saveProxyConfig}>
+                      {savingNetwork ? '保存中' : '保存'}
+                    </Button>
+                  </div>
+                </SettingRow>
+                {networkMessage && <div className="text-xs text-muted-foreground">{networkMessage}</div>}
+                <p className="mt-2 text-xs text-muted-foreground">应用内更新检查走系统通道，不受此代理影响。</p>
+              </div>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
         <TabsContent value="ai">
           <Card>
             <CardHeader>
@@ -685,6 +741,7 @@ export default function SettingsPage() {
                         <span className="truncate font-mono text-xs text-muted-foreground">
                           {provider.baseUrl}
                           {provider.defaultModel ? ` · ${provider.defaultModel}` : ''}
+                          {(provider.models?.length ?? 0) > 1 ? ` · +${(provider.models?.length ?? 0) - 1} 模型` : ''}
                         </span>
                       </div>
                       <div className="flex shrink-0 items-center gap-1">

@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { RefreshCw } from 'lucide-react'
+import { RefreshCw, Star, X } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
 import {
@@ -23,7 +23,7 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
-import { fetchAiModels, saveAiProvider, type AiProvider } from '@/lib/local-db'
+import { fetchAiModels, saveAiProvider, type AiModelConfig, type AiProvider, type AiThinkingLevel } from '@/lib/local-db'
 import { cn } from '@/lib/utils'
 
 export interface AiProviderPreset {
@@ -52,6 +52,29 @@ export const AI_PROVIDER_PRESETS: AiProviderPreset[] = [
 
 export function presetFor(presetId?: string): AiProviderPreset {
   return AI_PROVIDER_PRESETS.find((preset) => preset.id === presetId) ?? AI_PROVIDER_PRESETS[AI_PROVIDER_PRESETS.length - 1]
+}
+
+/** 思考等级选项文案；auto = 跟随模型默认（不发参数） */
+export const THINKING_LEVEL_LABELS: Record<AiThinkingLevel, string> = {
+  auto: '跟随模型默认',
+  on: '开启思考',
+  off: '关闭思考',
+  low: '低',
+  medium: '中',
+  high: '高',
+}
+
+/** 各 preset 支持的思考等级（0.3.2）：按厂商映射成原生参数；不在表里的 Provider 不支持 */
+const PRESET_THINKING_LEVELS: Record<string, AiThinkingLevel[]> = {
+  openrouter: ['low', 'medium', 'high', 'off'],
+  openai: ['low', 'medium', 'high'],
+  zhipu: ['on', 'off'],
+  qwen: ['on', 'off', 'low', 'medium', 'high'],
+  siliconflow: ['on', 'off'],
+}
+
+export function thinkingLevelsForPreset(presetId?: string): AiThinkingLevel[] {
+  return (presetId && PRESET_THINKING_LEVELS[presetId]) || []
 }
 
 export function AiProviderBadge({ presetId, className }: { presetId?: string; className?: string }) {
@@ -87,8 +110,10 @@ export function AiProviderDialog({
   const [apiKey, setApiKey] = useState('')
   const [defaultModel, setDefaultModel] = useState('')
   const [isDefault, setIsDefault] = useState(false)
-  const [thinking, setThinking] = useState<'auto' | 'on' | 'off'>('auto')
+  const [thinking, setThinking] = useState<AiThinkingLevel>('auto')
   const [concurrencyText, setConcurrencyText] = useState('10')
+  const [modelConfigs, setModelConfigs] = useState<AiModelConfig[]>([])
+  const [manualModel, setManualModel] = useState('')
   const [models, setModels] = useState<string[]>([])
   const [loadingModels, setLoadingModels] = useState(false)
   const [modelError, setModelError] = useState('')
@@ -104,6 +129,14 @@ export function AiProviderDialog({
     setIsDefault(provider?.isDefault ?? false)
     setThinking(provider?.thinking ?? 'auto')
     setConcurrencyText(String(provider?.concurrency ?? 10))
+    setModelConfigs(
+      provider?.models?.length
+        ? provider.models
+        : provider?.defaultModel
+          ? [{ id: provider.defaultModel }]
+          : [],
+    )
+    setManualModel('')
     setModels(provider?.defaultModel ? [provider.defaultModel] : [])
     setModelError('')
     setSaveError('')
@@ -114,6 +147,15 @@ export function AiProviderDialog({
     setName((current) => current.trim() || preset.name)
     if (preset.baseUrl) setBaseUrl(preset.baseUrl)
     else if (preset.id === 'custom') setBaseUrl('')
+    // 切换 Provider 后原思考等级可能不被支持，回退到跟随模型默认（Provider 级与模型级都清洗）
+    const levels = thinkingLevelsForPreset(preset.id)
+    setThinking((current) => (levels.includes(current) ? current : 'auto'))
+    setModelConfigs((current) =>
+      current.map((item) => ({
+        ...item,
+        thinking: item.thinking && levels.includes(item.thinking) ? item.thinking : undefined,
+      })),
+    )
   }
 
   async function loadModels() {
@@ -122,7 +164,10 @@ export function AiProviderDialog({
     try {
       const list = await fetchAiModels(baseUrl, apiKey)
       setModels(list)
-      if (!defaultModel && list.length > 0) setDefaultModel(list[0])
+      if (modelConfigs.length === 0 && list.length > 0) {
+        setModelConfigs([{ id: list[0] }])
+        setDefaultModel(list[0])
+      }
     } catch (error) {
       setModels([])
       setModelError(String(error))
@@ -131,12 +176,34 @@ export function AiProviderDialog({
     }
   }
 
+  const availableLevels = thinkingLevelsForPreset(presetId)
+  const availableModels = models.filter((model) => !modelConfigs.some((item) => item.id === model))
+
+  function addModel(id: string) {
+    const trimmed = id.trim()
+    if (!trimmed || modelConfigs.some((item) => item.id === trimmed)) return
+    setModelConfigs((current) => [...current, { id: trimmed }])
+    if (!defaultModel) setDefaultModel(trimmed)
+  }
+
+  function removeModel(id: string) {
+    const next = modelConfigs.filter((item) => item.id !== id)
+    setModelConfigs(next)
+    if (defaultModel === id) setDefaultModel(next[0]?.id ?? '')
+  }
+
   async function handleSave() {
     if (!name.trim() || !baseUrl.trim()) {
       setSaveError('名称和 Base URL 不能为空。')
       return
     }
+    if (modelConfigs.length === 0) {
+      setSaveError('至少添加一个模型。')
+      return
+    }
     const concurrency = Number.parseInt(concurrencyText, 10)
+    // 与渲染同样的兜底：当前 preset 不支持的等级按「跟随模型默认」保存
+    const effectiveThinking = thinking !== 'auto' && availableLevels.includes(thinking) ? thinking : 'auto'
     try {
       const providers = await saveAiProvider({
         id: provider?.id ?? '',
@@ -144,9 +211,10 @@ export function AiProviderDialog({
         baseUrl: baseUrl.trim(),
         apiKey: apiKey.trim(),
         presetId: presetId === 'custom' ? undefined : presetId,
-        defaultModel: defaultModel.trim() || undefined,
+        defaultModel: defaultModel || modelConfigs[0].id,
+        models: modelConfigs,
         isDefault,
-        thinking: thinking === 'auto' ? undefined : thinking,
+        thinking: effectiveThinking === 'auto' ? undefined : effectiveThinking,
         concurrency: Number.isInteger(concurrency) && concurrency > 0 ? Math.min(concurrency, 32) : undefined,
         createdAt: provider?.createdAt ?? 0,
         updatedAt: provider?.updatedAt ?? 0,
@@ -216,58 +284,156 @@ export function AiProviderDialog({
           </Field>
 
           <Field>
-            <FieldLabel htmlFor="ai-provider-model">默认模型</FieldLabel>
-            <div className="flex items-center gap-2">
-              <Select
-                items={models.map((model) => ({ value: model, label: model }))}
-                value={defaultModel || undefined}
-                onValueChange={(value) => setDefaultModel(value ?? '')}
-              >
-                <SelectTrigger id="ai-provider-model" className="min-w-0 flex-1 font-mono text-xs" disabled={models.length === 0}>
-                  <SelectValue placeholder={models.length === 0 ? '先获取模型列表' : '选择模型'} />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectGroup>
-                    {models.map((model) => (
-                      <SelectItem key={model} value={model}>
-                        {model}
-                      </SelectItem>
-                    ))}
-                  </SelectGroup>
-                </SelectContent>
-              </Select>
-              <Button variant="outline" size="sm" onClick={loadModels} disabled={loadingModels || !baseUrl.trim()}>
-                <RefreshCw data-icon="inline-start" className={loadingModels ? 'animate-spin' : undefined} />
-                {loadingModels ? '获取中' : '获取模型'}
-              </Button>
+            <FieldLabel>模型列表（★ 为默认模型）</FieldLabel>
+            <div className="flex flex-col gap-2">
+              {modelConfigs.map((model) => (
+                <div key={model.id} className="flex items-center gap-2 rounded-lg border px-2 py-1.5">
+                  <button
+                    type="button"
+                    aria-label={`设为默认模型 ${model.id}`}
+                    className="shrink-0 text-muted-foreground transition-colors hover:text-foreground"
+                    onClick={() => setDefaultModel(model.id)}
+                  >
+                    <Star className={cn('size-4', defaultModel === model.id && 'fill-current text-amber-500')} />
+                  </button>
+                  <span className="min-w-0 flex-1 truncate font-mono text-xs">{model.id}</span>
+                  {availableLevels.length > 0 && (
+                    <Select
+                      items={[
+                        { value: 'inherit', label: '跟随 Provider' },
+                        ...availableLevels.map((level) => ({ value: level, label: THINKING_LEVEL_LABELS[level] })),
+                      ]}
+                      value={model.thinking ?? 'inherit'}
+                      onValueChange={(value) =>
+                        setModelConfigs((current) =>
+                          current.map((item) =>
+                            item.id === model.id
+                              ? { ...item, thinking: !value || value === 'inherit' ? undefined : (value as AiModelConfig['thinking']) }
+                              : item,
+                          ),
+                        )
+                      }
+                    >
+                      <SelectTrigger
+                        aria-label={`${model.id} 思考等级`}
+                        className="h-7 w-[7.5rem] shrink-0 text-xs"
+                      >
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectGroup>
+                          <SelectItem value="inherit">跟随 Provider</SelectItem>
+                          {availableLevels.map((level) => (
+                            <SelectItem key={level} value={level}>
+                              {THINKING_LEVEL_LABELS[level]}
+                            </SelectItem>
+                          ))}
+                        </SelectGroup>
+                      </SelectContent>
+                    </Select>
+                  )}
+                  <button
+                    type="button"
+                    aria-label={`移除模型 ${model.id}`}
+                    className="shrink-0 text-muted-foreground transition-colors hover:text-foreground"
+                    onClick={() => removeModel(model.id)}
+                  >
+                    <X className="size-4" />
+                  </button>
+                </div>
+              ))}
+              <div className="flex items-center gap-2">
+                <Input
+                  aria-label="模型名"
+                  className="min-w-0 flex-1 font-mono text-xs"
+                  placeholder={availableModels.length > 0 ? '输入或从右侧列表选择模型名' : '输入模型名，或先获取模型列表'}
+                  value={manualModel}
+                  onChange={(event) => setManualModel(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter') {
+                      event.preventDefault()
+                      addModel(manualModel)
+                      setManualModel('')
+                    }
+                  }}
+                />
+                {availableModels.length > 0 && (
+                  <Select
+                    items={availableModels.map((model) => ({ value: model, label: model }))}
+                    value=""
+                    onValueChange={(value) => {
+                      if (value) addModel(value)
+                    }}
+                  >
+                    <SelectTrigger aria-label="从已获取列表添加" className="h-8 w-36 shrink-0 font-mono text-xs">
+                      <SelectValue placeholder="从列表添加" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectGroup>
+                        {availableModels.map((model) => (
+                          <SelectItem key={model} value={model}>
+                            {model}
+                          </SelectItem>
+                        ))}
+                      </SelectGroup>
+                    </SelectContent>
+                  </Select>
+                )}
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="shrink-0"
+                  disabled={!manualModel.trim()}
+                  onClick={() => {
+                    addModel(manualModel)
+                    setManualModel('')
+                  }}
+                >
+                  添加
+                </Button>
+              </div>
+              <div>
+                <Button variant="outline" size="sm" onClick={loadModels} disabled={loadingModels || !baseUrl.trim()}>
+                  <RefreshCw data-icon="inline-start" className={loadingModels ? 'animate-spin' : undefined} />
+                  {loadingModels ? '获取中' : '获取模型'}
+                </Button>
+              </div>
+              {modelError && <p className="text-xs text-destructive">{modelError}</p>}
+              {!modelError && models.length > 0 && (
+                <p className="text-xs text-muted-foreground">连接成功，共 {models.length} 个模型；点选即加入列表</p>
+              )}
             </div>
-            {modelError && <p className="text-xs text-destructive">{modelError}</p>}
-            {!modelError && models.length > 0 && (
-              <p className="text-xs text-muted-foreground">连接成功，共 {models.length} 个模型</p>
-            )}
           </Field>
 
           <Field>
-            <FieldLabel htmlFor="ai-provider-thinking">思考模式</FieldLabel>
+            <FieldLabel htmlFor="ai-provider-thinking">思考等级</FieldLabel>
             <Select
-              items={[
-                { value: 'auto', label: '跟随模型默认' },
-                { value: 'on', label: '开启思考' },
-                { value: 'off', label: '关闭思考' },
-              ]}
-              value={thinking}
-              onValueChange={(value) => setThinking((value as 'auto' | 'on' | 'off') ?? 'auto')}
+              items={
+                availableLevels.length > 0
+                  ? [{ value: 'auto', label: THINKING_LEVEL_LABELS.auto }, ...availableLevels.map((level) => ({ value: level, label: THINKING_LEVEL_LABELS[level] }))]
+                  : [{ value: 'auto', label: THINKING_LEVEL_LABELS.auto }]
+              }
+              value={availableLevels.includes(thinking) || thinking === 'auto' ? thinking : 'auto'}
+              onValueChange={(value) => setThinking((value as AiThinkingLevel) ?? 'auto')}
+              disabled={availableLevels.length === 0}
             >
               <SelectTrigger id="ai-provider-thinking" className="w-full"><SelectValue /></SelectTrigger>
               <SelectContent>
                 <SelectGroup>
                   <SelectItem value="auto">跟随模型默认</SelectItem>
-                  <SelectItem value="on">开启思考</SelectItem>
-                  <SelectItem value="off">关闭思考</SelectItem>
+                  {availableLevels.map((level) => (
+                    <SelectItem key={level} value={level}>
+                      {THINKING_LEVEL_LABELS[level]}
+                    </SelectItem>
+                  ))}
                 </SelectGroup>
               </SelectContent>
             </Select>
-            <FieldDescription>仅支持思考开关的端点（智谱 GLM 系）生效，其他 Provider 保持默认。关闭思考可加快识别速度。</FieldDescription>
+            <FieldDescription>
+              {availableLevels.length > 0
+                ? '默认对全部模型生效，单个模型可在上方单独设置。关闭思考可加快识别速度。'
+                : '该 Provider 的接口暂不支持思考参数，保持各模型默认行为。'}
+            </FieldDescription>
           </Field>
 
           <Field>
