@@ -52,7 +52,7 @@ interface CaseCardTimelineProps {
  * 排列按展示阶段分组、组内按创建顺序。
  */
 export function CaseCardTimeline({ cards, showMoveToCase = true, showBatchAnalyze = true, targetCardId }: CaseCardTimelineProps) {
-  const { cases, analyzeCaseCard, updateCaseCardText, updateCaseCardBarRef, deleteCaseCard, updateCaseCardAnalysis, moveCaseCard } = useCairn()
+  const { cases, analyzeCaseCard, updateCaseCardText, updateCaseCardBarRef, deleteCaseCard, updateCaseCardAnalysis, moveCaseCard, beginAiTask, completeAiTask } = useCairn()
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set())
   const [editingCardId, setEditingCardId] = useState<string | null>(null)
   const [editText, setEditText] = useState('')
@@ -108,7 +108,7 @@ export function CaseCardTimeline({ cards, showMoveToCase = true, showBatchAnalyz
     setExpandedIds(new Set(cards.map((card) => card.id)))
   }
 
-  async function runAnalysis(cardId: string, instruction?: string) {
+  async function runAnalysis(cardId: string, instruction?: string, options?: { registerTask?: boolean }) {
     const card = cards.find((item) => item.id === cardId)
     if (card?.aiAnalysis?.userAdjusted && !instruction) {
       if (!window.confirm('重新识别会覆盖你手动调整过的标签与 memo，继续？')) return
@@ -121,7 +121,7 @@ export function CaseCardTimeline({ cards, showMoveToCase = true, showBatchAnalyz
     })
     setAnalyzingCardIds((prev) => new Set(prev).add(cardId))
     try {
-      await analyzeCaseCard(cardId, instruction)
+      await analyzeCaseCard(cardId, instruction, options)
     } catch (error) {
       setAnalysisErrors((prev) => ({ ...prev, [cardId]: error instanceof Error ? error.message : String(error) }))
     } finally {
@@ -133,20 +133,35 @@ export function CaseCardTimeline({ cards, showMoveToCase = true, showBatchAnalyz
     }
   }
 
-  /** 批量整理限流并发：整 Case 几十张卡同时打 provider 容易触发 429（4xx 不在重试白名单） */
+  /** 批量整理限流并发：整 Case 几十张卡同时打 provider 容易触发 429（4xx 不在重试白名单）。
+   *  任务中心只记一个批量任务（内部单卡不重复注册），任一张失败整体标失败。 */
   async function analyzeAllCards() {
     if (!cards.length) return
+    const taskId = beginAiTask({
+      kind: 'analysis',
+      label: `全部识别 · ${cards.length} 张`,
+      targetType: 'case',
+      targetId: cards[0]?.caseId,
+    })
+    const failures: string[] = []
     setBatchAnalyzing(true)
     const queue = cards.map((card) => card.id)
     const workers = Array.from({ length: Math.min(3, queue.length) }, async () => {
       for (;;) {
         const cardId = queue.shift()
         if (cardId == null) return
-        await runAnalysis(cardId)
+        try {
+          await runAnalysis(cardId, undefined, { registerTask: false })
+        } catch (error) {
+          failures.push(error instanceof Error ? error.message : String(error))
+        }
       }
     })
     await Promise.all(workers)
     setBatchAnalyzing(false)
+    completeAiTask(taskId, failures.length === 0
+      ? { ok: true }
+      : { ok: false, error: `${failures.length}/${cards.length} 张失败：${failures[0]}` })
   }
 
   function saveBarEdit(cardId: string) {

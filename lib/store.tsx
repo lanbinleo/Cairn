@@ -18,7 +18,7 @@ import { extractExplicitBarRef, isDefaultCaseTitle } from './cases'
 import { findTagByName, normalizeTagDefs, normalizeTagName, normalizeTradeTagNames, uniqueTagNames, tagNamesEqual } from './tags'
 import { firstPlausibleNumberIn } from './process-score'
 import { computeTradeMetrics } from './metrics'
-import type { Account, Attachment, CaseCard, CaseCardAnalysis, CaseExecutionSuggestion, CaseSummary, CaseTagDef, CaseTradeBinding, ChartCandle, ChartImport, ChartTimeframe, ImportBatch, Period, Trade, TradeCase, TagDef, TagColor } from './types'
+import type { Account, AiTask, AiTaskEventPayload, Attachment, CaseCard, CaseCardAnalysis, CaseExecutionSuggestion, CaseSummary, CaseTagDef, CaseTradeBinding, ChartCandle, ChartImport, ChartTimeframe, ImportBatch, Period, Trade, TradeCase, TagDef, TagColor } from './types'
 
 /* ---------- Context ---------- */
 
@@ -74,7 +74,7 @@ interface CairnStore {
   updateCaseCardBarRef: (cardId: string, barRef: number | null) => CaseCard | undefined
   deleteCaseCard: (cardId: string) => void
   updateCaseCardAnalysis: (cardId: string, updater: (prev: CaseCardAnalysis) => CaseCardAnalysis) => CaseCard | undefined
-  analyzeCaseCard: (cardId: string, instruction?: string) => Promise<CaseCard | undefined>
+  analyzeCaseCard: (cardId: string, instruction?: string, options?: { registerTask?: boolean }) => Promise<CaseCard | undefined>
   /** 重跑 AI 持仓管理补录建议（绑定 Trade 后自动触发，也可手动）。只吸收建议字段。 */
   refreshCaseExecutionSuggestions: (caseId: string) => Promise<void>
   /** 更新单条建议状态（accepted 带生成的 executionId / dismissed 带时间）。 */
@@ -92,6 +92,13 @@ interface CairnStore {
     summaryErrorByCase: Record<string, string>
     checkErrorByCase: Record<string, string>
   }
+  /** AI 任务中心：全部 AI 调用（GUI + REST 后台事件）的注册表，保留最近 50 条 */
+  aiTaskList: AiTask[]
+  beginAiTask: (task: Pick<AiTask, 'kind' | 'label'> & Partial<Pick<AiTask, 'targetType' | 'targetId'>>) => string
+  completeAiTask: (id: string, outcome: { ok: boolean; error?: string }) => void
+  appendAiTaskStream: (taskId: string, delta: string) => void
+  /** 点开任务中心后清零未读徽标 */
+  markAiTasksRead: () => void
   prefillTradePlanFromBoundCase: (tradeId: string) => boolean
   createCaseBinding: (caseId: string, tradeId: string, source?: CaseTradeBinding['source']) => Promise<CaseTradeBinding>
   deleteCaseBinding: (id: string) => Promise<void>
@@ -208,6 +215,30 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
     summaryErrorByCase: Record<string, string>
     checkErrorByCase: Record<string, string>
   }>({ summarizingCaseIds: [], checkingCaseIds: [], summaryErrorByCase: {}, checkErrorByCase: {} })
+
+  /** AI 任务中心：全部 AI 调用（GUI + REST 后台）的注册表，保留最近 50 条 */
+  const [aiTaskList, setAiTaskList] = useState<AiTask[]>([])
+  const pruneTasks = (tasks: AiTask[]): AiTask[] => (tasks.length > 50 ? tasks.slice(0, 50) : tasks)
+  const beginAiTask = useCallback((task: Pick<AiTask, 'kind' | 'label'> & Partial<Pick<AiTask, 'targetType' | 'targetId'>>): string => {
+    const id = `task-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+    setAiTaskList((prev) => pruneTasks([{ id, status: 'running', startedAt: Date.now(), ...task }, ...prev]))
+    return id
+  }, [])
+  const completeAiTask = useCallback((id: string, outcome: { ok: boolean; error?: string }): void => {
+    setAiTaskList((prev) => prev.map((item) => (
+      item.id === id
+        ? { ...item, status: outcome.ok ? 'succeeded' : 'failed', endedAt: Date.now(), error: outcome.error, unread: true }
+        : item
+    )))
+  }, [])
+  const appendAiTaskStream = useCallback((taskId: string, delta: string): void => {
+    if (!delta) return
+    setAiTaskList((prev) => prev.map((item) => (item.id === taskId ? { ...item, streamText: (item.streamText ?? '') + delta } : item)))
+  }, [])
+  /** 点开任务中心后清零未读徽标 */
+  const markAiTasksRead = useCallback((): void => {
+    setAiTaskList((prev) => (prev.some((item) => item.unread) ? prev.map((item) => ({ ...item, unread: false })) : prev))
+  }, [])
 
   /* AI 总结用状态镜像：关单自动总结在 setState 同一刻触发，闭包里的 state 还是旧值，
      用 ref 保证组装上下文时读到最新数据。 */
@@ -450,18 +481,27 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
     return next
   }, [caseCards])
 
-  /** AI 秘书整理：结果写入 card.aiAnalysis，原文不动。instruction 为重试补充要求。
-   *  只吸收 aiAnalysis 与缺失的 barRef——请求期间本地的 rawText/barRef 修正不被回滚。 */
-  const analyzeCaseCard = useCallback(async (cardId: string, instruction?: string): Promise<CaseCard | undefined> => {
-    const updated = await analyzeCaseCardRemote(cardId, instruction)
-    setCaseCards((prev) => prev
-      .map((item) => {
-        if (item.id !== updated.id) return item
-        return { ...item, aiAnalysis: updated.aiAnalysis, barRef: item.barRef ?? updated.barRef }
-      })
-      .sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id)))
-    return updated
-  }, [])
+  /** AI 识别一张卡：结果写入 card.aiAnalysis，原文不动。instruction 为重试补充要求。
+   *  只吸收 aiAnalysis 与缺失的 barRef——请求期间本地的 rawText/barRef 修正不被回滚。
+   *  默认进任务中心；「全部识别」批量走 registerTask: false 由外层包一个任务。 */
+  const analyzeCaseCard = useCallback(async (cardId: string, instruction?: string, options?: { registerTask?: boolean }): Promise<CaseCard | undefined> => {
+    const registerTask = options?.registerTask !== false
+    const taskId = registerTask ? beginAiTask({ kind: 'analysis', label: '识别卡片', targetType: 'card', targetId: cardId }) : ''
+    try {
+      const updated = await analyzeCaseCardRemote(cardId, instruction)
+      setCaseCards((prev) => prev
+        .map((item) => {
+          if (item.id !== updated.id) return item
+          return { ...item, aiAnalysis: updated.aiAnalysis, barRef: item.barRef ?? updated.barRef }
+        })
+        .sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id)))
+      if (registerTask) completeAiTask(taskId, { ok: true })
+      return updated
+    } catch (cause) {
+      if (registerTask) completeAiTask(taskId, { ok: false, error: cause instanceof Error ? cause.message : String(cause) })
+      throw cause
+    }
+  }, [beginAiTask, completeAiTask])
 
   /** 重跑持仓管理补录建议：只吸收 aiExecutionSuggestions 字段——请求期间
    *  本地的标题/状态/标签修改不被回滚（与 analyzeCaseCard 同一吸收模式）。
@@ -476,21 +516,25 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
         checkErrorByCase,
       }
     })
+    const taskId = beginAiTask({ kind: 'suggestions', label: '补录建议', targetType: 'case', targetId: caseId })
     try {
       const updated = await suggestCaseExecutionsRemote(caseId)
       setCases((prev) => prev.map((item) => {
         if (item.id !== updated.id) return item
         return { ...item, aiExecutionSuggestions: updated.aiExecutionSuggestions }
       }))
+      completeAiTask(taskId, { ok: true })
     } catch (cause) {
+      const message = cause instanceof Error ? cause.message : String(cause)
       setAiTasks((prev) => ({
         ...prev,
-        checkErrorByCase: { ...prev.checkErrorByCase, [caseId]: cause instanceof Error ? cause.message : String(cause) },
+        checkErrorByCase: { ...prev.checkErrorByCase, [caseId]: message },
       }))
+      completeAiTask(taskId, { ok: false, error: message })
     } finally {
       setAiTasks((prev) => ({ ...prev, checkingCaseIds: prev.checkingCaseIds.filter((id) => id !== caseId) }))
     }
-  }, [])
+  }, [beginAiTask, completeAiTask])
 
   /** 更新单条建议状态：accepted 需带生成的 executionId，dismissed 记时间。 */
   const setCaseExecutionSuggestionStatus = useCallback((
@@ -551,8 +595,10 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
     })
     // analyzedAt 取发起时刻：AI 期间（几十秒）新建/编辑的卡片才会正确标「总结过期」
     const startedAt = Date.now()
+    // 任务 id 传给 Rust：流式增量经 cairn://ai-stream 事件回来，任务中心/总结卡实时显示
+    const taskId = beginAiTask({ kind: 'summary', label: '整单总结', targetType: 'case', targetId: caseId })
     try {
-      const summary = await summarizeCaseRemote(context, instruction)
+      const summary = await summarizeCaseRemote(context, instruction, taskId)
       const withMeta: CaseSummary = { ...summary, analyzedAt: startedAt }
       setCases((prev) => prev.map((item) => {
         if (item.id !== caseId) return item
@@ -560,15 +606,18 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
         void saveLocalRecord('cases', next)
         return next
       }))
+      completeAiTask(taskId, { ok: true })
     } catch (cause) {
+      const message = cause instanceof Error ? cause.message : String(cause)
       setAiTasks((prev) => ({
         ...prev,
-        summaryErrorByCase: { ...prev.summaryErrorByCase, [caseId]: cause instanceof Error ? cause.message : String(cause) },
+        summaryErrorByCase: { ...prev.summaryErrorByCase, [caseId]: message },
       }))
+      completeAiTask(taskId, { ok: false, error: message })
     } finally {
       setAiTasks((prev) => ({ ...prev, summarizingCaseIds: prev.summarizingCaseIds.filter((id) => id !== caseId) }))
     }
-  }, [])
+  }, [beginAiTask, completeAiTask])
 
   /** Trade 关闭时自动总结（autoSummary 开关控制）。失败静默，手动按钮仍在。 */
   const maybeAutoSummarizeForTrade = useCallback(async (tradeId: string) => {
@@ -583,17 +632,20 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
     }
   }, [summarizeCase])
 
-  /** 绑定 Trade 后自动拟题：只替换默认占位标题，用户起过的名字永不覆盖；失败静默。 */
+  /** 绑定 Trade 后自动拟题：只替换默认占位标题，用户起过的名字永不覆盖；失败静默进任务中心。 */
   const maybeAutoTitleCase = useCallback(async (caseId: string) => {
     const caseRecord = cases.find((item) => item.id === caseId)
     if (!caseRecord || !isDefaultCaseTitle(caseRecord.title)) return
+    const taskId = beginAiTask({ kind: 'title', label: 'AI 拟题', targetType: 'case', targetId: caseId })
     try {
       const title = (await draftCaseTitleRemote(caseId)).trim()
       if (title) updateCase(caseId, { title })
-    } catch {
-      // 自动拟题失败静默：Case 页的「AI 拟题」按钮仍在
+      completeAiTask(taskId, { ok: true })
+    } catch (cause) {
+      // 自动拟题失败不弹窗：任务中心可查原因，Case 页的「AI 拟题」按钮仍在
+      completeAiTask(taskId, { ok: false, error: cause instanceof Error ? cause.message : String(cause) })
     }
-  }, [cases, updateCase])
+  }, [cases, updateCase, beginAiTask, completeAiTask])
 
   const deleteCase = useCallback((id: string) => {
     const removedCardIds = new Set(caseCards.filter((card) => card.caseId === id).map((card) => card.id))
@@ -795,6 +847,8 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
     let cancelled = false
     let refreshTimer: number | undefined
     let disposeListener: (() => void) | undefined
+    let disposeTaskListener: (() => void) | undefined
+    let disposeStreamListener: (() => void) | undefined
 
     const hydrate = () => {
       loadLocalState()
@@ -827,14 +881,61 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
           else disposeListener = unlisten
         })
         .catch((err) => console.error('Failed to listen for local api data changes', err))
+
+      // Rust 后台 AI 任务（浮窗自动识别/自动建议/批量拆卡）的生命周期 → 任务中心
+      void listen<AiTaskEventPayload>('cairn://ai-task', (event) => {
+        const payload = event.payload
+        if (payload.status === 'start') {
+          setAiTaskList((prev) => pruneTasks([{
+            id: payload.id,
+            kind: (['analysis', 'summary', 'suggestions', 'binding', 'title', 'split'] as const).includes(payload.kind as AiTask['kind'])
+              ? payload.kind as AiTask['kind']
+              : 'analysis',
+            label: payload.label,
+            status: 'running',
+            startedAt: payload.at,
+            targetType: payload.targetType as AiTask['targetType'],
+            targetId: payload.targetId,
+          }, ...prev]))
+        } else {
+          setAiTaskList((prev) => prev.map((item) => (
+            item.id === payload.id
+              ? {
+                  ...item,
+                  status: payload.status === 'succeeded' ? 'succeeded' : 'failed',
+                  endedAt: payload.at,
+                  error: payload.error,
+                  unread: true,
+                }
+              : item
+          )))
+        }
+      })
+        .then((unlisten) => {
+          if (cancelled) unlisten()
+          else disposeTaskListener = unlisten
+        })
+        .catch((err) => console.error('Failed to listen for ai task events', err))
+
+      // 流式总结的增量文本 → 任务 streamText（总结卡与任务中心实时显示）
+      void listen<{ taskId: string; delta: string }>('cairn://ai-stream', (event) => {
+        appendAiTaskStream(event.payload.taskId, event.payload.delta)
+      })
+        .then((unlisten) => {
+          if (cancelled) unlisten()
+          else disposeStreamListener = unlisten
+        })
+        .catch((err) => console.error('Failed to listen for ai stream events', err))
     }
 
     return () => {
       cancelled = true
       disposeListener?.()
+      disposeTaskListener?.()
+      disposeStreamListener?.()
       window.clearTimeout(refreshTimer)
     }
-  }, [applySnapshot])
+  }, [applySnapshot, appendAiTaskStream])
 
   const updateAccount = useCallback((id: string, patch: Partial<Account>) => {
     setAccounts((prev) =>
@@ -1120,6 +1221,11 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
       setCaseExecutionSuggestionStatus,
       summarizeCase,
       aiTasks,
+      aiTaskList,
+      beginAiTask,
+      completeAiTask,
+      appendAiTaskStream,
+      markAiTasksRead,
       prefillTradePlanFromBoundCase,
       createCaseBinding,
       deleteCaseBinding,
@@ -1150,7 +1256,7 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
       updateCaseTag,
       deleteCaseTag,
     }),
-    [accounts, periods, trades, tagDefs, cases, caseCards, caseBindings, caseTagDefs, importBatches, attachments, chartImports, chartCandles, symbols, notes, aiTasks, updateAccount, updatePeriod, updateTrade, updateNote, createAccount, createPeriod, createSymbol, createNote, createImageAttachment, deleteAttachment, createCase, updateCase, deleteCase, createCaseCard, moveCaseCard, updateCaseCardText, updateCaseCardBarRef, updateCaseCardAnalysis, analyzeCaseCard, prefillTradePlanFromBoundCase, createCaseBinding, deleteCaseBinding, createTrades, createImportBatch, createChartImport, deleteChartImport, rollbackImportBatch, deleteAccount, deletePeriod, deleteTrade, deleteSymbol, deleteNote, restoreState, exportBackup, setTradeStatus, createTag, updateTag, deleteTag, createCaseTag, updateCaseTag, deleteCaseTag],
+    [accounts, periods, trades, tagDefs, cases, caseCards, caseBindings, caseTagDefs, importBatches, attachments, chartImports, chartCandles, symbols, notes, aiTasks, aiTaskList, beginAiTask, completeAiTask, appendAiTaskStream, markAiTasksRead, updateAccount, updatePeriod, updateTrade, updateNote, createAccount, createPeriod, createSymbol, createNote, createImageAttachment, deleteAttachment, createCase, updateCase, deleteCase, createCaseCard, moveCaseCard, updateCaseCardText, updateCaseCardBarRef, updateCaseCardAnalysis, analyzeCaseCard, prefillTradePlanFromBoundCase, createCaseBinding, deleteCaseBinding, createTrades, createImportBatch, createChartImport, deleteChartImport, rollbackImportBatch, deleteAccount, deletePeriod, deleteTrade, deleteSymbol, deleteNote, restoreState, exportBackup, setTradeStatus, createTag, updateTag, deleteTag, createCaseTag, updateCaseTag, deleteCaseTag],
   )
 
   return <StoreContext.Provider value={value}>{children}</StoreContext.Provider>

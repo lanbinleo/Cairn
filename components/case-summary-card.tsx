@@ -1,5 +1,6 @@
 'use client'
 
+import { useEffect, useRef } from 'react'
 import { NotebookPen, RefreshCw, Sparkles } from 'lucide-react'
 
 import { AiRetryLink } from '@/components/ai-retry-button'
@@ -21,6 +22,24 @@ export function isCaseSummaryStale(caseRecord: TradeCase, cards: CaseCard[]): bo
   )
 }
 
+/** 流式生成中的原始输出直出（总结输出是 JSON，提示词不动）；自动滚到底，完成/失败后由父级替换。 */
+function SummaryStreamPreview({ text }: { text: string }) {
+  const ref = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    const el = ref.current
+    if (el) el.scrollTop = el.scrollHeight
+  }, [text])
+  return (
+    <div
+      ref={ref}
+      aria-live="polite"
+      className="max-h-48 overflow-y-auto rounded-md bg-muted/60 p-2 font-mono text-xs leading-5 break-all whitespace-pre-wrap text-muted-foreground"
+    >
+      {text}
+    </div>
+  )
+}
+
 /**
  * 整单 AI 总结卡。full = 完整版（Trade 复盘 Tab / 未绑定 Case 页）；
  * compact = Case 页轻量摘要（overview + 首段 + 生成入口）。
@@ -37,10 +56,13 @@ export function CaseSummaryCard({
   variant?: 'full' | 'compact'
   trade?: Trade | null
 }) {
-  const { summarizeCase, updateTrade, aiTasks } = useCairn()
+  const { summarizeCase, updateTrade, aiTasks, aiTaskList } = useCairn()
   // busy/error 是 store 级状态：AI 调用长达几十秒，切页回来仍能看到「生成中」或失败原因
   const busy = aiTasks.summarizingCaseIds.includes(caseRecord.id)
   const error = aiTasks.summaryErrorByCase[caseRecord.id] ?? ''
+  const streamText = aiTaskList.find(
+    (task) => task.kind === 'summary' && task.status === 'running' && task.targetId === caseRecord.id,
+  )?.streamText ?? ''
   const summary = caseRecord.aiSummary
   const stale = isCaseSummaryStale(caseRecord, cards)
   const caseCards = cards.filter((card) => card.caseId === caseRecord.id)
@@ -76,6 +98,7 @@ export function CaseSummaryCard({
               {busy ? '生成中…' : '生成总结'}
             </Button>
           </div>
+          {busy && streamText && <SummaryStreamPreview text={streamText} />}
           {error && <p className="rounded-md border border-destructive/40 bg-destructive/10 px-2 py-1.5 text-xs text-destructive">{error}</p>}
         </CardContent>
       </Card>
@@ -112,6 +135,7 @@ export function CaseSummaryCard({
       </CardHeader>
       <CardContent className="flex flex-col gap-4">
         {error && <p className="rounded-md border border-destructive/40 bg-destructive/10 px-2 py-1.5 text-xs text-destructive">{error}</p>}
+        {busy && streamText && <SummaryStreamPreview text={streamText} />}
         {variant === 'compact' ? (
           <>
             <p className="whitespace-pre-wrap text-sm leading-6">{firstParagraph}</p>

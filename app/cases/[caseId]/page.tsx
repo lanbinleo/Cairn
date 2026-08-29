@@ -59,6 +59,8 @@ export default function CaseDetailPage() {
     updateCase,
     deleteCase,
     createCaseCard,
+    beginAiTask,
+    completeAiTask,
   } = useCairn()
   const caseRecord = getCase(caseId)
   const [titleDraft, setTitleDraft] = useState('')
@@ -126,14 +128,18 @@ export default function CaseDetailPage() {
   async function draftTitle() {
     setTitleError(null)
     setTitleDrafting(true)
+    const taskId = beginAiTask({ kind: 'title', label: 'AI 拟题', targetType: 'case', targetId: activeCase.id })
     try {
       const title = await draftCaseTitle(activeCase.id)
       if (title && title !== activeCase.title) {
         updateCase(activeCase.id, { title })
         setTitleDraft(title)
       }
+      completeAiTask(taskId, { ok: true })
     } catch (error) {
-      setTitleError(error instanceof Error ? error.message : String(error))
+      const message = error instanceof Error ? error.message : String(error)
+      setTitleError(message)
+      completeAiTask(taskId, { ok: false, error: message })
     } finally {
       setTitleDrafting(false)
     }

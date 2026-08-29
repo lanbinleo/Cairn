@@ -252,12 +252,13 @@ export async function suggestCaseExecutions(caseId: string): Promise<TradeCase> 
   return invoke<TradeCase>('suggest_case_executions', { caseId })
 }
 
-/** 整单总结：上下文由前端组装，Rust 只做 AI 管道；返回总结 blob（analyzedAt 由调用方补）。 */
-export async function summarizeCase(context: string, instruction?: string): Promise<CaseSummary> {
+/** 整单总结：上下文由前端组装，Rust 只做 AI 管道；返回总结 blob（analyzedAt 由调用方补）。
+ *  taskId 存在时 Rust 走流式，增量经 cairn://ai-stream 事件推送。 */
+export async function summarizeCase(context: string, instruction?: string, taskId?: string): Promise<CaseSummary> {
   if (!isTauriRuntime()) {
     throw new Error('AI 总结需要桌面版运行')
   }
-  return invoke<CaseSummary>('ai_summarize_case', { context, instruction: instruction ?? null })
+  return invoke<CaseSummary>('ai_summarize_case', { context, instruction: instruction ?? null, taskId: taskId ?? null })
 }
 
 /** 关联推荐：AI 只排序+给理由，绑定由用户确认。 */
