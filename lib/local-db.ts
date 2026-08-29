@@ -195,6 +195,15 @@ export async function checkWidgetScriptUpdate(): Promise<WidgetScriptUpdate | nu
 
 /* ---------- AI Provider 管理 ---------- */
 
+/** 思考等级（0.3.2 统一抽象）：auto = 跟随模型默认（不发参数）；其余按 preset 映射成各家原生参数 */
+export type AiThinkingLevel = 'auto' | 'on' | 'off' | 'low' | 'medium' | 'high'
+
+export interface AiModelConfig {
+  id: string
+  /** 模型级思考等级；缺省继承 Provider 级 */
+  thinking?: Exclude<AiThinkingLevel, 'auto'>
+}
+
 export interface AiProvider {
   id: string
   name: string
@@ -202,9 +211,11 @@ export interface AiProvider {
   apiKey: string
   presetId?: string
   defaultModel?: string
+  /** 模型列表（0.3.2）：一个 Provider 可配多个模型；旧数据由 defaultModel 合成 */
+  models?: AiModelConfig[]
   isDefault: boolean
-  /** 思考模式（0.3.1）：auto = 不发参数（模型默认）；on/off = 显式开/关（仅支持的端点生效） */
-  thinking?: 'auto' | 'on' | 'off'
+  /** 思考等级（Provider 级默认，模型级可覆盖） */
+  thinking?: Exclude<AiThinkingLevel, 'auto'>
   /** 并发上限（0.3.1）：「全部识别」批量与后台自动识别共用，默认 10 */
   concurrency?: number
   createdAt: number
@@ -295,4 +306,22 @@ export async function getAiSettings(): Promise<AiSettings> {
 export async function saveAiSettings(settings: AiSettings): Promise<AiSettings> {
   if (!isTauriRuntime()) return settings
   return invoke<AiSettings>('save_ai_settings', { settings })
+}
+
+/* ---------- 出站网络设置（0.3.2） ---------- */
+
+export interface NetworkSettings {
+  proxyEnabled: boolean
+  /** 默认 http://127.0.0.1:7890；作用于 Rust 侧全部出站请求（AI + GitHub 检查） */
+  proxyUrl: string
+}
+
+export async function getNetworkSettings(): Promise<NetworkSettings> {
+  if (!isTauriRuntime()) return { proxyEnabled: false, proxyUrl: 'http://127.0.0.1:7890' }
+  return invoke<NetworkSettings>('get_network_settings')
+}
+
+export async function saveNetworkSettings(settings: NetworkSettings): Promise<NetworkSettings> {
+  if (!isTauriRuntime()) return settings
+  return invoke<NetworkSettings>('save_network_settings', { settings })
 }

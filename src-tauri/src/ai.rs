@@ -21,10 +21,14 @@ pub struct AiProvider {
     pub preset_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_model: Option<String>,
+    /// 模型列表（0.3.2）：一个 Provider 可配多个模型切换使用；旧文件无此字段时
+    /// 由 default_model 合成。per-model 目前只覆盖思考等级。
+    #[serde(default)]
+    pub models: Vec<AiModelConfig>,
     #[serde(default)]
     pub is_default: bool,
-    /// 思考模式（0.3.1）：auto = 不发参数（模型默认）；on/off = 显式开/关。
-    /// 只对支持 thinking 参数的端点（智谱 GLM 系）生效——其他 provider 发未知字段可能被 4xx 拒绝。
+    /// 思考等级（0.3.1 开关 → 0.3.2 统一等级）：Provider 级默认，
+    /// auto = 不发参数（模型默认）；on/off/low/medium/high 按 preset 映射成各家原生参数。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thinking: Option<String>,
     /// 并发上限（0.3.1）：「全部识别」批量与后台自动识别共用；默认 10。
@@ -32,6 +36,21 @@ pub struct AiProvider {
     pub concurrency: Option<u8>,
     pub created_at: u64,
     pub updated_at: u64,
+}
+
+/// 模型级覆盖设置（0.3.2）：thinking 为 None = 继承 Provider 级 thinking。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AiModelConfig {
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking: Option<String>,
+}
+
+const THINKING_LEVELS: [&str; 5] = ["on", "off", "low", "medium", "high"];
+
+fn sanitize_thinking(value: Option<String>) -> Option<String> {
+    value.filter(|text| THINKING_LEVELS.contains(&text.as_str()))
 }
 
 /// Provider 并发上限（前端批量 worker 数与 Rust 后台闸门共用），默认 10。
@@ -42,15 +61,64 @@ pub fn concurrency_of(provider: &AiProvider) -> usize {
         .unwrap_or(10)
 }
 
-/// thinking 参数体；None = 不发送。目前只有智谱 GLM 端点确认支持。
-fn thinking_param_for(provider: &AiProvider) -> Option<Value> {
-    if provider.preset_id.as_deref() != Some("zhipu") {
-        return None;
-    }
-    match provider.thinking.as_deref() {
-        Some("on") => Some(json!({ "type": "enabled" })),
-        Some("off") => Some(json!({ "type": "disabled" })),
-        _ => None,
+/// 把思考等级映射参数写入请求体；不支持的 preset/等级不写任何字段。
+/// 统一等级（on/off/low/medium/high）按 preset 映射成各家 OpenAI 兼容端点的
+/// 原生参数；未知 preset 一律不发——严格端点对未知字段直接 4xx（0.3.1 的教训）。
+fn apply_thinking_param(body: &mut Value, provider: &AiProvider, model: &str) {
+    // 模型级覆盖优先，None 继承 Provider 级，都空 = 跟随模型默认（不发）
+    let Some(level) = provider
+        .models
+        .iter()
+        .find(|item| item.id == model)
+        .and_then(|item| item.thinking.as_deref())
+        .or(provider.thinking.as_deref())
+    else {
+        return;
+    };
+    match provider.preset_id.as_deref() {
+        // OpenRouter：reasoning.effort 统一参数（官方推荐替代 :thinking 变体）；none 关闭混合推理
+        Some("openrouter") => match level {
+            "low" | "medium" | "high" => body["reasoning"] = json!({ "effort": level }),
+            "on" => body["reasoning"] = json!({ "effort": "high" }),
+            "off" => body["reasoning"] = json!({ "effort": "none" }),
+            _ => {}
+        },
+        // OpenAI：reasoning_effort；off 不发参数（非推理模型发未知字段会 4xx）
+        Some("openai") => match level {
+            "low" | "medium" | "high" => body["reasoning_effort"] = json!(level),
+            "on" => body["reasoning_effort"] = json!("medium"),
+            _ => {}
+        },
+        // 智谱 GLM：只有开关，无等级
+        Some("zhipu") => match level {
+            "on" | "low" | "medium" | "high" => body["thinking"] = json!({ "type": "enabled" }),
+            "off" => body["thinking"] = json!({ "type": "disabled" }),
+            _ => {}
+        },
+        // 通义千问（DashScope 兼容模式）：enable_thinking 开关 + thinking_budget 分档
+        //（high 不设上限，交给模型默认最大值）
+        Some("qwen") => match level {
+            "on" | "high" => body["enable_thinking"] = json!(true),
+            "low" => {
+                body["enable_thinking"] = json!(true);
+                body["thinking_budget"] = json!(2048);
+            }
+            "medium" => {
+                body["enable_thinking"] = json!(true);
+                body["thinking_budget"] = json!(8192);
+            }
+            "off" => body["enable_thinking"] = json!(false),
+            _ => {}
+        },
+        // 硅基流动：enable_thinking 开关（无 budget 分档）
+        Some("siliconflow") => match level {
+            "on" | "low" | "medium" | "high" => body["enable_thinking"] = json!(true),
+            "off" => body["enable_thinking"] = json!(false),
+            _ => {}
+        },
+        // deepseek（reasoner/chat 模型本身区分）、gemini、groq、moonshot、
+        // anthropic 直连、custom：各家兼容端点无稳定思考参数，不发
+        _ => {}
     }
 }
 
@@ -102,6 +170,35 @@ fn normalize(mut provider: AiProvider) -> Result<AiProvider, String> {
     if !provider.base_url.starts_with("http://") && !provider.base_url.starts_with("https://") {
         return Err("provider base url must start with http:// or https://".to_string());
     }
+    // 模型列表清洗：去空白、去重，模型级思考等级只留合法值
+    for item in &mut provider.models {
+        item.id = item.id.trim().to_string();
+    }
+    let mut seen = std::collections::HashSet::new();
+    provider.models.retain(|item| !item.id.is_empty() && seen.insert(item.id.clone()));
+    for item in &mut provider.models {
+        item.thinking = sanitize_thinking(item.thinking.take());
+    }
+    provider.thinking = sanitize_thinking(provider.thinking.take());
+    // 旧文件（无 models）兼容：由 default_model 合成；default_model 必须在列表里
+    if provider.models.is_empty() {
+        if let Some(model) = provider.default_model.clone() {
+            let model = model.trim().to_string();
+            if !model.is_empty() {
+                provider.models.push(AiModelConfig { id: model, thinking: None });
+            }
+        }
+    }
+    let default_model = provider
+        .default_model
+        .as_deref()
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(str::to_string);
+    provider.default_model = match default_model {
+        Some(model) if provider.models.iter().any(|item| item.id == model) => Some(model),
+        _ => provider.models.first().map(|item| item.id.clone()),
+    };
     Ok(provider)
 }
 
@@ -158,7 +255,7 @@ pub async fn fetch_models(base_url: String, api_key: String) -> Result<Vec<Strin
     if base.is_empty() {
         return Err("provider base url is missing".to_string());
     }
-    let client = reqwest::Client::builder()
+    let client = http_client()
         .timeout(Duration::from_secs(15))
         .build()
         .map_err(|err| err.to_string())?;
@@ -297,7 +394,7 @@ pub async fn chat_completion(
     let url = format!("{}/chat/completions", provider.base_url);
     let mut headers = reqwest::header::HeaderMap::new();
     headers.insert("Content-Type", "application/json".parse().unwrap());
-    let client = reqwest::Client::builder()
+    let client = http_client()
         .timeout(Duration::from_secs(90))
         .build()
         .map_err(|err| err.to_string())?;
@@ -307,9 +404,7 @@ pub async fn chat_completion(
         "temperature": 0,
         "stream": false,
     });
-    if let Some(thinking) = thinking_param_for(provider) {
-        body["thinking"] = thinking;
-    }
+    apply_thinking_param(&mut body, provider, model);
     let mut request = client.post(&url).json(&body);
     if !provider.api_key.is_empty() {
         request = request.bearer_auth(&provider.api_key);
@@ -500,7 +595,7 @@ pub async fn chat_completion_stream(
     on_chunk: &(dyn Fn(&StreamChunk) + Send + Sync),
 ) -> Result<StreamOutcome, String> {
     let url = format!("{}/chat/completions", provider.base_url);
-    let client = reqwest::Client::builder()
+    let client = http_client()
         .connect_timeout(Duration::from_secs(15))
         .read_timeout(Duration::from_secs(30))
         .build()
@@ -511,9 +606,7 @@ pub async fn chat_completion_stream(
         "temperature": 0,
         "stream": true,
     });
-    if let Some(thinking) = thinking_param_for(provider) {
-        body["thinking"] = thinking;
-    }
+    apply_thinking_param(&mut body, provider, model);
     let mut request = client.post(&url).json(&body);
     if !provider.api_key.is_empty() {
         request = request.bearer_auth(&provider.api_key);
@@ -602,6 +695,95 @@ pub async fn chat_completion_stream_with_retry(
         }
         Err(first) => Err(first),
     }
+}
+
+// ==================== 出站网络设置（代理，0.3.2） ====================
+
+/// 全局出站代理设置，存 app_data_dir/network-settings.json，不进入备份。
+/// 作用于 Rust 侧全部出站请求（AI 请求 + GitHub 浮窗脚本检查）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NetworkSettings {
+    #[serde(default)]
+    pub proxy_enabled: bool,
+    #[serde(default = "default_proxy_url")]
+    pub proxy_url: String,
+}
+
+fn default_proxy_url() -> String {
+    "http://127.0.0.1:7890".to_string()
+}
+
+impl Default for NetworkSettings {
+    fn default() -> Self {
+        Self { proxy_enabled: false, proxy_url: default_proxy_url() }
+    }
+}
+
+fn network_settings_path(app: &AppHandle) -> Result<PathBuf, String> {
+    Ok(paths::app_data_dir(app)?.join("network-settings.json"))
+}
+
+pub fn network_settings(app: &AppHandle) -> NetworkSettings {
+    let Ok(path) = network_settings_path(app) else {
+        return NetworkSettings::default();
+    };
+    let Ok(content) = fs::read_to_string(&path) else {
+        return NetworkSettings::default();
+    };
+    serde_json::from_str(&content).unwrap_or_default()
+}
+
+pub fn save_network_settings(app: &AppHandle, value: NetworkSettings) -> Result<NetworkSettings, String> {
+    let mut value = value;
+    value.proxy_url = value.proxy_url.trim().to_string();
+    if value.proxy_enabled {
+        if !value.proxy_url.starts_with("http://") && !value.proxy_url.starts_with("https://") {
+            return Err("代理地址必须以 http:// 或 https:// 开头".to_string());
+        }
+        if reqwest::Proxy::all(&value.proxy_url).is_err() {
+            return Err("代理地址无效".to_string());
+        }
+    } else if value.proxy_url.is_empty() {
+        value.proxy_url = default_proxy_url();
+    }
+    let path = network_settings_path(app)?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|err| err.to_string())?;
+    }
+    let content = serde_json::to_string_pretty(&value).map_err(|err| err.to_string())?;
+    let tmp = path.with_extension("json.tmp");
+    fs::write(&tmp, content).map_err(|err| err.to_string())?;
+    fs::rename(&tmp, &path).map_err(|err| err.to_string())?;
+    refresh_proxy(app);
+    Ok(value)
+}
+
+/// 进程内代理缓存：启动与保存时刷新，请求路径只读这里——
+/// fetch_models 等无 AppHandle 的调用也能走代理，且不用每次请求读文件。
+static PROXY_URL: std::sync::RwLock<Option<String>> = std::sync::RwLock::new(None);
+
+pub fn refresh_proxy(app: &AppHandle) {
+    let settings = network_settings(app);
+    let value = if settings.proxy_enabled && !settings.proxy_url.trim().is_empty() {
+        Some(settings.proxy_url.trim().to_string())
+    } else {
+        None
+    };
+    *PROXY_URL.write().unwrap() = value;
+}
+
+/// 统一出站 Client 构建：启用代理时 AI 与 GitHub 检查等请求全部走代理；
+/// 代理地址失效时降级直连（不让配置错误打断所有请求）。
+pub fn http_client() -> reqwest::ClientBuilder {
+    let mut builder = reqwest::Client::builder();
+    let proxy = PROXY_URL.read().unwrap().clone();
+    if let Some(url) = proxy {
+        if let Ok(proxy) = reqwest::Proxy::all(&url) {
+            builder = builder.proxy(proxy);
+        }
+    }
+    builder
 }
 
 // ==================== AI 通用设置 ====================
@@ -1405,6 +1587,96 @@ pub fn parse_title(content: &str) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn provider(preset: Option<&str>, thinking: Option<&str>) -> AiProvider {
+        AiProvider {
+            id: "p1".into(),
+            name: "test".into(),
+            base_url: "https://api.example.com/v1".into(),
+            api_key: String::new(),
+            preset_id: preset.map(str::to_string),
+            default_model: Some("m1".into()),
+            models: vec![],
+            is_default: true,
+            thinking: thinking.map(str::to_string),
+            concurrency: None,
+            created_at: 0,
+            updated_at: 0,
+        }
+    }
+
+    fn body_after(preset: Option<&str>, thinking: Option<&str>) -> Value {
+        let mut body = json!({});
+        let provider = provider(preset, thinking);
+        apply_thinking_param(&mut body, &provider, "m1");
+        body
+    }
+
+    #[test]
+    fn thinking_maps_per_preset() {
+        // OpenRouter：等级走 reasoning.effort，on→high、off→none
+        assert_eq!(body_after(Some("openrouter"), Some("low")), json!({ "reasoning": { "effort": "low" } }));
+        assert_eq!(body_after(Some("openrouter"), Some("on")), json!({ "reasoning": { "effort": "high" } }));
+        assert_eq!(body_after(Some("openrouter"), Some("off")), json!({ "reasoning": { "effort": "none" } }));
+        // OpenAI：reasoning_effort；off 不发字段
+        assert_eq!(body_after(Some("openai"), Some("high")), json!({ "reasoning_effort": "high" }));
+        assert_eq!(body_after(Some("openai"), Some("on")), json!({ "reasoning_effort": "medium" }));
+        assert_eq!(body_after(Some("openai"), Some("off")), json!({}));
+        // GLM：只有开关
+        assert_eq!(body_after(Some("zhipu"), Some("on")), json!({ "thinking": { "type": "enabled" } }));
+        assert_eq!(body_after(Some("zhipu"), Some("low")), json!({ "thinking": { "type": "enabled" } }));
+        assert_eq!(body_after(Some("zhipu"), Some("off")), json!({ "thinking": { "type": "disabled" } }));
+        // 千问：开关 + budget 分档
+        assert_eq!(body_after(Some("qwen"), Some("low")), json!({ "enable_thinking": true, "thinking_budget": 2048 }));
+        assert_eq!(body_after(Some("qwen"), Some("medium")), json!({ "enable_thinking": true, "thinking_budget": 8192 }));
+        assert_eq!(body_after(Some("qwen"), Some("off")), json!({ "enable_thinking": false }));
+        assert_eq!(body_after(Some("siliconflow"), Some("off")), json!({ "enable_thinking": false }));
+    }
+
+    #[test]
+    fn thinking_absent_cases_send_nothing() {
+        // auto/未设置 → 不发；不支持思考参数的 preset → 不发
+        for preset in [None, Some("deepseek"), Some("gemini"), Some("groq"), Some("moonshot"), Some("anthropic"), Some("custom"), Some("ollama")] {
+            for level in [None, Some("on"), Some("off"), Some("high")] {
+                assert_eq!(body_after(preset, level), json!({}));
+            }
+        }
+        assert_eq!(body_after(Some("openrouter"), None), json!({}));
+    }
+
+    #[test]
+    fn model_level_thinking_overrides_provider() {
+        let mut base = provider(Some("openrouter"), Some("off"));
+        base.models = vec![
+            AiModelConfig { id: "m1".into(), thinking: Some("high".into()) },
+            AiModelConfig { id: "m2".into(), thinking: None },
+            AiModelConfig { id: "m3".into(), thinking: None },
+        ];
+        let mut body = json!({});
+        apply_thinking_param(&mut body, &base, "m1");
+        assert_eq!(body, json!({ "reasoning": { "effort": "high" } }));
+        // m2 无覆盖 → 继承 provider 的 off
+        let mut body = json!({});
+        apply_thinking_param(&mut body, &base, "m2");
+        assert_eq!(body, json!({ "reasoning": { "effort": "none" } }));
+    }
+
+    #[test]
+    fn normalize_backfills_models_from_legacy_file() {
+        let mut legacy = provider(Some("zhipu"), Some("auto-ish"));
+        legacy.default_model = Some("glm-4.6".into());
+        legacy.thinking = Some("bogus".into());
+        let normalized = normalize(legacy).unwrap();
+        assert_eq!(normalized.models, vec![AiModelConfig { id: "glm-4.6".into(), thinking: None }]);
+        assert_eq!(normalized.default_model.as_deref(), Some("glm-4.6"));
+        assert_eq!(normalized.thinking, None);
+        // default_model 不在列表里 → 修正为首个模型
+        let mut stale = provider(None, None);
+        stale.default_model = Some("gone".into());
+        stale.models = vec![AiModelConfig { id: "kept".into(), thinking: None }];
+        let normalized = normalize(stale).unwrap();
+        assert_eq!(normalized.default_model.as_deref(), Some("kept"));
+    }
 
     #[test]
     fn retryable_errors_are_network_like() {
