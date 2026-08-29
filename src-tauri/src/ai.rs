@@ -782,6 +782,74 @@ pub fn parse_execution_suggestions(
     Ok(out)
 }
 
+// ==================== 整单 AI 总结 ====================
+
+pub const SUMMARY_PROMPT_VERSION: &str = "0.3.0-summary-1";
+
+pub fn build_summary_messages(context: &str) -> Vec<ChatMessage> {
+    let system = "你是交易日志的复盘整理员。交易者在一个 Case 里用口语记录了一笔交易从观察到离场的全过程，你把它整理成一份复盘总结。
+
+硬性规则：
+- 只输出一个 JSON 对象，不要 markdown 代码块和解释。
+- 只使用背景资料里的信息；资料里没有的不许编造。数字（价格、盈亏、时间）以资料中的数字为准；卡片叙述与数字冲突时，并列陈述不裁决。
+- 只描述事实与偏差，不打分、不下对错结论、不给建议——过程评价永远留给交易者本人。
+- 概括交易者的口语时要忠实原意，语气词和语音识别噪音直接忽略。
+
+输出字段：
+- overview：一句话定性这笔交易（不超过 40 字），例如「BTC 区间突破追多，测距止盈 1:1 离场」。
+- narrative：2-4 段复盘叙述（用 \\n\\n 分段），按时间线串联：计划怎么形成 → 怎么入场 → 持仓中怎么管理 → 怎么离场，穿插交易者的关键判断与情绪。引用原话时用「」。
+- highlights：3-5 条要点字符串数组，每条一个独立事实或偏差（计划价 vs 实际价、说过但没落库的动作、情绪信号等）。
+- missing：资料中缺失或对不上的信息数组（如无止损记录、开平仓时间缺失），没有则空数组。";
+    vec![ChatMessage::system(system), ChatMessage::user(context.to_string())]
+}
+
+pub fn parse_summary(content: &str) -> Result<Value, String> {
+    let json_text = extract_json_object(content);
+    let parsed: Value =
+        serde_json::from_str(json_text).map_err(|err| format!("model output is not JSON: {err}"))?;
+
+    let overview = parsed
+        .get("overview")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(|text| text.chars().take(60).collect::<String>())
+        .ok_or_else(|| "model output has no overview".to_string())?;
+    let narrative = parsed
+        .get("narrative")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(|text| text.chars().take(4000).collect::<String>())
+        .unwrap_or_default();
+    let cap_list = |value: &Value, item_cap: usize, max_items: usize| -> Vec<String> {
+        value
+            .as_array()
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::trim)
+                    .filter(|text| !text.is_empty())
+                    .take(max_items)
+                    .map(|text| text.chars().take(item_cap).collect::<String>())
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let highlights = cap_list(parsed.get("highlights").unwrap_or(&Value::Null), 120, 6);
+    let missing = cap_list(parsed.get("missing").unwrap_or(&Value::Null), 80, 6);
+
+    Ok(json!({
+        "schemaVersion": SUMMARY_PROMPT_VERSION,
+        "promptVersion": SUMMARY_PROMPT_VERSION,
+        "overview": overview,
+        "narrative": narrative,
+        "highlights": highlights,
+        "missing": missing,
+    }))
+}
+
 // ==================== Case 标题代拟 ====================
 
 pub fn build_title_messages(cards: &[(String, String)]) -> Vec<ChatMessage> {
@@ -953,6 +1021,24 @@ mod tests {
         let empty = parse_execution_suggestions(r#"{"suggestions":[]}"#, &cards).unwrap();
         assert!(empty.is_empty());
         assert!(parse_execution_suggestions("我不会", &cards).is_err());
+    }
+
+    #[test]
+    fn summary_parse_validates_and_caps() {
+        let content = r#"{"overview":"BTC 区间突破追多，测距止盈 1:1 离场","narrative":"第一段。\n\n第二段。","highlights":["计划止损 90364，最终止损 90820（有移动）","说过要在 91000 挂止盈，成交记录里没有"],"missing":["复盘卡缺失"]}"#;
+        let summary = parse_summary(content).unwrap();
+        assert_eq!(summary["overview"], "BTC 区间突破追多，测距止盈 1:1 离场");
+        assert_eq!(summary["schemaVersion"], SUMMARY_PROMPT_VERSION);
+        assert_eq!(summary["highlights"].as_array().unwrap().len(), 2);
+        assert_eq!(summary["missing"].as_array().unwrap().len(), 1);
+
+        // overview 缺失 → 报错；空字段数组容忍
+        let content = r#"{"overview":"  ","narrative":"","highlights":[]}"#;
+        assert!(parse_summary(content).is_err());
+        let content = r#"{"overview":"观察记录","narrative":"","highlights":null,"missing":null}"#;
+        let summary = parse_summary(content).unwrap();
+        assert_eq!(summary["highlights"].as_array().unwrap().len(), 0);
+        assert_eq!(summary["narrative"], "");
     }
 
     #[test]

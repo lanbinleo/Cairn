@@ -2,7 +2,7 @@ import { invoke } from '@tauri-apps/api/core'
 
 import type { CairnStateSnapshot } from './seed'
 import { seedState } from './seed'
-import type { CaseCard, TradeCase } from './types'
+import type { CaseCard, CaseSummary, TradeCase } from './types'
 
 type CollectionName =
   | 'accounts'
@@ -249,6 +249,14 @@ export async function suggestCaseExecutions(caseId: string): Promise<TradeCase> 
     throw new Error('AI 建议需要桌面版运行')
   }
   return invoke<TradeCase>('suggest_case_executions', { caseId })
+}
+
+/** 整单总结：上下文由前端组装，Rust 只做 AI 管道；返回总结 blob（analyzedAt 由调用方补）。 */
+export async function summarizeCase(context: string, instruction?: string): Promise<CaseSummary> {
+  if (!isTauriRuntime()) {
+    throw new Error('AI 总结需要桌面版运行')
+  }
+  return invoke<CaseSummary>('ai_summarize_case', { context, instruction: instruction ?? null })
 }
 
 export interface AiSettings {

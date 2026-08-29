@@ -13,6 +13,7 @@ import { EditTradeDialog } from '@/components/edit-trade-dialog'
 import { TagBadge } from '@/components/tag-badge'
 import { TradeProcessScoreCard } from '@/components/trade-process-score'
 import { TradePlanCompareCard } from '@/components/trade-plan-compare'
+import { CaseSummaryCard } from '@/components/case-summary-card'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
@@ -718,6 +719,7 @@ export default function TradeDetailPage() {
 
         <TabsContent value="trade">
           <div className="flex flex-col gap-6">
+            {boundCase && <CaseSummaryCard caseRecord={boundCase} cards={caseCards} variant="full" trade={trade} />}
             <Card>
               <CardHeader><CardTitle className="text-base">结果事实</CardTitle><p className="text-sm text-muted-foreground">结果只记录，不参与过程评分。</p></CardHeader>
               <CardContent className="flex flex-col gap-3">

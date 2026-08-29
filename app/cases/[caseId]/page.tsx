@@ -6,6 +6,7 @@ import { Archive, ArrowLeft, Link2, Plus, Trash2, WandSparkles } from 'lucide-re
 
 import { CaseTagBadge } from '@/components/case-tag-badge'
 import { CaseCardTimeline } from '@/components/case-card-timeline'
+import { CaseSummaryCard } from '@/components/case-summary-card'
 import { ManageCaseTagsDialog } from '@/components/manage-case-tags-dialog'
 import { RelativeTime } from '@/components/relative-time'
 import { Badge } from '@/components/ui/badge'
@@ -210,6 +211,13 @@ export default function CaseDetailPage() {
               <span className="text-sm text-muted-foreground">更新 <RelativeTime ms={caseRecord.updatedAt} /></span>
             </CardContent>
           </Card>
+
+          <CaseSummaryCard
+            caseRecord={caseRecord}
+            cards={cards}
+            variant={boundTrade ? 'compact' : 'full'}
+            trade={boundTrade}
+          />
 
           <Card>
             <CardHeader className="flex flex-row flex-wrap items-center justify-between gap-2">

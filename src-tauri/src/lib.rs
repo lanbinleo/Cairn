@@ -892,6 +892,28 @@ async fn suggest_case_executions(
     run_execution_suggestions(&app, &db, &case_id).await
 }
 
+/// 整单总结的 AI 管道：上下文由前端组装（metrics/计划对比在 TS 侧计算），
+/// Rust 只负责调用与解析校验；模型/时间等版本字段由前端落库时补齐。
+#[tauri::command]
+async fn ai_summarize_case(
+    app: AppHandle,
+    context: String,
+    instruction: Option<String>,
+) -> Result<Value, String> {
+    let (provider, model) = ai::default_provider(&app)?
+        .ok_or_else(|| "还没有默认 AI Provider，请在 设置 → AI 中配置".to_string())?;
+    let mut messages = ai::build_summary_messages(&context);
+    if let Some(extra) = instruction.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        messages.push(ai::ChatMessage::user(format!("补充总结要求：{extra}")));
+    }
+    ai::log_provider_event(&app, format!("summarizing case with {model}"));
+    let content = ai::chat_completion_with_retry(&provider, &model, &messages).await?;
+    let mut summary = ai::parse_summary(&content)?;
+    summary["model"] = json!(model);
+    summary["providerId"] = json!(provider.id);
+    Ok(summary)
+}
+
 #[tauri::command]
 fn get_ai_settings(app: AppHandle) -> Result<ai::AiSettings, String> {
     Ok(ai::settings(&app))
@@ -1099,6 +1121,7 @@ pub fn run() {
             fetch_ai_models,
             analyze_case_card,
             suggest_case_executions,
+            ai_summarize_case,
             draft_case_title,
             get_ai_settings,
             save_ai_settings,

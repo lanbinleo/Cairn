@@ -7,7 +7,8 @@
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import { listen } from '@tauri-apps/api/event'
-import { loadLocalState, saveLocalRecord, saveLocalRecords, deleteLocalRecord, restoreLocalState, exportLocalBackup, saveAttachmentFile, isTauriRuntime, analyzeCaseCard as analyzeCaseCardRemote, draftCaseTitle as draftCaseTitleRemote, suggestCaseExecutions as suggestCaseExecutionsRemote, getAiSettings } from './local-db'
+import { loadLocalState, saveLocalRecord, saveLocalRecords, deleteLocalRecord, restoreLocalState, exportLocalBackup, saveAttachmentFile, isTauriRuntime, analyzeCaseCard as analyzeCaseCardRemote, draftCaseTitle as draftCaseTitleRemote, suggestCaseExecutions as suggestCaseExecutionsRemote, summarizeCase as summarizeCaseRemote, getAiSettings } from './local-db'
+import { buildCaseSummaryContext } from './case-summary'
 import { deriveAutoCloseCases } from './case-auto-close'
 import type { CairnStateSnapshot } from './seed'
 import { seedState } from './seed'
@@ -17,7 +18,7 @@ import { extractExplicitBarRef, isDefaultCaseTitle } from './cases'
 import { findTagByName, normalizeTagDefs, normalizeTagName, normalizeTradeTagNames, uniqueTagNames, tagNamesEqual } from './tags'
 import { firstPlausibleNumberIn } from './process-score'
 import { computeTradeMetrics } from './metrics'
-import type { Account, Attachment, CaseCard, CaseCardAnalysis, CaseExecutionSuggestion, CaseTagDef, CaseTradeBinding, ChartCandle, ChartImport, ChartTimeframe, ImportBatch, Period, Trade, TradeCase, TagDef, TagColor } from './types'
+import type { Account, Attachment, CaseCard, CaseCardAnalysis, CaseExecutionSuggestion, CaseSummary, CaseTagDef, CaseTradeBinding, ChartCandle, ChartImport, ChartTimeframe, ImportBatch, Period, Trade, TradeCase, TagDef, TagColor } from './types'
 
 /* ---------- Context ---------- */
 
@@ -82,6 +83,8 @@ interface CairnStore {
     suggestionId: string,
     patch: { status: CaseExecutionSuggestion['status']; acceptedExecutionId?: string },
   ) => void
+  /** 生成/重跑整单 AI 总结（上下文前端组装；只吸收 aiSummary 字段）。 */
+  summarizeCase: (caseId: string, instruction?: string) => Promise<void>
   prefillTradePlanFromBoundCase: (tradeId: string) => boolean
   createCaseBinding: (caseId: string, tradeId: string, source?: CaseTradeBinding['source']) => Promise<CaseTradeBinding>
   deleteCaseBinding: (id: string) => Promise<void>
@@ -190,6 +193,13 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
   const [autoCloseTick, setAutoCloseTick] = useState(0)
   const handledAutoCloseTickRef = useRef(0)
   const requestAutoCloseCheck = useCallback(() => setAutoCloseTick((tick) => tick + 1), [])
+
+  /* AI 总结用状态镜像：关单自动总结在 setState 同一刻触发，闭包里的 state 还是旧值，
+     用 ref 保证组装上下文时读到最新数据。 */
+  const stateRef = useRef({ accounts, periods, trades, symbols, cases, caseCards, caseBindings })
+  useEffect(() => {
+    stateRef.current = { accounts, periods, trades, symbols, cases, caseCards, caseBindings }
+  }, [accounts, periods, trades, symbols, cases, caseCards, caseBindings])
 
   const makeId = useCallback((prefix: string) => {
     return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
@@ -476,6 +486,42 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
     }
   }, [refreshCaseExecutionSuggestions])
 
+  /** 生成/重跑整单总结：上下文在此组装（metrics 在 TS），结果只吸收 aiSummary 字段。
+   *  经 stateRef 读最新数据——关单自动总结在 setState 同一刻触发，闭包 state 是旧的。 */
+  const summarizeCase = useCallback(async (caseId: string, instruction?: string): Promise<void> => {
+    const current = stateRef.current
+    const caseRecord = current.cases.find((item) => item.id === caseId)
+    if (!caseRecord) throw new Error('Case 不存在')
+    const cards = current.caseCards.filter((card) => card.caseId === caseId)
+    const binding = current.caseBindings.find((item) => item.caseId === caseId)
+    const trade = binding ? current.trades.find((item) => item.id === binding.tradeId) : undefined
+    const account = trade ? current.accounts.find((item) => item.id === trade.accountId) : undefined
+    const period = trade ? current.periods.find((item) => item.id === trade.periodId) : undefined
+    const symbol = trade ? current.symbols.find((item) => item.id === trade.symbolId) : undefined
+    const context = buildCaseSummaryContext({ caseRecord, cards, trade, account, period, symbol })
+    const summary = await summarizeCaseRemote(context, instruction)
+    const withMeta: CaseSummary = { ...summary, analyzedAt: Date.now() }
+    setCases((prev) => prev.map((item) => {
+      if (item.id !== caseId) return item
+      const next = { ...item, aiSummary: withMeta }
+      void saveLocalRecord('cases', next)
+      return next
+    }))
+  }, [])
+
+  /** Trade 关闭时自动总结（autoSummary 开关控制）。失败静默，手动按钮仍在。 */
+  const maybeAutoSummarizeForTrade = useCallback(async (tradeId: string) => {
+    try {
+      const binding = stateRef.current.caseBindings.find((item) => item.tradeId === tradeId)
+      if (!binding) return
+      const settings = await getAiSettings()
+      if (settings.autoSummary === false) return
+      await summarizeCase(binding.caseId)
+    } catch {
+      // 自动总结失败静默
+    }
+  }, [summarizeCase])
+
   /** 绑定 Trade 后自动拟题：只替换默认占位标题，用户起过的名字永不覆盖；失败静默。 */
   const maybeAutoTitleCase = useCallback(async (caseId: string) => {
     const caseRecord = cases.find((item) => item.id === caseId)
@@ -752,6 +798,7 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
   }, [])
 
   const updateTrade = useCallback((id: string, patch: Partial<Trade>) => {
+    const previous = trades.find((t) => t.id === id)
     setTrades((prev) =>
       prev.map((t) => {
         if (t.id !== id) return t
@@ -761,7 +808,11 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
       }),
     )
     if (patch.status != null || patch.executions != null) requestAutoCloseCheck()
-  }, [tagDefs, requestAutoCloseCheck])
+    // 关单瞬间自动总结（开关在 maybeAutoSummarizeForTrade 内检查）
+    if (previous && previous.status === 'open' && patch.status === 'closed') {
+      void maybeAutoSummarizeForTrade(id)
+    }
+  }, [tagDefs, requestAutoCloseCheck, trades, maybeAutoSummarizeForTrade])
 
   /** 从绑定 Case 的 Entry memo 机械回填 Trade 计划价（入场价/止损/止盈）；只填空字段，绝不覆盖已填值。
    * 提取时以实际成交均价为数量级参照，过滤 K 线号/倍数被误读成价格的情况。 */
@@ -844,6 +895,7 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
   }, [])
 
   const setTradeStatus = useCallback((id: string, status: Trade['status']) => {
+    const previous = trades.find((t) => t.id === id)
     setTrades((prev) =>
       prev.map((t) => {
         if (t.id !== id) return t
@@ -853,7 +905,10 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
       }),
     )
     requestAutoCloseCheck()
-  }, [requestAutoCloseCheck])
+    if (previous && previous.status === 'open' && status === 'closed') {
+      void maybeAutoSummarizeForTrade(id)
+    }
+  }, [requestAutoCloseCheck, trades, maybeAutoSummarizeForTrade])
 
   const createTag = useCallback(
     (name: string, color: TagColor): TagDef | null => {
@@ -1002,6 +1057,7 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
       analyzeCaseCard,
       refreshCaseExecutionSuggestions,
       setCaseExecutionSuggestionStatus,
+      summarizeCase,
       prefillTradePlanFromBoundCase,
       createCaseBinding,
       deleteCaseBinding,
