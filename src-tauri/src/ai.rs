@@ -663,7 +663,6 @@ pub const SUGGESTION_PROMPT_VERSION: &str = "0.3.0-suggest-1";
 
 /// 建议只覆盖管理类动作（编辑器规范集：stop / target-moved / order-edit）。
 /// 开仓、加仓、减仓、平仓以交易所导入的成交为准，AI 一律不碰。
-pub const SUGGESTION_ACTIONS: [&str; 3] = ["stop", "target-moved", "order-edit"];
 
 pub fn build_suggestion_messages(context: &str) -> Vec<ChatMessage> {
     let system = "你是交易日志的持仓管理核对员。交易者在一个 Case 里用口语记录了全过程，这个 Case 绑定了一笔 Trade（成交记录来自交易所导出）。你的任务：找出「交易者明确说过要做、但成交记录里没有对应落库」的持仓管理动作，作为补录建议。

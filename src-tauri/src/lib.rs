@@ -1170,7 +1170,7 @@ pub(crate) fn batch_split_endpoint(
                     }
                 }
             }
-            api::ApiOutcome { status: 200, body: json!({ "cards": cards }), data_changed: changed }
+            api::ApiOutcome { status: 200, body: json!({ "cards": cards, "version": ai::SPLIT_PROMPT_VERSION }), data_changed: changed }
         }
         Err(message) => {
             let status = api::error_status(&message);
