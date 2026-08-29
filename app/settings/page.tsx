@@ -611,7 +611,7 @@ export default function SettingsPage() {
               <CardDescription>自动化触发时机；AI 调用失败都会自动重试一次</CardDescription>
             </CardHeader>
             <CardContent>
-              <SettingRow title="自动 AI 整理" description="浮窗/本地 API 提交新 Card 后自动在后台识别；失败重试一次后记日志，不打扰录制">
+              <SettingRow title="自动 AI 识别" description="浮窗/本地 API 提交新 Card 后自动在后台识别；失败重试一次后记日志，不打扰录制">
                 <Switch
                   checked={aiAutoAnalyze}
                   disabled={!isTauriRuntime()}
@@ -621,7 +621,7 @@ export default function SettingsPage() {
                   }}
                 />
               </SettingRow>
-              <SettingRow title="自动建议" description="Case 关联 Trade 后自动检查没落库的止盈止损动作；各处的「AI 找 Case / AI 找 Trade」为手动触发不受此开关影响">
+              <SettingRow title="自动建议" description="Case 关联 Trade 后自动检查没记录的止盈止损动作；各处的「AI 找 Case / AI 找 Trade」为手动触发不受此开关影响">
                 <Switch
                   checked={aiAutoSuggest}
                   disabled={!isTauriRuntime()}

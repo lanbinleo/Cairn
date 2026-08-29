@@ -228,10 +228,10 @@ export async function fetchAiModels(baseUrl: string, apiKey: string): Promise<st
   return invoke<string[]>('fetch_ai_models', { baseUrl, apiKey })
 }
 
-/** AI 秘书整理一张 Card；instruction 为重试时的补充要求。返回更新后的 Card。 */
+/** AI 秘书识别一张 Card；instruction 为重试时的补充要求。返回更新后的 Card。 */
 export async function analyzeCaseCard(cardId: string, instruction?: string): Promise<CaseCard> {
   if (!isTauriRuntime()) {
-    throw new Error('AI 整理需要桌面版运行')
+    throw new Error('AI 识别需要桌面版运行')
   }
   return invoke<CaseCard>('analyze_case_card', { cardId, instruction: instruction ?? null })
 }

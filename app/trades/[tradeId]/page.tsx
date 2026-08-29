@@ -340,7 +340,7 @@ export default function TradeDetailPage() {
                   if (filled) {
                     setPlanPromptOpen(false)
                   } else {
-                    setPlanPrefillHint('Entry 卡还没有可用的 memo（先在 Case 页点「AI 整理」，或手动填写）。')
+                    setPlanPrefillHint('Entry 卡还没有可用的 memo（先在 Case 页点「AI 识别」，或手动填写）。')
                   }
                 }}
               >

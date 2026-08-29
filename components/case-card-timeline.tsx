@@ -362,7 +362,7 @@ export function CaseCardTimeline({ cards, showMoveToCase = true, showBatchAnalyz
                                 className="mt-1 text-xs text-muted-foreground underline decoration-dotted underline-offset-2 hover:text-foreground"
                                 onClick={() => setOrganizingCardIds((prev) => new Set(prev).add(card.id))}
                               >
-                                整理标签
+                                编辑标签
                               </button>
                             </div>
                           )

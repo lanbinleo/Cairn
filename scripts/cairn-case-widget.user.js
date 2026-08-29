@@ -1209,7 +1209,7 @@
         if (!card || !card.aiAnalysis) continue; // 分析还没到，继续等
         const missing = Array.isArray(card.aiAnalysis.missingFields) ? card.aiAnalysis.missingFields : [];
         if (missing.length > 0) {
-          $('ct-body').textContent = 'AI 整理：还缺 ' + missing.map((k) => MEMO_FIELD_LABELS[k] || k).join('、') + '（可以补一张卡）';
+          $('ct-body').textContent = 'AI 识别：还缺 ' + missing.map((k) => MEMO_FIELD_LABELS[k] || k).join('、') + '（可以补一张卡）';
         } else {
           tip.classList.remove('show'); // 字段齐了，撤掉提示
         }

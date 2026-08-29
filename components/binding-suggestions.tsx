@@ -99,7 +99,7 @@ export function BindingSuggestForTrade({ trade, onBound }: { trade: Trade; onBou
         error ? (
           <p className="text-xs text-destructive">{error}</p>
         ) : suggestions.length === 0 ? (
-          <p className="text-xs text-muted-foreground">没有找到合适的 Case（候选为空或都不匹配）。</p>
+          <p className="text-xs text-muted-foreground">没有找到合适的 Case，可在上方手动选择。</p>
         ) : (
           <SuggestionRows
             suggestions={suggestions}
@@ -165,7 +165,7 @@ export function BindingSuggestForCase({ caseRecord, onBound }: { caseRecord: Tra
         error ? (
           <p className="text-xs text-destructive">{error}</p>
         ) : suggestions.length === 0 ? (
-          <p className="text-xs text-muted-foreground">没有找到合适的 Trade（候选为空或都不匹配）。</p>
+          <p className="text-xs text-muted-foreground">没有找到合适的 Trade，可到 Trade 详情页手动关联本 Case。</p>
         ) : (
           <SuggestionRows
             suggestions={suggestions}

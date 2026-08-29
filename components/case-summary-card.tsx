@@ -6,6 +6,7 @@ import { AiRetryLink } from '@/components/ai-retry-button'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { InfoHint } from '@/components/info-hint'
 import { RelativeTime } from '@/components/relative-time'
 import { useCairn } from '@/lib/store'
 import type { CaseCard, Trade, TradeCase } from '@/lib/types'
@@ -136,7 +137,7 @@ export function CaseSummaryCard({
           </>
         )}
         <div className="flex items-center gap-2 text-xs text-muted-foreground">
-          只摆事实与偏差，不打分——过程评价永远是你自己的
+          <InfoHint>只摆事实与偏差，不打分——过程评价永远是你自己的。觉得总结偏了？点右侧链接，带着要求重试。</InfoHint>
           <AiRetryLink onRetry={(instruction) => void run(instruction)} busy={busy} />
         </div>
       </CardContent>
