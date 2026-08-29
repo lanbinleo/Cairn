@@ -54,7 +54,7 @@ Current source of truth: `docs/software-design.md`.
 - Frontend: React 19 + Vite + TypeScript.
 - Routing: `react-router-dom` configured in `src/App.tsx`.
 - Desktop runtime: Tauri 2.
-- Native layer: Rust commands for SQLite, filesystem attachments, imports, backups, tray, logs, diagnostics, app metadata, the local REST API, and AI chat.
+- Native layer: Rust commands for SQLite, filesystem attachments, imports, backups, tray, logs, diagnostics, app metadata, the local REST API, and the AI pipelines (card analysis, execution suggestions, case summaries, binding suggestions, voice batch split). There is no conversational AI chat feature.
 - Storage: local SQLite in the Tauri app data directory.
 - Future cloud: backup/restore only, not realtime multi-device sync.
 
@@ -65,8 +65,8 @@ The detailed per-file map lives in **`docs/project-map.md`** — every page, com
 Top-level orientation:
 
 - Frontend: pages under `app/`, components under `components/`, domain logic under `lib/`, routes in `src/App.tsx`.
-- Native: `src-tauri/src/` — `lib.rs` (commands/setup), `db.rs` (SQLite), `api.rs` (local REST on 127.0.0.1), `ai.rs` (providers + chat + prompts), `diagnostics.rs` (logs).
-- Companion userscript: `scripts/cairn-case-widget.user.js` (+ `scripts/cairn-case-widget.test.html` harness). Distribution is in-app: the script is compiled into the binary (`include_str!`) and Settings → 本地 API → 浮窗脚本 offers copy + a GitHub-main update check (`api.github.com` Contents API, `check_widget_script_update`); network failure degrades to the bundled copy. Bump the script `@version` whenever it changes — version comparison is dot-segment numeric (`version_gt`).
+- Native: `src-tauri/src/` — `lib.rs` (commands/setup + AI context assembly), `db.rs` (SQLite), `api.rs` (local REST on 127.0.0.1), `ai.rs` (providers + chat completion + all prompts/parsers), `diagnostics.rs` (logs). Batch-split is dispatched at the api server loop (`lib.rs batch_split_endpoint`) so `handle_request` stays GUI-dependency-free and the test binary links cleanly.
+- Companion userscript: `scripts/cairn-case-widget.user.js` (+ `scripts/cairn-case-widget.test.html` harness). Distribution is in-app: the script is compiled into the binary (`include_str!`) and Settings → 本地 API → 浮窗脚本 offers copy + a GitHub-main update check (`api.github.com` Contents API, `check_widget_script_update`); network failure degrades to the bundled copy. Bump the script `@version` whenever it changes — version comparison is dot-segment numeric (`version_gt`). 0.3.0 adds batch voice split (multi-anchor precheck → `POST /cases/:id/cards/batch-split`), card delete (✕), and entry-card missing-fields AI polling.
 
 ## Domain Rules To Remember
 
@@ -103,6 +103,11 @@ Top-level orientation:
 - Case auto-close (`lib/case-auto-close.ts`): an active Case auto-closes once when its bound Trade is fully closed AND a Closing Card exists, or (no binding) when a Reflection Card exists; manual status edits never re-trigger it.
 - TradingView import runs Case matching (`lib/case-import-matching.ts`): exact entry+closing time-window matches auto-bind (`source: 'import'`); partial/overlapping matches are yellow suggestions; no Case is red. Cases/Cards carry no symbol — matching is account + time only.
 - Manual trade-management Executions use Move Stop (`stop`) for stop-loss changes, Move Target (`target-moved`) for take-profit changes, and Add / Edit Order (`order-edit`) for ordinary pending-order changes. Move Stop defaults to `stop-loss`; Move Target defaults to `take-profit`; manual trailing behavior is a Reason on Move Stop, not a `trailing-stop` order type by default.
+- AI execution suggestions (0.3.0, `TradeCase.aiExecutionSuggestions`): management-only (stop/target-moved/order-edit — never position fills); triggered when a binding is established (the workflow is Case-first, so cards predate the trade) plus a manual 重新检查. One AI call per Case; Rust mechanically validates (verbatim quotes, whitelist actions, ≤8) and dedups against existing executions/events/initial stop-target (0.02% relative tolerance). Suggestions are always candidates: 直接添加 (normal save path, quote in note) / 修改后添加 (EditTradeDialog `prefill` draft) / 忽略; re-runs carry accepted/dismissed forward by fingerprint (cardId|action|quote|price).
+- AI case summary (0.3.0, `TradeCase.aiSummary`): auto on trade open→closed (autoSummary toggle) or manual; context assembled in TS (`lib/case-summary.ts` — metrics live in TS), Rust is a thin pipe. Facts and deviations only, never scores; 填入复盘备注 only when the note is empty. Cards created/edited after `analyzedAt` mark the summary stale.
+- AI binding suggestions (0.3.0): mechanical prefilter (same account, unbound, time distance ≤6) then AI ranks + explains; binding itself is always user-confirmed. Surfaces: Trade Case tab (AI 找 Case), Case page binding card (AI 找 Trade), import step-3 unmatched rows.
+- Batch voice split (0.3.0): widget precheck (≥2 explicit K-line anchors, or ≥1 anchor + 「下一根」; a manually typed BAR opts out) → `POST /cases/:id/cards/batch-split` splits directly into cards (no preview — fluency first; mistakes are cleaned with edit/delete). Rust validates segments as ordered verbatim substrings with monotonic barRefs; any failure degrades to one whole-text card (never lose the speech); idempotent per `clientRequestId`.
+- AI settings (0.3.0): `autoAnalyze` / `autoSuggest` / `autoSummary` in Settings → AI, all default on.
 
 ## Branching And Releases
 
