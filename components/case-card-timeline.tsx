@@ -1,13 +1,14 @@
 'use client'
 
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { ArrowRightLeft, ChevronDown, ChevronRight, Pencil, Sparkles, Trash2 } from 'lucide-react'
+import { ArrowRightLeft, ChevronDown, ChevronRight, MoreHorizontal, Pencil, Sparkles, Trash2 } from 'lucide-react'
 
 import { CaseCardAnalysisView, EditableHighlightedCaseCardText, HighlightedCaseCardText } from '@/components/case-card-analysis'
 import { RelativeTime } from '@/components/relative-time'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
@@ -39,7 +40,7 @@ interface CaseCardTimelineProps {
   cards: CaseCard[]
   /** 允许「移动到其他 Case」（Case 详情页开，Trade 页关）。 */
   showMoveToCase?: boolean
-  /** 顶部「全部 AI 整理」按钮（Trade 页可关）。 */
+  /** 顶部「全部识别」按钮（Trade 页可关）。 */
   showBatchAnalyze?: boolean
   /** 图表/时间线跳转定位目标：展开并滚动到该卡片。 */
   targetCardId?: string
@@ -168,11 +169,13 @@ export function CaseCardTimeline({ cards, showMoveToCase = true, showBatchAnalyz
       <CardHeader className="flex flex-row flex-wrap items-center justify-between gap-2">
         <div className="flex flex-col gap-1.5">
           <CardTitle className="text-base">心路历程</CardTitle>
-          <CardDescription>
-            {cards.length} 张原始 Card，按展示阶段和创建顺序排列
-            {missingBarCount > 0 && <span className="text-amber-600 dark:text-amber-400"> · {missingBarCount} 张缺 BAR</span>}
-            {staleCount > 0 && <span className="text-amber-600 dark:text-amber-400"> · {staleCount} 张待重新识别</span>}
-          </CardDescription>
+          {(missingBarCount > 0 || staleCount > 0) && (
+            <CardDescription>
+              {missingBarCount > 0 && <span className="text-amber-600 dark:text-amber-400">{missingBarCount} 张缺 BAR</span>}
+              {missingBarCount > 0 && staleCount > 0 && ' · '}
+              {staleCount > 0 && <span className="text-amber-600 dark:text-amber-400">{staleCount} 张需重新识别</span>}
+            </CardDescription>
+          )}
         </div>
         <div className="flex items-center gap-2">
           <Button variant="outline" size="sm" className="h-8" onClick={allExpanded ? () => setExpandedIds(new Set()) : expandAll}>
@@ -188,7 +191,7 @@ export function CaseCardTimeline({ cards, showMoveToCase = true, showBatchAnalyz
               onClick={analyzeAllCards}
             >
               <Sparkles className={cn('size-3.5', batchAnalyzing && 'animate-pulse')} data-icon="inline-start" />
-              {batchAnalyzing ? '整理中…' : '全部 AI 整理'}
+              {batchAnalyzing ? '识别中…' : '全部识别'}
             </Button>
           )}
         </div>
@@ -229,30 +232,16 @@ export function CaseCardTimeline({ cards, showMoveToCase = true, showBatchAnalyz
                             >
                               {card.barRef != null ? `BAR ${card.barRef}` : '缺 BAR'}
                             </Button>
-                            {card.rawTextHistory && card.rawTextHistory.length > 0 && (
-                              <span className="text-xs text-muted-foreground" title={card.rawTextHistory.join('\n──\n')}>
-                                已修正 {card.rawTextHistory.length} 次
-                              </span>
-                            )}
                           </div>
                           <div className="flex items-center gap-1">
-                            <RelativeTime ms={card.createdAt} className="text-xs text-muted-foreground" />
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              className="h-7 w-7 p-0 text-muted-foreground"
-                              title="修正原文错字（保留历史版本）"
-                              onClick={() => {
-                                if (editingCardId === card.id) {
-                                  setEditingCardId(null)
-                                } else {
-                                  setEditingCardId(card.id)
-                                  setEditText(card.rawText)
-                                }
-                              }}
+                            <span
+                              className="text-xs text-muted-foreground"
+                              title={card.rawTextHistory && card.rawTextHistory.length > 0
+                                ? `已修正 ${card.rawTextHistory.length} 次：\n${card.rawTextHistory.join('\n──\n')}`
+                                : undefined}
                             >
-                              <Pencil className="size-3.5" />
-                            </Button>
+                              <RelativeTime ms={card.createdAt} />
+                            </span>
                             <Button
                               variant="ghost"
                               size="sm"
@@ -261,35 +250,54 @@ export function CaseCardTimeline({ cards, showMoveToCase = true, showBatchAnalyz
                               onClick={() => runAnalysis(card.id)}
                             >
                               <Sparkles className={cn('size-3.5', analyzingCardIds.has(card.id) && 'animate-pulse')} />
-                              {analyzingCardIds.has(card.id) ? '整理中…' : card.aiAnalysis ? '重新识别' : 'AI 整理'}
+                              {analyzingCardIds.has(card.id) ? '识别中…' : card.aiAnalysis ? '重新识别' : 'AI 识别'}
                             </Button>
-                            {showMoveToCase && otherCases.length > 0 && (
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                className="h-7 w-7 p-0 text-muted-foreground"
-                                title="移动到其他 Case"
-                                onClick={() => {
-                                  setMovingCardId((prev) => (prev === card.id ? null : card.id))
-                                  setMoveTargetId('')
-                                }}
-                              >
-                                <ArrowRightLeft className="size-3.5" />
-                              </Button>
-                            )}
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              className="h-7 w-7 p-0 text-muted-foreground hover:text-destructive"
-                              title="删除这张卡（软删，备份可恢复）"
-                              onClick={() => {
-                                if (window.confirm('删除这张卡片？原文与 AI 分析一起移除（软删除，可从备份恢复）。')) {
-                                  deleteCaseCard(card.id)
+                            <DropdownMenu>
+                              <DropdownMenuTrigger
+                                render={
+                                  <Button variant="ghost" size="sm" className="h-7 w-7 p-0 text-muted-foreground" aria-label="更多操作">
+                                    <MoreHorizontal className="size-3.5" />
+                                  </Button>
                                 }
-                              }}
-                            >
-                              <Trash2 className="size-3.5" />
-                            </Button>
+                              />
+                              <DropdownMenuContent align="end">
+                                <DropdownMenuItem
+                                  onClick={() => {
+                                    if (editingCardId === card.id) {
+                                      setEditingCardId(null)
+                                    } else {
+                                      setEditingCardId(card.id)
+                                      setEditText(card.rawText)
+                                    }
+                                  }}
+                                >
+                                  <Pencil />
+                                  修正原文错字
+                                </DropdownMenuItem>
+                                {showMoveToCase && otherCases.length > 0 && (
+                                  <DropdownMenuItem
+                                    onClick={() => {
+                                      setMovingCardId((prev) => (prev === card.id ? null : card.id))
+                                      setMoveTargetId('')
+                                    }}
+                                  >
+                                    <ArrowRightLeft />
+                                    移动到其他 Case
+                                  </DropdownMenuItem>
+                                )}
+                                <DropdownMenuItem
+                                  variant="destructive"
+                                  onClick={() => {
+                                    if (window.confirm('删除这张卡片？原文与 AI 分析一起移除（软删除，可从备份恢复）。')) {
+                                      deleteCaseCard(card.id)
+                                    }
+                                  }}
+                                >
+                                  <Trash2 />
+                                  删除这张卡
+                                </DropdownMenuItem>
+                              </DropdownMenuContent>
+                            </DropdownMenu>
                           </div>
                         </div>
                         {editingBarCardId === card.id && (

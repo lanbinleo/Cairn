@@ -205,7 +205,6 @@ export default function CaseDetailPage() {
           <Card>
             <CardHeader>
               <CardTitle className="text-base">Case 概要</CardTitle>
-              <CardDescription>核心状态与组成，一屏可见</CardDescription>
             </CardHeader>
             <CardContent className="flex flex-wrap items-center gap-2">
               <Badge variant="secondary">{caseStatusLabel[caseRecord.status]}</Badge>
@@ -241,7 +240,7 @@ export default function CaseDetailPage() {
             <CardHeader className="flex flex-row flex-wrap items-center justify-between gap-2">
               <div className="flex flex-col gap-1.5">
                 <CardTitle className="text-base">新增 Card</CardTitle>
-                <CardDescription>提交后的原文保持只读；后续更正通过新的 Card 记录。</CardDescription>
+                <CardDescription>原文可随时修正错字（保留历史版本），也可以删除整张卡。</CardDescription>
               </div>
               <Button variant="outline" size="sm" className="h-8" aria-expanded={newCardOpen} onClick={() => setNewCardOpen((prev) => !prev)}>
                 <Plus data-icon="inline-start" />
@@ -334,10 +333,6 @@ export default function CaseDetailPage() {
                   <SelectContent><SelectGroup>{CASE_PROVENANCE_OPTIONS.map((option) => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}</SelectGroup></SelectContent>
                 </Select>
               </Field>
-              <Separator />
-              <div className="text-sm"><span className="text-muted-foreground">状态：</span>{caseStatusLabel[caseRecord.status]}</div>
-              <div className="text-sm"><span className="text-muted-foreground">来源：</span>{caseProvenanceLabel[caseRecord.provenance]}</div>
-              <div className="text-sm"><span className="text-muted-foreground">更新：</span><RelativeTime ms={caseRecord.updatedAt} /></div>
             </CardContent>
           </Card>
 
@@ -378,7 +373,7 @@ export default function CaseDetailPage() {
               ) : (
                 <div className="flex flex-col gap-2 text-sm text-muted-foreground">
                   <Archive className="size-5" />
-                  <span>尚未关联 Trade。可在 Trade 详情页的 Case 面板中选择本 Case 建立关联。</span>
+                  <span>尚未关联 Trade。可以用下方 AI 找 Trade，或到 Trade 详情页手动选择本 Case。</span>
                   <BindingSuggestForCase caseRecord={caseRecord} />
                 </div>
               )}
