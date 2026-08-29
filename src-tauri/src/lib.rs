@@ -1078,13 +1078,14 @@ impl SummaryStreamBatcher {
         }
     }
 
-    /// 结束：冲掉正文尾巴 + 最终进度（带 token 统计）。
+    /// 结束：冲掉正文尾巴 + 最终进度（带 token 与思考量统计）。
     fn finish(&self, outcome: &ai::StreamOutcome) {
         self.flush_delta(now_ms());
         let mut progress = json!({
             "phase": "writing",
             "thinkingMs": self.thinking_ms(),
             "outputChars": self.output_chars.load(std::sync::atomic::Ordering::Relaxed),
+            "reasoningChars": outcome.reasoning_chars,
         });
         if let Some(tokens) = outcome.completion_tokens {
             progress["outputTokens"] = json!(tokens);
