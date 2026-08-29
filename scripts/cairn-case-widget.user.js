@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Cairn 记一笔
 // @namespace    cairn
-// @version      0.3.0
+// @version      0.3.1
 // @description  TradingView 悬浮记录浮窗：口述或打字记录交易思考，实时写入本地 Cairn（127.0.0.1 本地 API）
 // @author       Cairn
 // @match        https://*.tradingview.com/*
@@ -474,6 +474,15 @@
   }
   #cairn-cw-wrap #cw-bar-input:focus { outline: none; border-color: var(--bar-num); }
   #cairn-cw-wrap #cw-bar-input::placeholder { color: var(--text-dim); opacity: .7; }
+  #cairn-cw-wrap #cw-split-toggle {
+    display: inline-flex; align-items: center; gap: 4px;
+    margin-left: 2px; padding: 0 2px;
+    font-size: 12px; color: var(--text-dim);
+    cursor: pointer; user-select: none; white-space: nowrap;
+  }
+  #cairn-cw-wrap #cw-split-toggle:has(input:checked) { color: var(--bar-num); }
+  #cairn-cw-wrap #cw-split-check { accent-color: var(--bar-num); margin: 0; width: 13px; height: 13px; cursor: pointer; }
+  #cairn-cw-wrap #cw-split-check:disabled { cursor: default; }
   #cairn-cw-wrap #cw-submit-btn {
     margin-left: auto;
     background: var(--accent); color: #fff; border: none;
@@ -706,6 +715,10 @@
 
         <div id="cw-input-row">
           <input id="cw-bar-input" inputmode="numeric" placeholder="BAR №">
+          <label id="cw-split-toggle" title="按卡内 BAR 锚点把一段语音拆成多张卡；拆错了用 ✎ 修正或 ✕ 删除">
+            <input type="checkbox" id="cw-split-check">
+            <span>拆卡</span>
+          </label>
           <button id="cw-submit-btn">提交 ⌘↵</button>
         </div>
 
@@ -1207,33 +1220,10 @@
     }
   }
 
-  /* ================= 批量拆卡预检 ================= */
+  /* ================= 批量拆卡（显式勾选） ================= */
 
-  // 显式 K 线锚点的口语变体（生产语料校准）：「BAR 120」「bar #120」「120号K线」「第 42 根」
-  const ANCHOR_PATTERNS = [
-    /\bbar\s*#?\s*\d+\b/gi,
-    /\d+\s*号\s*k\s*线/gi,
-    /第\s*\d+\s*根/g,
-  ];
-
-  function countExplicitAnchors(text) {
-    let count = 0;
-    for (const pattern of ANCHOR_PATTERNS) {
-      const matches = text.match(pattern);
-      if (matches) count += matches.length;
-    }
-    return count;
-  }
-
-  // 命中批量特征（显式锚点 ≥2，或 ≥1 锚点 + 「下一根」类推进）→ 走 batch-split；
-  // 手动填了 BAR 的提交视为单卡（用户已明确锚点），不拆。
-  function looksLikeBatch(text) {
-    const anchors = countExplicitAnchors(text);
-    if (anchors === 0) return false;
-    if (anchors >= 2) return true;
-    const nexts = (text.match(/下一根/g) || []).length;
-    return nexts >= 1;
-  }
+  // 拆不拆由用户勾选「拆卡」决定，不做机械预判（锚点数/「下一根」识别容易误伤单卡语音）。
+  // 勾选后 BAR 输入禁用：拆分锚点来自卡内原话，手动 BAR 只属于单卡提交。
 
   function makeRequestIds() {
     return 'bs-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
@@ -1262,13 +1252,16 @@
       if (err) { showToast('无法连接 Cairn', 'err'); showSettings(true); return; }
     }
 
+    const splitMode = $('split-check').checked;
     const payload = { phase: state.phase, rawText: text };
-    const manualBar = parseInt($('bar-input').value, 10);
-    if (Number.isInteger(manualBar) && manualBar > 0) payload.barRef = manualBar;
+    if (!splitMode) {
+      const manualBar = parseInt($('bar-input').value, 10);
+      if (Number.isInteger(manualBar) && manualBar > 0) payload.barRef = manualBar;
+    }
     if (state.phase === 'entry') payload.entryDecision = state.entryDecision;
 
-    // 批量语音拆卡：直接拆分落库（不做预览，流畅优先）；拆错了用 ✎/✕ 修正或删除
-    const useBatch = payload.barRef == null && looksLikeBatch(text);
+    // 批量语音拆卡（显式勾选）：直接拆分落库（不做预览，流畅优先）；拆错了用 ✎/✕ 修正或删除
+    const useBatch = splitMode;
 
     const btn = $('submit-btn');
     state.busy = true;
@@ -1548,6 +1541,11 @@
     });
 
     $('submit-btn').addEventListener('click', submitCard);
+    $('split-check').addEventListener('change', function () {
+      const bar = $('bar-input');
+      bar.disabled = this.checked;
+      bar.placeholder = this.checked ? '拆分用卡内锚点' : 'BAR №';
+    });
     $('ct-close').addEventListener('click', () => $('completeness-tip').classList.remove('show'));
 
     $('cards-expand').addEventListener('click', function () {
