@@ -170,6 +170,43 @@ export function computeMaxDrawdown(curve: EquityPoint[]): { maxDrawdown: number;
   return { maxDrawdown: maxDd, maxDrawdownPct: maxDdPct }
 }
 
+export type EquityMaPoint = { time: number; value: number }
+
+/** 资金曲线均线（按笔数）：最近 n 笔权益的简单均线，点序即平仓序；前 n-1 点窗口未满不输出。 */
+export function computeEquityMaByTrades(points: EquityPoint[], n: number): EquityMaPoint[] {
+  if (n < 2 || points.length < n) return []
+  const out: EquityMaPoint[] = []
+  let sum = 0
+  for (let i = 0; i < points.length; i++) {
+    sum += points[i].equity
+    if (i >= n) sum -= points[i - n].equity
+    if (i >= n - 1) out.push({ time: points[i].time, value: sum / n })
+  }
+  return out
+}
+
+/** 资金曲线均线（按天数）：先按 UTC 自然日取当日末值，再对最近 n 个有数据的日子做简单均线。
+ *  输出点的时间取该日最后一笔平仓时刻，与主曲线的 x 轴对齐。 */
+export function computeEquityMaByDays(points: EquityPoint[], n: number): EquityMaPoint[] {
+  if (n < 2 || points.length === 0) return []
+  const DAY_MS = 86_400_000
+  const dayEnds = new Map<number, { time: number; equity: number }>()
+  for (const pt of points) {
+    const day = Math.floor(pt.time / DAY_MS)
+    const prev = dayEnds.get(day)
+    if (!prev || pt.time >= prev.time) dayEnds.set(day, { time: pt.time, equity: pt.equity })
+  }
+  const buckets = [...dayEnds.entries()].sort((a, b) => a[0] - b[0]).map(([, value]) => value)
+  const out: EquityMaPoint[] = []
+  let sum = 0
+  for (let i = 0; i < buckets.length; i++) {
+    sum += buckets[i].equity
+    if (i >= n) sum -= buckets[i - n].equity
+    if (i >= n - 1) out.push({ time: buckets[i].time, value: sum / n })
+  }
+  return out
+}
+
 /** 一批 trades 的统计汇总 */
 export function computeStats(trades: Trade[], initialBalance: number): StatsSummary {
   const closed = trades.filter((t) => t.status === 'closed')
