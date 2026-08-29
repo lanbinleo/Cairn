@@ -1161,6 +1161,45 @@
     return hints;
   }
 
+  // Entry 卡提交后轮询 AI 分析结果：missingFields 比 0.2 的正则提示更准，
+  // 到达后替换提示文案；~3s × 5 次后放弃（自动分析关闭/失败时正则提示仍在）。
+  const MEMO_FIELD_LABELS = {
+    direction: '方向',
+    entryPrice: '入场价',
+    stopLoss: '止损',
+    target: '目标',
+    confidence: '置信度',
+    invalidation: '失效条件',
+    rejectedAlternatives: '放弃的方案',
+  };
+
+  function sleep(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  async function pollMissingFields(cardId) {
+    const tip = $('completeness-tip');
+    for (let attempt = 0; attempt < 5; attempt++) {
+      await sleep(3000);
+      if (!tip.classList.contains('show')) return; // 用户已关闭提示，不再打扰
+      try {
+        const res = await api('GET', '/cases/' + encodeURIComponent(state.caseId) + '/cards');
+        if (res.status !== 200 || !res.json || !Array.isArray(res.json.cards)) return;
+        const card = res.json.cards.find((c) => c.id === cardId);
+        if (!card || !card.aiAnalysis) continue; // 分析还没到，继续等
+        const missing = Array.isArray(card.aiAnalysis.missingFields) ? card.aiAnalysis.missingFields : [];
+        if (missing.length > 0) {
+          $('ct-body').textContent = 'AI 整理：还缺 ' + missing.map((k) => MEMO_FIELD_LABELS[k] || k).join('、') + '（可以补一张卡）';
+        } else {
+          tip.classList.remove('show'); // 字段齐了，撤掉提示
+        }
+        return;
+      } catch {
+        return;
+      }
+    }
+  }
+
   /* ================= 批量拆卡预检 ================= */
 
   // 显式 K 线锚点的口语变体（生产语料校准）：「BAR 120」「bar #120」「120号K线」「第 42 根」
@@ -1272,6 +1311,8 @@
       if (hints.length > 0) {
         $('ct-body').textContent = '还没提到：' + hints.join('、');
         $('completeness-tip').classList.add('show');
+        // AI 自动整理通常几秒内到达：用 missingFields 替换正则提示（更准）
+        if (payload.phase === 'entry' && res.json && res.json.id) void pollMissingFields(res.json.id);
       } else {
         $('completeness-tip').classList.remove('show');
       }

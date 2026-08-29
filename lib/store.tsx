@@ -68,7 +68,7 @@ interface CairnStore {
   createCase: (input: Omit<TradeCase, 'id' | 'createdAt' | 'updatedAt'>) => TradeCase
   updateCase: (id: string, patch: Partial<Omit<TradeCase, 'id' | 'createdAt'>>) => void
   deleteCase: (id: string) => void
-  createCaseCard: (input: Omit<CaseCard, 'id' | 'createdAt' | 'barRef' | 'barRefs'> & { barRef: number }) => CaseCard
+  createCaseCard: (input: Omit<CaseCard, 'id' | 'createdAt' | 'barRef' | 'barRefs'> & { barRef?: number | null }) => CaseCard
   moveCaseCard: (cardId: string, targetCaseId: string) => CaseCard | undefined
   updateCaseCardText: (cardId: string, rawText: string) => CaseCard | undefined
   updateCaseCardBarRef: (cardId: string, barRef: number | null) => CaseCard | undefined
@@ -317,9 +317,11 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
     }
   }, [autoCloseTick, cases, caseCards, caseBindings, trades, updateCase])
 
-  const createCaseCard = useCallback((input: Omit<CaseCard, 'id' | 'createdAt' | 'barRef' | 'barRefs'> & { barRef: number }): CaseCard => {
+  const createCaseCard = useCallback((input: Omit<CaseCard, 'id' | 'createdAt' | 'barRef' | 'barRefs'> & { barRef?: number | null }): CaseCard => {
+    const { barRef, ...rest } = input
     const created: CaseCard = {
-      ...input,
+      ...rest,
+      ...(barRef != null ? { barRef } : {}),
       id: makeId('card'),
       rawText: input.rawText.trim(),
       createdAt: Date.now(),
