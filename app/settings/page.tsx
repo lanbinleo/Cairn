@@ -621,7 +621,7 @@ export default function SettingsPage() {
                   }}
                 />
               </SettingRow>
-              <SettingRow title="自动建议" description="Case 关联 Trade 后自动检查没落库的止盈止损动作；导入后的 AI 关联推荐也由此开关控制">
+              <SettingRow title="自动建议" description="Case 关联 Trade 后自动检查没落库的止盈止损动作；各处的「AI 找 Case / AI 找 Trade」为手动触发不受此开关影响">
                 <Switch
                   checked={aiAutoSuggest}
                   disabled={!isTauriRuntime()}

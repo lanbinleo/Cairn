@@ -264,6 +264,7 @@ export function TradeCasePanel({
       <CaseExecutionSuggestions
         trade={trade}
         caseRecord={caseRecord}
+        cards={cards}
         cardTimes={cardTimes ?? new Map()}
         onJumpCard={(cardId) => onJumpCard?.(cardId)}
         onEditPrefill={(_suggestion, draft) => onSuggestEditPrefill?.(draft)}

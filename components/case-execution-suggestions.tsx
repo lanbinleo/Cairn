@@ -8,7 +8,7 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { fmtUtcDateTime } from '@/lib/format'
 import { useCairn } from '@/lib/store'
-import type { CaseExecutionSuggestion, Execution, Trade, TradeCase } from '@/lib/types'
+import type { CaseCard, CaseExecutionSuggestion, Execution, Trade, TradeCase } from '@/lib/types'
 import { cn } from '@/lib/utils'
 
 const SUGGESTION_ACTION_LABEL: Record<CaseExecutionSuggestion['action'], string> = {
@@ -17,17 +17,38 @@ const SUGGESTION_ACTION_LABEL: Record<CaseExecutionSuggestion['action'], string>
   'order-edit': '修改订单',
 }
 
+/** 管理动作分类（与 Rust management_class 同规则）。 */
+function suggestionClass(action: CaseExecutionSuggestion['action']): string {
+  if (action === 'stop') return 'stop'
+  if (action === 'target-moved') return 'target'
+  return 'other'
+}
+
+/** 展示层去重（与 Rust 0.02% 容差同规则）：「修改后添加」保存后、重跑前，
+ *  pending 里已被成交覆盖的建议先藏起来，避免看起来还能再点一次。 */
+function coveredByTradeExecution(suggestion: CaseExecutionSuggestion, trade: Trade): boolean {
+  if (suggestion.price == null) return false
+  const reference = trade.executions.find((e) => e.action === 'entry' && e.price != null)?.price ?? suggestion.price
+  const tolerance = Math.max(Math.abs(reference), Math.abs(suggestion.price)) * 0.0002
+  const existing = [
+    ...trade.executions.filter((e) => e.action === 'stop' || e.action === 'stop-set' || e.action === 'stop-moved' || e.action === 'target-set' || e.action === 'target-moved' || e.action === 'order-edit').map((e) => [suggestionClass(e.action as CaseExecutionSuggestion['action']), e.price] as const),
+    ...(trade.initialStopLoss != null ? ([['stop', trade.initialStopLoss] as const]) : []),
+    ...(trade.initialTakeProfit != null ? ([['target', trade.initialTakeProfit] as const]) : []),
+  ]
+  return existing.some(([cls, price]) => price != null && cls === suggestionClass(suggestion.action) && Math.abs(price - suggestion.price!) <= tolerance)
+}
+
 function makeExecutionId() {
   return `exec-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
 }
 
-function suggestionToExecution(suggestion: CaseExecutionSuggestion, trade: Trade, time: number | null): Execution {
+function suggestionToExecution(suggestion: CaseExecutionSuggestion, trade: Trade, time: number): Execution {
   return {
     id: makeExecutionId(),
     tradeId: trade.id,
     action: suggestion.action,
     orderType: suggestion.orderType,
-    time: time ?? Date.now(),
+    time,
     price: suggestion.price,
     signal: suggestion.signal,
     note: `来自 Case 卡片：「${suggestion.quote}」`,
@@ -42,12 +63,15 @@ function suggestionToExecution(suggestion: CaseExecutionSuggestion, trade: Trade
 export function CaseExecutionSuggestions({
   trade,
   caseRecord,
+  cards,
   cardTimes,
   onJumpCard,
   onEditPrefill,
 }: {
   trade: Trade
   caseRecord: TradeCase
+  /** 该 Case 的卡片（时间换算不出时回退 card.createdAt，绝不放「现在」） */
+  cards: CaseCard[]
   /** 卡片 → 换算时间（Trade 页的 resolveCaseCardTimesForTrade 结果） */
   cardTimes: Map<string, { time: number; invalid: boolean }>
   /** 点击证据跳到对应卡片（Case Tab 内定位） */
@@ -60,7 +84,10 @@ export function CaseExecutionSuggestions({
   const [error, setError] = useState('')
   const blob = caseRecord.aiExecutionSuggestions
   const suggestions = blob?.suggestions ?? []
-  const pending = suggestions.filter((item) => item.status === 'pending')
+  // 展示层去重：已接受/已被成交覆盖的建议不再出现在待确认列表
+  const pending = suggestions.filter(
+    (item) => item.status === 'pending' && !coveredByTradeExecution(item, trade),
+  )
   const accepted = suggestions.filter((item) => item.status === 'accepted').length
   const dismissed = suggestions.filter((item) => item.status === 'dismissed').length
 
@@ -76,8 +103,11 @@ export function CaseExecutionSuggestions({
     }
   }
 
-  function resolvedTime(suggestion: CaseExecutionSuggestion): number | null {
-    return cardTimes.get(suggestion.cardId)?.time ?? null
+  function resolvedTime(suggestion: CaseExecutionSuggestion): number {
+    // 换算不出时回退卡片创建时刻——历史动作绝不能落在「现在」
+    return cardTimes.get(suggestion.cardId)?.time
+      ?? cards.find((card) => card.id === suggestion.cardId)?.createdAt
+      ?? Date.now()
   }
 
   function accept(suggestion: CaseExecutionSuggestion) {
@@ -156,11 +186,19 @@ export function CaseExecutionSuggestions({
                 证据：「{suggestion.quote}」
               </button>
               <div className="flex flex-wrap gap-2">
-                <Button size="sm" className="h-8" onClick={() => accept(suggestion)}>
+                {/* 无价格的（仅位置语义）建议不能直接落库——编辑对话框对管理动作
+                    要求有限价格，落了也会在下次保存时被静默过滤。走「修改后添加」补价。 */}
+                <Button
+                  size="sm"
+                  className="h-8"
+                  disabled={suggestion.price == null}
+                  title={suggestion.price == null ? '这条只提到位置没有价格，请用「修改后添加」补上价格' : undefined}
+                  onClick={() => accept(suggestion)}
+                >
                   <Check data-icon="inline-start" />直接添加
                 </Button>
                 <Button size="sm" variant="outline" className="h-8" onClick={() => editThenAccept(suggestion)}>
-                  <Pencil data-icon="inline-start" />修改后添加
+                  <Pencil data-icon="inline-start" />修改后添加{suggestion.price == null ? '（补价格）' : ''}
                 </Button>
                 <Button
                   size="sm"

@@ -65,6 +65,10 @@
     entryDecision: store.get('entryDecision', 'pending'),
     lastAccountId: store.get('ncAccount', ''),
     lastPeriodId: store.get('ncPeriod', ''),
+    // 最近一次批量拆卡请求（文本未变的重试复用同一 clientRequestId，撞上幂等探针；
+    // 成功或文本变化后作废）。后端超时上限 90s×2（网络类失败重试一次）。
+    lastBatchRequest: null, // { text, id }
+    missingFieldsTick: 0,
   };
 
   const PHASE_META = {
@@ -1179,12 +1183,15 @@
 
   async function pollMissingFields(cardId) {
     const tip = $('completeness-tip');
+    const caseId = state.caseId; // 切 Case 后本轮作废，不再白拉
+    const tick = ++state.missingFieldsTick; // 并发轮询：只有最新一轮有权写提示
     for (let attempt = 0; attempt < 5; attempt++) {
       await sleep(3000);
-      if (!tip.classList.contains('show')) return; // 用户已关闭提示，不再打扰
+      if (!tip.classList.contains('show') || state.caseId !== caseId || tick !== state.missingFieldsTick) return;
       try {
-        const res = await api('GET', '/cases/' + encodeURIComponent(state.caseId) + '/cards');
+        const res = await api('GET', '/cases/' + encodeURIComponent(caseId) + '/cards');
         if (res.status !== 200 || !res.json || !Array.isArray(res.json.cards)) return;
+        if (tick !== state.missingFieldsTick) return;
         const card = res.json.cards.find((c) => c.id === cardId);
         if (!card || !card.aiAnalysis) continue; // 分析还没到，继续等
         const missing = Array.isArray(card.aiAnalysis.missingFields) ? card.aiAnalysis.missingFields : [];
@@ -1232,6 +1239,17 @@
     return 'bs-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
   }
 
+  // 同一段文本的批量提交复用同一 clientRequestId：超时后重按提交会命中后端幂等探针，
+  // 返回第一次（可能仍在处理、最终会落库）的结果，而不是重复落一整段卡。
+  function batchRequestIdFor(text) {
+    if (state.lastBatchRequest && state.lastBatchRequest.text === text) {
+      return state.lastBatchRequest.id;
+    }
+    const id = makeRequestIds();
+    state.lastBatchRequest = { text, id };
+    return id;
+  }
+
   /* ================= 提交 Card ================= */
 
   async function submitCard() {
@@ -1258,10 +1276,11 @@
     btn.textContent = useBatch ? '拆分中…' : '保存中…';
     try {
       if (useBatch) {
-        const batchBody = { phase: payload.phase, rawText: text, clientRequestId: makeRequestIds() };
+        const batchBody = { phase: payload.phase, rawText: text, clientRequestId: batchRequestIdFor(text) };
         if (payload.entryDecision) batchBody.entryDecision = payload.entryDecision;
-        // AI 拆分可能要几十秒：60s 超时；旧后端（0.2.x）没有该路由 → 404 自动退回单卡提交
-        let res = await api('POST', '/cases/' + encodeURIComponent(state.caseId) + '/cards/batch-split', batchBody, 60000);
+        // 后端超时上限 90s×2（网络类失败自动重试一次）——客户端超时必须更长，
+        // 否则超时重发会在服务端排队后命中幂等探针之前就产生新请求（同文本复用 id 兜底）。
+        let res = await api('POST', '/cases/' + encodeURIComponent(state.caseId) + '/cards/batch-split', batchBody, 200000);
         if (res.status === 404 || res.status === 405) {
           res = await api('POST', '/cases/' + encodeURIComponent(state.caseId) + '/cards', payload);
           res = { status: res.status, json: res.json && res.json.id ? { cards: [res.json] } : res.json };
@@ -1277,13 +1296,26 @@
           showToast((res.json && res.json.error) || '拆分失败', 'err');
           return;
         }
+        state.lastBatchRequest = null;
         state.cards = [...cards].reverse().concat(state.cards);
         renderCards();
         const first = $('card-list').firstElementChild;
         if (first) first.classList.add('fresh');
         ta.value = '';
         $('bar-input').value = '';
-        $('completeness-tip').classList.remove('show');
+        // 降级为单卡（AI 不可用/覆盖率不过）时与单卡路径行为一致：entry 正则提示 + AI 轮询
+        if (cards.length === 1) {
+          const hints = checkCompleteness(payload.phase, text);
+          if (hints.length > 0) {
+            $('ct-body').textContent = '还没提到：' + hints.join('、');
+            $('completeness-tip').classList.add('show');
+            if (payload.phase === 'entry') void pollMissingFields(cards[0].id);
+          } else {
+            $('completeness-tip').classList.remove('show');
+          }
+        } else {
+          $('completeness-tip').classList.remove('show');
+        }
         showToast(cards.length > 1 ? '✓ 已拆成 ' + cards.length + ' 张卡' : '✓ 已保存');
         ta.focus();
         return;

@@ -65,6 +65,7 @@ export default function CaseDetailPage() {
   const [phase, setPhase] = useState<CaseCardPhase>('pre-entry')
   const [entryDecision, setEntryDecision] = useState<CaseEntryDecision>('pending')
   const [barNumber, setBarNumber] = useState('')
+  const [barError, setBarError] = useState<string | null>(null)
   const [rawText, setRawText] = useState('')
   const [newCardOpen, setNewCardOpen] = useState(false)
   const [titleDrafting, setTitleDrafting] = useState(false)
@@ -99,7 +100,11 @@ export default function CaseDetailPage() {
     let parsedBar: number | null = null
     if (trimmedBar !== '') {
       const parsed = Number(trimmedBar)
-      if (!Number.isInteger(parsed) || parsed < 1 || parsed > 1440) return
+      if (!Number.isInteger(parsed) || parsed < 1 || parsed > 1440) {
+        setBarError('BAR 需为 1–1440 的整数（语音误识别的大数字请核对）')
+        return
+      }
+      setBarError(null)
       parsedBar = parsed
     } else {
       // 留空时从原文机械提取（与浮窗/REST 行为一致）；提取不到就按缺 BAR 保存
@@ -114,6 +119,7 @@ export default function CaseDetailPage() {
     })
     setRawText('')
     setBarNumber('')
+    setBarError(null)
     setEntryDecision('pending')
   }
 
@@ -274,8 +280,25 @@ export default function CaseDetailPage() {
                 )}
                 <Field>
                   <FieldLabel htmlFor="case-card-bar">BAR（可留空）</FieldLabel>
-                  <Input id="case-card-bar" type="number" min="1" step="1" max="1440" value={barNumber} onChange={(event) => setBarNumber(event.target.value)} placeholder="例如 201" />
-                  <FieldDescription>留空时自动提取原文里的 BAR（BAR38 / 第 42 根 K 线）；提取不到按缺 BAR 保存，后续可补。</FieldDescription>
+                  <Input
+                    id="case-card-bar"
+                    type="number"
+                    min="1"
+                    step="1"
+                    max="1440"
+                    value={barNumber}
+                    onChange={(event) => {
+                      setBarNumber(event.target.value)
+                      setBarError(null)
+                    }}
+                    placeholder="例如 201"
+                    aria-invalid={barError != null}
+                  />
+                  {barError ? (
+                    <p className="text-sm text-destructive" role="alert">{barError}</p>
+                  ) : (
+                    <FieldDescription>留空时自动提取原文里的 BAR（BAR38 / 第 42 根 K 线）；提取不到按缺 BAR 保存，后续可补。</FieldDescription>
+                  )}
                 </Field>
                 <Textarea
                   rows={7}

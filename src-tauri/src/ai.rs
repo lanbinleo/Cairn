@@ -930,7 +930,8 @@ pub struct ParsedCardSplit {
 }
 
 /// 机械校验模型拆分：每段 text 必须是原文的子串且按序不重叠；barRef 合法（1-1440）
-/// 且出现时单调递增（违反则该段 barRef 置空）。任一段不是子串 → 整体 Err（调用方退化为单卡）。
+/// 且出现时单调递增（违反则该段 barRef 置空）；段数 ≤20；各段合计需覆盖原文 ≥85%
+/// 的非空白字符——模型漏句时宁可整体 Err（调用方退化为完整单卡），绝不静默丢内容。
 pub fn parse_card_splits(content: &str, raw_text: &str) -> Result<Vec<ParsedCardSplit>, String> {
     let json_text = extract_json_object(content);
     let parsed: Value =
@@ -944,11 +945,14 @@ pub fn parse_card_splits(content: &str, raw_text: &str) -> Result<Vec<ParsedCard
     if items.is_empty() {
         return Err("model output has no cards".to_string());
     }
+    if items.len() > 20 {
+        return Err(format!("model output has {} cards (max 20)", items.len()));
+    }
 
     let mut out: Vec<ParsedCardSplit> = Vec::new();
     let mut search_from = 0usize;
     let mut last_bar: Option<i64> = None;
-    for item in items.iter().take(20) {
+    for item in &items {
         let text = item
             .get("text")
             .and_then(Value::as_str)
@@ -974,6 +978,16 @@ pub fn parse_card_splits(content: &str, raw_text: &str) -> Result<Vec<ParsedCard
             last_bar = bar_ref;
         }
         out.push(ParsedCardSplit { bar_ref, text: text.to_string() });
+    }
+
+    // 覆盖率：漏句（哪怕只是开头/结尾）不达标即整体拒绝，退化为完整单卡
+    let non_whitespace = |text: &str| text.chars().filter(|ch| !ch.is_whitespace()).count();
+    let raw_chars = non_whitespace(raw_text);
+    let covered: usize = out.iter().map(|split| non_whitespace(&split.text)).sum();
+    if (covered as f64) < raw_chars as f64 * 0.85 {
+        return Err(format!(
+            "split coverage {covered}/{raw_chars} chars below 85% — content would be lost"
+        ));
     }
     Ok(out)
 }
@@ -1192,6 +1206,28 @@ mod tests {
         let reversed = r#"{"cards":[{"barRef":2,"text":"再下一根缩量回抽，空头没有跟随。"},{"barRef":1,"text":"120号K线收了长上影，上沿又一次失败。"}]}"#;
         assert!(parse_card_splits(reversed, raw).is_err());
         assert!(parse_card_splits("拆不了", raw).is_err());
+    }
+
+    #[test]
+    fn parse_card_splits_rejects_low_coverage() {
+        let raw = "120号K线收了长上影，上沿又一次失败。下一根直接砸下来，跌破昨天低点。再下一根缩量回抽，空头没有跟随。整体来看我打算继续等待，等一个更干净也更明确的入场位置再动手。";
+        // 模型漏掉最后一句（约三分之一内容）→ 覆盖率不足 → 整体 Err，调用方退化为完整单卡
+        let content = r#"{"cards":[
+            {"barRef":120,"text":"120号K线收了长上影，上沿又一次失败。"},
+            {"barRef":121,"text":"下一根直接砸下来，跌破昨天低点。"},
+            {"barRef":122,"text":"再下一根缩量回抽，空头没有跟随。"}
+        ]}"#;
+        let err = parse_card_splits(content, raw).unwrap_err();
+        assert!(err.contains("coverage"), "coverage error, got: {err}");
+
+        // 全覆盖版本通过
+        let full = r#"{"cards":[
+            {"barRef":120,"text":"120号K线收了长上影，上沿又一次失败。"},
+            {"barRef":121,"text":"下一根直接砸下来，跌破昨天低点。"},
+            {"barRef":122,"text":"再下一根缩量回抽，空头没有跟随。"},
+            {"barRef":null,"text":"整体来看我打算继续等待，等一个更干净也更明确的入场位置再动手。"}
+        ]}"#;
+        assert_eq!(parse_card_splits(full, raw).unwrap().len(), 4);
     }
 
     #[test]

@@ -28,6 +28,12 @@ impl Db {
     ) -> Result<std::sync::MutexGuard<'_, Connection>, String> {
         self.conn.lock().map_err(|err| err.to_string())
     }
+
+    /// 单测专用：用现成 Connection 包装（生产路径只经 `init` 创建）。
+    #[cfg(test)]
+    pub(crate) fn from_conn(conn: Connection) -> Self {
+        Self { conn: Mutex::new(conn) }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

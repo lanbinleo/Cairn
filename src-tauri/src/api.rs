@@ -270,25 +270,28 @@ pub fn start_server(app: AppHandle) {
 
             let token = current_token(&app);
             let db = app.state::<db::Db>();
-            let outcome = match db.conn() {
-                Ok(conn) => {
-                    // 批量拆卡在 server 循环层分发（不在 handle_request 的路由表里）：
-                    // 它需要 AppHandle 走 AI，而 handle_request 保持无 GUI 依赖、可单测。
-                    if method == "POST" && url.starts_with("/api/v1/cases/") && url.ends_with("/cards/batch-split") {
-                        crate::batch_split_endpoint(&app, &conn, &url, auth.as_deref(), &token, &body, now_ms())
-                    } else {
-                        handle_request(
-                            &conn,
-                            &token,
-                            &method,
-                            &url,
-                            auth.as_deref(),
-                            &body,
-                            now_ms(),
-                        )
-                    }
-                }
-                Err(err) => ApiOutcome::error(500, &err),
+            // 批量拆卡在取 DB 锁之前拦截：它内部跨 AI 调用（最长 ~3 分钟），
+            // 若在此处持有 MutexGuard 会卡死所有 GUI Tauri 命令的数据库访问。
+            // run_batch_split 自己按「短锁校验 → 无锁 AI → 短锁落库」分阶段持锁。
+            let outcome = if method == "POST" && url.starts_with("/api/v1/cases/") && url.ends_with("/cards/batch-split") {
+                Some(crate::batch_split_endpoint(&app, &db, &url, auth.as_deref(), &token, &body, now_ms()))
+            } else {
+                None
+            };
+            let outcome = match outcome {
+                Some(outcome) => outcome,
+                None => match db.conn() {
+                    Ok(conn) => handle_request(
+                        &conn,
+                        &token,
+                        &method,
+                        &url,
+                        auth.as_deref(),
+                        &body,
+                        now_ms(),
+                    ),
+                    Err(err) => ApiOutcome::error(500, &err),
+                },
             };
 
             if outcome.data_changed {
@@ -512,7 +515,7 @@ pub(crate) fn extract_bar_ref(raw_text: &str) -> Option<i64> {
         let next_ok = j >= bytes.len() || !is_word(bytes[j]);
         if prev_ok && j > digits_start && next_ok {
             if let Ok(value) = lower[digits_start..j].parse::<i64>() {
-                if value > 0 && best.as_ref().is_none_or(|(pos, _)| bar_pos < *pos) {
+                if value > 0 && value <= 1440 && best.as_ref().is_none_or(|(pos, _)| bar_pos < *pos) {
                     best = Some((bar_pos, value));
                 }
             }
@@ -545,7 +548,7 @@ pub(crate) fn extract_bar_ref(raw_text: &str) -> Option<i64> {
             continue;
         }
         if let Ok(value) = digits.parse::<i64>() {
-            if value > 0 && best.as_ref().is_none_or(|(found, _)| pos < *found) {
+            if value > 0 && value <= 1440 && best.as_ref().is_none_or(|(found, _)| pos < *found) {
                 best = Some((pos, value));
             }
         }
@@ -671,8 +674,8 @@ fn create_case_card(
             let parsed = value
                 .as_i64()
                 .ok_or_else(|| "invalid barRef: must be an integer".to_string())?;
-            if parsed < 1 {
-                return Err("invalid barRef: must be a positive integer".to_string());
+            if !(1..=1440).contains(&parsed) {
+                return Err("invalid barRef: must be between 1 and 1440".to_string());
             }
             Some(parsed)
         }
@@ -755,21 +758,25 @@ fn update_case_card(
     Ok((updated, true))
 }
 
-/// 删除卡片（软删，备份可恢复）：清理误录/拆错的卡。连带软删其附件。
+/// 删除卡片（软删，备份可恢复）：清理误录/拆错的卡。连带软删其附件（同一事务）。
 fn delete_case_card(conn: &Connection, case_id: &str, card_id: &str) -> Result<(Value, bool), String> {
     db::read_record_by_id(conn, "caseCards", card_id)?
         .filter(|card| card.get("caseId").and_then(Value::as_str) == Some(case_id))
         .ok_or_else(|| format!("case card not found: {card_id}"))?;
-    conn.execute(
+    let tx = conn
+        .unchecked_transaction()
+        .map_err(|err| err.to_string())?;
+    tx.execute(
         "UPDATE case_cards SET deleted_at = unixepoch() * 1000 WHERE id = ?1 AND deleted_at IS NULL",
         params![card_id],
     )
     .map_err(|err| err.to_string())?;
-    conn.execute(
+    tx.execute(
         "UPDATE attachments SET deleted_at = unixepoch() * 1000 WHERE owner_type = 'case-card' AND owner_id = ?1 AND deleted_at IS NULL",
         params![card_id],
     )
     .map_err(|err| err.to_string())?;
+    tx.commit().map_err(|err| err.to_string())?;
     Ok((json!({ "deleted": true, "cardId": card_id }), true))
 }
 

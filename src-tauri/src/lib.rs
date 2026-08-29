@@ -249,11 +249,12 @@ mod tests {
             json!({ "id": "case-1", "accountId": "acct-1", "periodId": "period-1", "title": "T", "status": "active", "provenance": "forward", "tagIds": [], "createdAt": 1, "updatedAt": 1 }),
         )
         .unwrap();
+        let db = db::Db::from_conn(conn);
 
         // 无 AppHandle（单测）→ AI 不可用 → 退化为完整单卡，绝不丢原文；barRef 机械提取
         let long_text = "现在是 BAR 120，这根 K 线收了长上影，我看到区间上沿又一次失败了。下一根直接砸下来，突破了昨天的低点。再下一根缩量回抽，没有跟随的空头。我决定继续等一个更干净的入场位置再说。";
         let (cards, changed) = futures::executor::block_on(run_batch_split(
-            None, &conn, "case-1", "pre-entry", long_text, None, "bs-test-1", 1000,
+            None, &db, "case-1", "pre-entry", long_text, None, "bs-test-1", 1000,
         ))
         .unwrap();
         assert!(changed);
@@ -264,28 +265,35 @@ mod tests {
 
         // 幂等重放：同 clientRequestId 返回已创建的卡，不再新增
         let (replayed, changed) = futures::executor::block_on(run_batch_split(
-            None, &conn, "case-1", "pre-entry", long_text, None, "bs-test-1", 2000,
+            None, &db, "case-1", "pre-entry", long_text, None, "bs-test-1", 2000,
         ))
         .unwrap();
         assert!(!changed);
         assert_eq!(replayed.len(), 1);
 
-        let all = db::read_case_cards_for_case(&conn, "case-1").unwrap();
+        let all = db::read_case_cards_for_case(&db.conn().unwrap(), "case-1").unwrap();
         assert_eq!(all.len(), 1);
 
         // 校验：非法 clientRequestId / 未知 Case / 非法 phase
         assert!(futures::executor::block_on(run_batch_split(
-            None, &conn, "case-1", "pre-entry", "内容", None, "非法 id!", 3000,
+            None, &db, "case-1", "pre-entry", "内容", None, "非法 id!", 3000,
         ))
         .is_err());
         assert!(futures::executor::block_on(run_batch_split(
-            None, &conn, "case-404", "pre-entry", "内容", None, "bs-x", 3000,
+            None, &db, "case-404", "pre-entry", "内容", None, "bs-x", 3000,
         ))
         .is_err());
         assert!(futures::executor::block_on(run_batch_split(
-            None, &conn, "case-1", "invalid", "内容", None, "bs-y", 3000,
+            None, &db, "case-1", "invalid", "内容", None, "bs-y", 3000,
         ))
         .is_err());
+
+        // 同 clientRequestId 换文本重放 → 拒绝（与 POST /cards 的 409 immutable 对齐）
+        let conflict = futures::executor::block_on(run_batch_split(
+            None, &db, "case-1", "pre-entry", "完全不同的另一段话，长得足够长的那种内容", None, "bs-test-1", 4000,
+        ));
+        assert!(conflict.is_err());
+        assert!(conflict.unwrap_err().contains("already exists"));
     }
 
     fn suggestion(action: &str, price: Option<f64>, quote: &str) -> ai::ParsedSuggestion {
@@ -837,6 +845,11 @@ pub(crate) async fn run_execution_suggestions(
     };
 
     let messages = ai::build_suggestion_messages(&context);
+    // analyzedAt 取发起时刻：AI 期间新增/编辑的卡片才不会被误判为「总结前」
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0);
     ai::log_provider_event(app, format!("checking execution suggestions for case {case_id} with {model}"));
     let content = ai::chat_completion_with_retry(&provider, &model, &messages).await?;
     let card_pairs: Vec<(String, String)> = cards
@@ -850,11 +863,6 @@ pub(crate) async fn run_execution_suggestions(
         .collect();
     let parsed = ai::parse_execution_suggestions(&content, &card_pairs)?;
     let deduped = dedup_suggestions_against_trade(parsed, &trade);
-
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_millis() as u64)
-        .unwrap_or(0);
 
     // 写回前重读 Case：只替换 aiExecutionSuggestions 字段，不回滚并发修改（标题等）
     let conn = db.conn()?;
@@ -1025,9 +1033,11 @@ async fn ai_suggest_bindings(app: AppHandle, context: String, candidate_count: u
 /// 批量语音拆卡（0.3.0）：一大段口语原文按 K 线锚点 AI 拆成多张卡，直接落库（流畅优先，
 /// 不做预览——拆错了用删卡/改字收拾）。机械校验失败或 AI 不可用时整体退化为一张完整卡，
 /// 绝不丢原文。幂等：clientRequestId 首段存在时视为重放，原样返回已创建的卡。
+/// 锁纪律：校验/落库各持一次短 DB 锁，AI 调用期间不持锁——这把锁与所有 GUI Tauri
+/// 命令共享，跨 AI 持有会卡死主窗口（90s 超时 + 重试最长 ~3 分钟）。
 pub(crate) async fn run_batch_split(
     app: Option<&AppHandle>,
-    conn: &rusqlite::Connection,
+    db: &db::Db,
     case_id: &str,
     phase: &str,
     raw_text: &str,
@@ -1035,38 +1045,43 @@ pub(crate) async fn run_batch_split(
     client_request_id: &str,
     now: u64,
 ) -> Result<(Vec<Value>, bool), String> {
-    if db::read_record_by_id(conn, "cases", case_id)?.is_none() {
-        return Err(format!("case not found: {case_id}"));
-    }
-    const PHASES: [&str; 5] = ["pre-entry", "entry", "intermediate", "closing", "reflection"];
-    if !PHASES.contains(&phase) {
-        return Err(format!("invalid phase: {phase}; must be one of {PHASES:?}"));
-    }
-    if raw_text.trim().is_empty() {
-        return Err("request body is missing valid rawText".to_string());
-    }
-    if !client_request_id
-        .chars()
-        .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
-        || client_request_id.len() > 48
+    // 阶段 1（短锁）：校验 + 幂等重放探测
     {
-        return Err("invalid clientRequestId: use 1-48 characters of letters, digits, '-' or '_'".to_string());
-    }
-
-    // 幂等重放：{rid}-0 已存在 → 收集 {rid}-{i} 直到断档
-    let replay_first = format!("{client_request_id}-0");
-    if let Some(first) = db::read_record_by_id(conn, "caseCards", &replay_first)? {
-        let mut replayed = vec![first];
-        for index in 1.. {
-            match db::read_record_by_id(conn, "caseCards", &format!("{client_request_id}-{index}"))? {
-                Some(card) => replayed.push(card),
-                None => break,
-            }
+        let conn = db.conn()?;
+        if db::read_record_by_id(&conn, "cases", case_id)?.is_none() {
+            return Err(format!("case not found: {case_id}"));
         }
-        return Ok((replayed, false));
+        const PHASES: [&str; 5] = ["pre-entry", "entry", "intermediate", "closing", "reflection"];
+        if !PHASES.contains(&phase) {
+            return Err(format!("invalid phase: {phase}; must be one of {PHASES:?}"));
+        }
+        if raw_text.trim().is_empty() {
+            return Err("request body is missing valid rawText".to_string());
+        }
+        if !client_request_id
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
+            || client_request_id.len() > 48
+        {
+            return Err("invalid clientRequestId: use 1-48 characters of letters, digits, '-' or '_'".to_string());
+        }
+        if let Some(replayed) = collect_batch_replay(&conn, client_request_id)? {
+            // 同 id 不同原文 → 与 POST /cards 的 409 immutable 语义对齐
+            let first_text = replayed[0]
+                .get("rawText")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            if !raw_text.contains(first_text) {
+                return Err(format!(
+                    "clientRequestId {client_request_id} already exists with different rawText"
+                ));
+            }
+            return Ok((replayed, false));
+        }
     }
 
-    // 短文本不可能是多卡；无 AppHandle（单测环境）、无默认 Provider 或 AI/解析失败 → 退化为完整单卡
+    // 阶段 2（无锁）：AI 拆分。短文本不可能是多卡；无 AppHandle（单测）、无默认
+    // Provider 或 AI/解析失败 → 退化为完整单卡。
     let single = || vec![ai::ParsedCardSplit {
         bar_ref: api::extract_bar_ref(raw_text),
         text: raw_text.trim().to_string(),
@@ -1091,6 +1106,11 @@ pub(crate) async fn run_batch_split(
         }
     };
 
+    // 阶段 3（短锁）：落库。重验首段存在性——并发同 rid（重试撞上慢请求）直接读回。
+    let conn = db.conn()?;
+    if let Some(replayed) = collect_batch_replay(&conn, client_request_id)? {
+        return Ok((replayed, false));
+    }
     let mut created: Vec<Value> = Vec::new();
     for (index, split) in splits.into_iter().enumerate() {
         let id = format!("{client_request_id}-{index}");
@@ -1110,7 +1130,7 @@ pub(crate) async fn run_batch_split(
                 data["entryDecision"] = json!(decision);
             }
         }
-        db::save_record_in_tx(conn, "caseCards", &id, data.clone())?;
+        db::save_record_in_tx(&conn, "caseCards", &id, data.clone())?;
         created.push(data);
     }
     if let Some(app) = app {
@@ -1119,13 +1139,32 @@ pub(crate) async fn run_batch_split(
     Ok((created, true))
 }
 
+/// 幂等重放收集：{rid}-0 存在 → 依序收集 {rid}-{i} 直到断档。
+fn collect_batch_replay(
+    conn: &rusqlite::Connection,
+    client_request_id: &str,
+) -> Result<Option<Vec<Value>>, String> {
+    let first_id = format!("{client_request_id}-0");
+    let Some(first) = db::read_record_by_id(conn, "caseCards", &first_id)? else {
+        return Ok(None);
+    };
+    let mut replayed = vec![first];
+    for index in 1.. {
+        match db::read_record_by_id(conn, "caseCards", &format!("{client_request_id}-{index}"))? {
+            Some(card) => replayed.push(card),
+            None => break,
+        }
+    }
+    Ok(Some(replayed))
+}
+
 /// REST 批量拆卡入口（由 api server 循环分发；不进 handle_request 路由表——
 /// 它需要 AppHandle 走 AI，而 handle_request 保持无 GUI 依赖、测试二进制可链接）。
 /// 阻塞调用 AI（90s 超时上限；本地 API 单线程，拆分期间其他请求排队——浮窗是
 /// 唯一客户端且本来就在等这次提交）。成功后逐张 spawn 自动分析。
 pub(crate) fn batch_split_endpoint(
     app: &AppHandle,
-    conn: &rusqlite::Connection,
+    db: &db::Db,
     url: &str,
     auth: Option<&str>,
     token: &str,
@@ -1152,7 +1191,7 @@ pub(crate) fn batch_split_endpoint(
         let entry_decision = parsed.get("entryDecision").and_then(Value::as_str).map(str::to_string);
         tauri::async_runtime::block_on(run_batch_split(
             Some(app),
-            conn,
+            db,
             &case_id,
             &phase,
             &raw_text,

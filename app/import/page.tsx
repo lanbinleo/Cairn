@@ -811,9 +811,8 @@ export default function ImportPage() {
                             <span className="text-xs text-muted-foreground">未找到 Case</span>
                             <BindingSuggestForTrade
                               trade={trade}
-                              onBound={() => {
-                                const binding = caseBindings.find((item) => item.tradeId === trade.id)
-                                if (!binding) return
+                              onBound={(binding) => {
+                                if (binding.tradeId !== trade.id) return
                                 setMatchRows((prev) => prev.map((row) => (row.tradeId === trade.id ? { ...row, boundCaseId: binding.caseId } : row)))
                               }}
                             />

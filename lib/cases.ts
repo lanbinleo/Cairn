@@ -65,6 +65,9 @@ export function caseCardDigest(card: CaseCard): string | null {
   return digest && !isCaseCardAnalysisStale(card) ? digest : null
 }
 
+/** 提取结果与手工输入/REST PUT 同界：BAR 按 UTC 日重置，一天最多 1440 根。 */
+const MAX_BAR_NUMBER = 1440
+
 export function extractExplicitBarRef(rawText: string): number | undefined {
   const refs: Array<{ index: number; value: number }> = []
   const patterns = [
@@ -74,7 +77,7 @@ export function extractExplicitBarRef(rawText: string): number | undefined {
   for (const pattern of patterns) {
     for (const match of rawText.matchAll(pattern)) {
       const value = Number(match[1])
-      if (Number.isInteger(value) && value > 0) refs.push({ index: match.index ?? Number.MAX_SAFE_INTEGER, value })
+      if (Number.isInteger(value) && value > 0 && value <= MAX_BAR_NUMBER) refs.push({ index: match.index ?? Number.MAX_SAFE_INTEGER, value })
     }
   }
   return refs.sort((a, b) => a.index - b.index)[0]?.value

@@ -399,7 +399,7 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
   }, [caseCards])
 
   /** 删除卡片（软删，备份可恢复）：用户调整权的一部分，用于清理误录/拆错的卡。
-   *  「原文不可改写」约束的是 AI，不是用户。 */
+   *  「原文不可改写」约束的是 AI，不是用户。同时清掉指向该卡的 pending 建议（证据悬空）。 */
   const deleteCaseCard = useCallback((cardId: string): void => {
     const card = caseCards.find((item) => item.id === cardId)
     if (!card) return
@@ -409,7 +409,11 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
     setCases((prev) =>
       prev.map((caseRecord) => {
         if (caseRecord.id !== card.caseId) return caseRecord
-        const next = { ...caseRecord, updatedAt: now }
+        let next = { ...caseRecord, updatedAt: now }
+        if (caseRecord.aiExecutionSuggestions) {
+          const suggestions = caseRecord.aiExecutionSuggestions.suggestions.filter((suggestion) => suggestion.cardId !== cardId)
+          next = { ...next, aiExecutionSuggestions: { ...caseRecord.aiExecutionSuggestions, suggestions } }
+        }
         void saveLocalRecord('cases', next)
         return next
       }),
@@ -501,8 +505,10 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
     const period = trade ? current.periods.find((item) => item.id === trade.periodId) : undefined
     const symbol = trade ? current.symbols.find((item) => item.id === trade.symbolId) : undefined
     const context = buildCaseSummaryContext({ caseRecord, cards, trade, account, period, symbol })
+    // analyzedAt 取发起时刻：AI 期间（几十秒）新建/编辑的卡片才会正确标「总结过期」
+    const startedAt = Date.now()
     const summary = await summarizeCaseRemote(context, instruction)
-    const withMeta: CaseSummary = { ...summary, analyzedAt: Date.now() }
+    const withMeta: CaseSummary = { ...summary, analyzedAt: startedAt }
     setCases((prev) => prev.map((item) => {
       if (item.id !== caseId) return item
       const next = { ...item, aiSummary: withMeta }

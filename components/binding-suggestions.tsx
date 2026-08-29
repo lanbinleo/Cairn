@@ -8,7 +8,7 @@ import { Button } from '@/components/ui/button'
 import { bindingContextForCase, bindingContextForTrade, zipBindingSuggestions, type BindingSuggestion } from '@/lib/binding-suggestions'
 import { suggestBindings } from '@/lib/local-db'
 import { useCairn } from '@/lib/store'
-import type { Trade, TradeCase } from '@/lib/types'
+import type { CaseTradeBinding, Trade, TradeCase } from '@/lib/types'
 import { cn } from '@/lib/utils'
 
 const CONFIDENCE_LABEL: Record<string, string> = {
@@ -17,26 +17,23 @@ const CONFIDENCE_LABEL: Record<string, string> = {
   low: '低',
 }
 
-function SuggestionRows<T>({
+function SuggestionRows<T extends { id: string }>({
   suggestions,
   label,
-  sublabel,
   onBind,
   binding,
 }: {
   suggestions: BindingSuggestion<T>[]
   label: (candidate: T) => string
-  sublabel?: (candidate: T) => string
   onBind: (candidate: T) => void
   binding: boolean
 }) {
   return (
     <div className="flex flex-col gap-1.5">
-      {suggestions.map((item, index) => (
-        <div key={index} className="flex flex-wrap items-center gap-2 rounded-lg border border-amber-500/25 bg-amber-500/5 px-3 py-2">
+      {suggestions.map((item) => (
+        <div key={item.candidate.id} className="flex flex-wrap items-center gap-2 rounded-lg border border-amber-500/25 bg-amber-500/5 px-3 py-2">
           <div className="min-w-0 flex-1">
             <p className="truncate text-sm font-medium">{label(item.candidate)}</p>
-            {sublabel && <p className="truncate text-xs text-muted-foreground">{sublabel(item.candidate)}</p>}
             <p className="mt-0.5 text-xs text-muted-foreground">{item.reason}</p>
           </div>
           <Badge variant="secondary" className="shrink-0">匹配 {CONFIDENCE_LABEL[item.confidence] ?? item.confidence}</Badge>
@@ -50,8 +47,9 @@ function SuggestionRows<T>({
 /**
  * AI 找 Case（给一笔 Trade 推荐未绑定 Case）：候选机械预筛（同账户/未绑定/时间距离），
  * AI 排序给理由，点「关联」才建立绑定。用在 Trade 页 Case Tab 与导入第三步。
+ * onBound 回传新建立的 binding（导入页据此更新行状态，避免读 stale 闭包）。
  */
-export function BindingSuggestForTrade({ trade, onBound }: { trade: Trade; onBound?: () => void }) {
+export function BindingSuggestForTrade({ trade, onBound }: { trade: Trade; onBound?: (binding: CaseTradeBinding) => void }) {
   const { cases, caseCards, caseBindings, createCaseBinding } = useCairn()
   const [open, setOpen] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -81,9 +79,9 @@ export function BindingSuggestForTrade({ trade, onBound }: { trade: Trade; onBou
   async function bind(caseRecord: TradeCase) {
     setBinding(true)
     try {
-      await createCaseBinding(caseRecord.id, trade.id)
+      const created = await createCaseBinding(caseRecord.id, trade.id)
       setOpen(false)
-      onBound?.()
+      onBound?.(created)
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause))
     } finally {
@@ -116,7 +114,7 @@ export function BindingSuggestForTrade({ trade, onBound }: { trade: Trade; onBou
 }
 
 /** AI 找 Trade（给一个 Case 推荐未绑定 Trade），用在 Case 页 Trade Binding 卡。 */
-export function BindingSuggestForCase({ caseRecord, onBound }: { caseRecord: TradeCase; onBound?: () => void }) {
+export function BindingSuggestForCase({ caseRecord, onBound }: { caseRecord: TradeCase; onBound?: (binding: CaseTradeBinding) => void }) {
   const { trades, caseCards, caseBindings, createCaseBinding } = useCairn()
   const [open, setOpen] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -147,9 +145,9 @@ export function BindingSuggestForCase({ caseRecord, onBound }: { caseRecord: Tra
   async function bind(trade: Trade) {
     setBinding(true)
     try {
-      await createCaseBinding(caseRecord.id, trade.id)
+      const created = await createCaseBinding(caseRecord.id, trade.id)
       setOpen(false)
-      onBound?.()
+      onBound?.(created)
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause))
     } finally {

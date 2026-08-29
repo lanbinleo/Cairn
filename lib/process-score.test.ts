@@ -1,6 +1,21 @@
 import { describe, expect, it } from 'vitest'
 
+import { extractExplicitBarRef } from './cases'
 import { firstNumberIn, firstPlausibleNumberIn } from './process-score'
+
+describe('extractExplicitBarRef', () => {
+  it('取最早出现的显式引用', () => {
+    expect(extractExplicitBarRef('BAR41 之后看到回调')).toBe(41)
+    expect(extractExplicitBarRef('先犹豫了一下，然后 bar #38 收了长上影')).toBe(38)
+    expect(extractExplicitBarRef('第 42 根 K 线跌破区间')).toBe(42)
+    expect(extractExplicitBarRef('没有锚点')).toBeUndefined()
+  })
+
+  it('越界引用（>1440）不参与——语音误识别的 2000 不落库', () => {
+    expect(extractExplicitBarRef('BAR 2000 的时候我还不知道')).toBeUndefined()
+    expect(extractExplicitBarRef('BAR 1440 是今天的最后一根')).toBe(1440)
+  })
+})
 
 describe('firstNumberIn', () => {
   it('取第一个数字（含小数与负号）', () => {
