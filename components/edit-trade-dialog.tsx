@@ -158,9 +158,20 @@ function canSaveExecution(execution: Execution) {
   return isManagementExecutionAction(execution.action) && Number.isFinite(execution.price)
 }
 
-export function EditTradeDialog({ trade, openRequest }: { trade: Trade; openRequest?: number }) {
+export function EditTradeDialog({
+  trade,
+  openRequest,
+  prefill,
+}: {
+  trade: Trade
+  openRequest?: number
+  /** 外部要求打开并预填一条 Execution 草稿（如 AI 补录建议的「修改后添加」）。
+   *  nonce 变化触发；execution 为草稿行，打开后用户可改可取消。 */
+  prefill?: { execution: Execution; nonce: number } | null
+}) {
   const { updateTrade, deleteTrade, tagDefs, createTag, setTradeStatus } = useCairn()
   const [open, setOpen] = useState(false)
+  const [activeTab, setActiveTab] = useState('basic')
 
   /* 表单状态：打开时从 trade 初始化 */
   const [note, setNote] = useState(trade.note ?? '')
@@ -184,8 +195,22 @@ export function EditTradeDialog({ trade, openRequest }: { trade: Trade; openRequ
     if (openRequest == null || openRequest === prevOpenRequestRef.current) return
     prevOpenRequestRef.current = openRequest
     resetForm()
+    setActiveTab('basic')
     setOpen(true)
   }, [openRequest])
+
+  /* 预填草稿（AI 补录建议 → 修改后添加）：重置表单、追加草稿行、跳到 Executions 页 */
+  const prevPrefillNonceRef = useRef(prefill?.nonce)
+  useEffect(() => {
+    if (prefill == null || prefill.nonce === prevPrefillNonceRef.current) return
+    prevPrefillNonceRef.current = prefill.nonce
+    resetForm()
+    const draft = editableExecution({ ...prefill.execution })
+    setExecutionRows((prev) => [...prev, draft])
+    setExpandedExecutionIds(new Set([draft.id]))
+    setActiveTab('executions')
+    setOpen(true)
+  }, [prefill])
 
   function resetForm() {
     setNote(trade.note ?? '')
@@ -389,7 +414,7 @@ export function EditTradeDialog({ trade, openRequest }: { trade: Trade; openRequ
           <DialogDescription>整理基本信息、复盘备注与 executions</DialogDescription>
         </DialogHeader>
 
-        <Tabs defaultValue="basic">
+        <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as string)}>
           <TabsList>
             <TabsTrigger value="basic">基本信息</TabsTrigger>
             <TabsTrigger value="executions">Executions</TabsTrigger>

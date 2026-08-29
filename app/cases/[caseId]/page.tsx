@@ -6,6 +6,8 @@ import { Archive, ArrowLeft, Link2, Plus, Trash2, WandSparkles } from 'lucide-re
 
 import { CaseTagBadge } from '@/components/case-tag-badge'
 import { CaseCardTimeline } from '@/components/case-card-timeline'
+import { CaseSummaryCard } from '@/components/case-summary-card'
+import { BindingSuggestForCase } from '@/components/binding-suggestions'
 import { ManageCaseTagsDialog } from '@/components/manage-case-tags-dialog'
 import { RelativeTime } from '@/components/relative-time'
 import { Badge } from '@/components/ui/badge'
@@ -26,6 +28,7 @@ import {
   caseProvenanceLabel,
   caseStatusLabel,
   displayPhaseForCaseCard,
+  extractExplicitBarRef,
 } from '@/lib/cases'
 import { draftCaseTitle } from '@/lib/local-db'
 import { useCairn } from '@/lib/store'
@@ -62,6 +65,7 @@ export default function CaseDetailPage() {
   const [phase, setPhase] = useState<CaseCardPhase>('pre-entry')
   const [entryDecision, setEntryDecision] = useState<CaseEntryDecision>('pending')
   const [barNumber, setBarNumber] = useState('')
+  const [barError, setBarError] = useState<string | null>(null)
   const [rawText, setRawText] = useState('')
   const [newCardOpen, setNewCardOpen] = useState(false)
   const [titleDrafting, setTitleDrafting] = useState(false)
@@ -90,17 +94,32 @@ export default function CaseDetailPage() {
   const period = periods.find((item) => item.id === activeCase.periodId)
 
   function submitCard() {
-    const parsedBar = Number(barNumber)
-    if (!rawText.trim() || !Number.isInteger(parsedBar) || parsedBar < 1) return
+    const text = rawText.trim()
+    if (!text) return
+    const trimmedBar = barNumber.trim()
+    let parsedBar: number | null = null
+    if (trimmedBar !== '') {
+      const parsed = Number(trimmedBar)
+      if (!Number.isInteger(parsed) || parsed < 1 || parsed > 1440) {
+        setBarError('BAR 需为 1–1440 的整数（语音误识别的大数字请核对）')
+        return
+      }
+      setBarError(null)
+      parsedBar = parsed
+    } else {
+      // 留空时从原文机械提取（与浮窗/REST 行为一致）；提取不到就按缺 BAR 保存
+      parsedBar = extractExplicitBarRef(text) ?? null
+    }
     createCaseCard({
       caseId: activeCase.id,
       phase,
-      rawText,
+      rawText: text,
       barRef: parsedBar,
       entryDecision: phase === 'entry' ? entryDecision : undefined,
     })
     setRawText('')
     setBarNumber('')
+    setBarError(null)
     setEntryDecision('pending')
   }
 
@@ -211,6 +230,13 @@ export default function CaseDetailPage() {
             </CardContent>
           </Card>
 
+          <CaseSummaryCard
+            caseRecord={caseRecord}
+            cards={cards}
+            variant={boundTrade ? 'compact' : 'full'}
+            trade={boundTrade}
+          />
+
           <Card>
             <CardHeader className="flex flex-row flex-wrap items-center justify-between gap-2">
               <div className="flex flex-col gap-1.5">
@@ -253,9 +279,26 @@ export default function CaseDetailPage() {
                   </Field>
                 )}
                 <Field>
-                  <FieldLabel htmlFor="case-card-bar">BAR</FieldLabel>
-                  <Input id="case-card-bar" type="number" min="1" step="1" value={barNumber} onChange={(event) => setBarNumber(event.target.value)} placeholder="例如 201" />
-                  <FieldDescription>一张 Card 只对应一个 BAR；Closing 和 Reflection 也请填写对应的复盘 BAR。</FieldDescription>
+                  <FieldLabel htmlFor="case-card-bar">BAR（可留空）</FieldLabel>
+                  <Input
+                    id="case-card-bar"
+                    type="number"
+                    min="1"
+                    step="1"
+                    max="1440"
+                    value={barNumber}
+                    onChange={(event) => {
+                      setBarNumber(event.target.value)
+                      setBarError(null)
+                    }}
+                    placeholder="例如 201"
+                    aria-invalid={barError != null}
+                  />
+                  {barError ? (
+                    <p className="text-sm text-destructive" role="alert">{barError}</p>
+                  ) : (
+                    <FieldDescription>留空时自动提取原文里的 BAR（BAR38 / 第 42 根 K 线）；提取不到按缺 BAR 保存，后续可补。</FieldDescription>
+                  )}
                 </Field>
                 <Textarea
                   rows={7}
@@ -264,7 +307,7 @@ export default function CaseDetailPage() {
                   placeholder="可以直接使用系统语音输入法。例：现在是 BAR38，我看到……"
                 />
                 <div className="flex justify-end">
-                  <Button disabled={!rawText.trim() || !barNumber} onClick={submitCard}><Plus data-icon="inline-start" />保存 Card</Button>
+                  <Button disabled={!rawText.trim()} onClick={submitCard}><Plus data-icon="inline-start" />保存 Card</Button>
                 </div>
               </CardContent>
             )}
@@ -336,6 +379,7 @@ export default function CaseDetailPage() {
                 <div className="flex flex-col gap-2 text-sm text-muted-foreground">
                   <Archive className="size-5" />
                   <span>尚未关联 Trade。可在 Trade 详情页的 Case 面板中选择本 Case 建立关联。</span>
+                  <BindingSuggestForCase caseRecord={caseRecord} />
                 </div>
               )}
             </CardContent>

@@ -35,6 +35,27 @@ export function firstNumberIn(text?: string | number): number | null {
   return match ? Number(match[0]) : null
 }
 
+/**
+ * 取第一个与参考价同一数量级的数字，防止 K 线序号（"64 号 K 线"）、盈亏倍数
+ * （"2~3 倍"）被当成价格写进计划字段（生产数据真实出现过 initialTakeProfit=2、
+ * initialEntryPrice=64）。无参考价时退化为 firstNumberIn。
+ */
+export function firstPlausibleNumberIn(
+  text: string | number | undefined,
+  referencePrice: number | null,
+): number | null {
+  if (text == null) return null
+  const numbers = String(text).match(/-?\d+(?:\.\d+)?/g)?.map(Number) ?? []
+  if (numbers.length === 0) return null
+  if (referencePrice == null || !Number.isFinite(referencePrice) || referencePrice <= 0) {
+    return numbers[0]
+  }
+  return (
+    numbers.find((value) => value > 0 && value >= referencePrice / 10 && value <= referencePrice * 10)
+      ?? null
+  )
+}
+
 export function deriveProcessFacts(trade: Trade, cards: CaseCard[]): ProcessScoreComputed {
   const fills = [...trade.executions]
     .filter((execution) => isPositionExecutionAction(execution.action) && execution.price != null)
@@ -49,8 +70,10 @@ export function deriveProcessFacts(trade: Trade, cards: CaseCard[]): ProcessScor
   const memoMissing = entryCard?.aiAnalysis?.missingFields ?? null
   const memoScore = memoMissing == null ? null : Math.max(0, 2 - memoMissing.length)
 
-  const stopFromMemo = memo?.stopLoss ? firstNumberIn(memo.stopLoss.value) : null
-  const targetFromMemo = memo?.target ? firstNumberIn(memo.target.value) : null
+  // memo 值里挑价格时以实际入场价为数量级参照（防 K 线号/倍数污染 plannedRR）
+  const priceReference = entryPrice != null && entryPrice > 0 ? entryPrice : null
+  const stopFromMemo = memo?.stopLoss ? firstPlausibleNumberIn(memo.stopLoss.value, priceReference) : null
+  const targetFromMemo = memo?.target ? firstPlausibleNumberIn(memo.target.value, priceReference) : null
   const stopPrice = trade.initialStopLoss ?? stopFromMemo
   const targetPrice = trade.initialTakeProfit ?? targetFromMemo
 

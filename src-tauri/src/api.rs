@@ -270,17 +270,28 @@ pub fn start_server(app: AppHandle) {
 
             let token = current_token(&app);
             let db = app.state::<db::Db>();
-            let outcome = match db.conn() {
-                Ok(conn) => handle_request(
-                    &conn,
-                    &token,
-                    &method,
-                    &url,
-                    auth.as_deref(),
-                    &body,
-                    now_ms(),
-                ),
-                Err(err) => ApiOutcome::error(500, &err),
+            // 批量拆卡在取 DB 锁之前拦截：它内部跨 AI 调用（最长 ~3 分钟），
+            // 若在此处持有 MutexGuard 会卡死所有 GUI Tauri 命令的数据库访问。
+            // run_batch_split 自己按「短锁校验 → 无锁 AI → 短锁落库」分阶段持锁。
+            let outcome = if method == "POST" && url.starts_with("/api/v1/cases/") && url.ends_with("/cards/batch-split") {
+                Some(crate::batch_split_endpoint(&app, &db, &url, auth.as_deref(), &token, &body, now_ms()))
+            } else {
+                None
+            };
+            let outcome = match outcome {
+                Some(outcome) => outcome,
+                None => match db.conn() {
+                    Ok(conn) => handle_request(
+                        &conn,
+                        &token,
+                        &method,
+                        &url,
+                        auth.as_deref(),
+                        &body,
+                        now_ms(),
+                    ),
+                    Err(err) => ApiOutcome::error(500, &err),
+                },
             };
 
             if outcome.data_changed {
@@ -289,6 +300,12 @@ pub fn start_server(app: AppHandle) {
                 if method == "POST" && url.starts_with("/api/v1/cases/") && url.ends_with("/cards") {
                     if let Some(card_id) = outcome.body.get("id").and_then(Value::as_str) {
                         crate::ai::spawn_auto_analysis(&app, card_id.to_string());
+                    }
+                }
+                // 绑定建立后自动检查持仓管理补录建议（Case 此刻才拿得到 Trade 上下文）
+                if method == "POST" && url == "/api/v1/bindings" {
+                    if let Some(case_id) = outcome.body.get("caseId").and_then(Value::as_str) {
+                        crate::ai::spawn_auto_suggestions(&app, case_id.to_string());
                     }
                 }
             }
@@ -334,7 +351,17 @@ fn token_matches(expected: &str, provided: &str) -> bool {
         == 0
 }
 
-fn error_status(message: &str) -> u16 {
+/// 供 server 循环层分发批量拆卡时的鉴权（与 handle_request 同规则）。
+pub(crate) fn authorized(token: &str, auth: Option<&str>) -> bool {
+    matches!(bearer_token(auth).map(|value| token_matches(token, value)), Some(true))
+}
+
+/// 供 server 循环层分发批量拆卡时的错误码映射。
+pub(crate) fn error_status(message: &str) -> u16 {
+    error_status_impl(message)
+}
+
+fn error_status_impl(message: &str) -> u16 {
     if message.contains("immutable")
         || message.contains("UNIQUE constraint failed")
         || message.contains("already exists")
@@ -432,8 +459,12 @@ pub(crate) fn handle_request(
         ("POST", ["api", "v1", "cases", case_id, "cards"]) => {
             run(|| create_case_card(conn, case_id, &parsed_body, now))
         }
+        // 批量拆卡（POST /cases/:id/cards/batch-split）由 server 循环层分发，见 start_server
         ("PUT", ["api", "v1", "cases", case_id, "cards", card_id]) => {
             run(|| update_case_card(conn, case_id, card_id, &parsed_body))
+        }
+        ("DELETE", ["api", "v1", "cases", case_id, "cards", card_id]) => {
+            run(|| delete_case_card(conn, case_id, card_id))
         }
         ("POST", ["api", "v1", "bindings"]) => run(|| create_binding(conn, &parsed_body, now)),
         ("DELETE", ["api", "v1", "bindings", binding_id]) => {
@@ -462,7 +493,7 @@ fn require_str(body: &Value, key: &str) -> Result<String, String> {
 
 /// 与前端 lib/cases.ts 的 extractExplicitBarRef 同规则：
 /// "bar #38" / "BAR41" / "第 42 根 K 线"，取最早出现的引用。
-fn extract_bar_ref(raw_text: &str) -> Option<i64> {
+pub(crate) fn extract_bar_ref(raw_text: &str) -> Option<i64> {
     let mut best: Option<(usize, i64)> = None;
     let lower = raw_text.to_lowercase();
 
@@ -484,7 +515,7 @@ fn extract_bar_ref(raw_text: &str) -> Option<i64> {
         let next_ok = j >= bytes.len() || !is_word(bytes[j]);
         if prev_ok && j > digits_start && next_ok {
             if let Ok(value) = lower[digits_start..j].parse::<i64>() {
-                if value > 0 && best.as_ref().is_none_or(|(pos, _)| bar_pos < *pos) {
+                if value > 0 && value <= 1440 && best.as_ref().is_none_or(|(pos, _)| bar_pos < *pos) {
                     best = Some((bar_pos, value));
                 }
             }
@@ -517,7 +548,7 @@ fn extract_bar_ref(raw_text: &str) -> Option<i64> {
             continue;
         }
         if let Ok(value) = digits.parse::<i64>() {
-            if value > 0 && best.as_ref().is_none_or(|(found, _)| pos < *found) {
+            if value > 0 && value <= 1440 && best.as_ref().is_none_or(|(found, _)| pos < *found) {
                 best = Some((pos, value));
             }
         }
@@ -643,8 +674,8 @@ fn create_case_card(
             let parsed = value
                 .as_i64()
                 .ok_or_else(|| "invalid barRef: must be an integer".to_string())?;
-            if parsed < 1 {
-                return Err("invalid barRef: must be a positive integer".to_string());
+            if !(1..=1440).contains(&parsed) {
+                return Err("invalid barRef: must be between 1 and 1440".to_string());
             }
             Some(parsed)
         }
@@ -725,6 +756,28 @@ fn update_case_card(
     let updated = db::read_record_by_id(conn, "caseCards", card_id)?
         .ok_or_else(|| format!("case card not found after update: {card_id}"))?;
     Ok((updated, true))
+}
+
+/// 删除卡片（软删，备份可恢复）：清理误录/拆错的卡。连带软删其附件（同一事务）。
+fn delete_case_card(conn: &Connection, case_id: &str, card_id: &str) -> Result<(Value, bool), String> {
+    db::read_record_by_id(conn, "caseCards", card_id)?
+        .filter(|card| card.get("caseId").and_then(Value::as_str) == Some(case_id))
+        .ok_or_else(|| format!("case card not found: {card_id}"))?;
+    let tx = conn
+        .unchecked_transaction()
+        .map_err(|err| err.to_string())?;
+    tx.execute(
+        "UPDATE case_cards SET deleted_at = unixepoch() * 1000 WHERE id = ?1 AND deleted_at IS NULL",
+        params![card_id],
+    )
+    .map_err(|err| err.to_string())?;
+    tx.execute(
+        "UPDATE attachments SET deleted_at = unixepoch() * 1000 WHERE owner_type = 'case-card' AND owner_id = ?1 AND deleted_at IS NULL",
+        params![card_id],
+    )
+    .map_err(|err| err.to_string())?;
+    tx.commit().map_err(|err| err.to_string())?;
+    Ok((json!({ "deleted": true, "cardId": card_id }), true))
 }
 
 fn create_binding(conn: &Connection, body: &Value, now: u64) -> Result<(Value, bool), String> {
@@ -1114,6 +1167,58 @@ mod tests {
             cards.body["cards"][0]["rawText"],
             "BAR 38 做多，止损位 5295"
         );
+    }
+
+    #[test]
+    fn delete_card_soft_deletes_and_404s_on_mismatch() {
+        let conn = setup_conn();
+        call(
+            &conn,
+            "POST",
+            "/api/v1/cases",
+            json!({ "id": "case-1", "title": "T", "accountId": "acct-1", "periodId": "period-1" }),
+        );
+        let created = call(
+            &conn,
+            "POST",
+            "/api/v1/cases/case-1/cards",
+            json!({ "id": "card-1", "phase": "intermediate", "rawText": "持有观察" }),
+        );
+        assert_eq!(created.status, 200);
+
+        let deleted = call(&conn, "DELETE", "/api/v1/cases/case-1/cards/card-1", json!({}));
+        assert_eq!(deleted.status, 200);
+        assert!(deleted.data_changed);
+        assert_eq!(deleted.body["deleted"], true);
+
+        // 列表不再包含；重复删除 → 404
+        let cards = call(&conn, "GET", "/api/v1/cases/case-1/cards", json!({}));
+        assert_eq!(cards.body["cards"].as_array().map(Vec::len), Some(0));
+        assert_eq!(
+            call(&conn, "DELETE", "/api/v1/cases/case-1/cards/card-1", json!({})).status,
+            404
+        );
+
+        // 卡挂在别的 Case 下 → 404，原卡不受影响
+        call(
+            &conn,
+            "POST",
+            "/api/v1/cases",
+            json!({ "id": "case-2", "title": "T2", "accountId": "acct-1", "periodId": "period-1" }),
+        );
+        let other = call(
+            &conn,
+            "POST",
+            "/api/v1/cases/case-2/cards",
+            json!({ "id": "card-2", "phase": "entry", "rawText": "BAR10 做多" }),
+        );
+        assert_eq!(other.status, 200);
+        assert_eq!(
+            call(&conn, "DELETE", "/api/v1/cases/case-1/cards/card-2", json!({})).status,
+            404
+        );
+        let cards = call(&conn, "GET", "/api/v1/cases/case-2/cards", json!({}));
+        assert_eq!(cards.body["cards"].as_array().map(Vec::len), Some(1));
     }
 
     #[test]

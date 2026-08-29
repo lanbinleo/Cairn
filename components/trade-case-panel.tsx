@@ -6,6 +6,8 @@ import { ArrowRight, Link2, Plus, Unlink } from 'lucide-react'
 
 import { CaseTagBadge } from '@/components/case-tag-badge'
 import { CaseCardTimeline } from '@/components/case-card-timeline'
+import { CaseExecutionSuggestions } from '@/components/case-execution-suggestions'
+import { BindingSuggestForTrade } from '@/components/binding-suggestions'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -14,7 +16,7 @@ import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { CASE_PROVENANCE_OPTIONS, caseProvenanceLabel, caseStatusLabel } from '@/lib/cases'
 import { useCairn } from '@/lib/store'
-import type { CaseProvenance, Trade } from '@/lib/types'
+import type { CaseProvenance, Execution, Trade } from '@/lib/types'
 
 export function TradeCaseSummaryCard({ trade, onOpenCaseTab }: { trade: Trade; onOpenCaseTab: () => void }) {
   const { cases, caseCards, caseBindings } = useCairn()
@@ -58,7 +60,22 @@ export function TradeCaseSummaryCard({ trade, onOpenCaseTab }: { trade: Trade; o
   )
 }
 
-export function TradeCasePanel({ trade, targetCardId }: { trade: Trade; targetCardId?: string }) {
+export function TradeCasePanel({
+  trade,
+  targetCardId,
+  cardTimes,
+  onJumpCard,
+  onSuggestEditPrefill,
+}: {
+  trade: Trade
+  targetCardId?: string
+  /** 卡片 → 换算时间（Trade 页的 resolveCaseCardTimesForTrade 结果），供建议区显示时间 */
+  cardTimes?: Map<string, { time: number; invalid: boolean }>
+  /** 建议证据跳卡（Case Tab 内定位） */
+  onJumpCard?: (cardId: string) => void
+  /** 建议的「修改后添加」：由 Trade 页打开 EditTradeDialog 并预填草稿 */
+  onSuggestEditPrefill?: (draft: Execution) => void
+}) {
   const {
     cases,
     caseCards,
@@ -170,6 +187,7 @@ export function TradeCasePanel({ trade, targetCardId }: { trade: Trade; targetCa
                 <Button disabled={!selectedCaseId || busy} onClick={() => void bindExistingCase()}>
                   <Link2 data-icon="inline-start" />关联已有 Case
                 </Button>
+                <BindingSuggestForTrade trade={trade} />
               </>
             ) : (
               <div className="rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">
@@ -242,6 +260,15 @@ export function TradeCasePanel({ trade, targetCardId }: { trade: Trade; targetCa
         )}
         {error && <p className="px-6 pb-4 text-sm text-destructive" role="alert">{error}</p>}
       </Card>
+
+      <CaseExecutionSuggestions
+        trade={trade}
+        caseRecord={caseRecord}
+        cards={cards}
+        cardTimes={cardTimes ?? new Map()}
+        onJumpCard={(cardId) => onJumpCard?.(cardId)}
+        onEditPrefill={(_suggestion, draft) => onSuggestEditPrefill?.(draft)}
+      />
 
       <CaseCardTimeline cards={cards} showMoveToCase={false} targetCardId={targetCardId} />
     </div>

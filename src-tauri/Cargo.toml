@@ -1,6 +1,6 @@
 [package]
 name = "cairn"
-version = "0.2.3"
+version = "0.3.0"
 description = "CAIRN trading journal desktop app"
 authors = ["CAIRN"]
 license = ""
@@ -27,3 +27,6 @@ tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-process = "2.3.1"
 tauri-plugin-updater = "2.10.1"
 tiny_http = "0.12"
+
+[dev-dependencies]
+futures = "0.3"

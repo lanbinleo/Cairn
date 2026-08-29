@@ -300,6 +300,12 @@ pub struct AiSettings {
     /// 新 Card（浮窗/REST）提交后自动后台识别；失败重试一次后静默记日志
     #[serde(default = "default_true")]
     pub auto_analyze: bool,
+    /// 绑定建立后自动跑持仓管理补录建议、导入后自动跑关联推荐（0.3.0）
+    #[serde(default = "default_true")]
+    pub auto_suggest: bool,
+    /// Trade 关闭时自动生成整单总结（0.3.0）
+    #[serde(default = "default_true")]
+    pub auto_summary: bool,
 }
 
 fn default_true() -> bool {
@@ -308,7 +314,7 @@ fn default_true() -> bool {
 
 impl Default for AiSettings {
     fn default() -> Self {
-        Self { auto_analyze: true }
+        Self { auto_analyze: true, auto_suggest: true, auto_summary: true }
     }
 }
 
@@ -362,10 +368,32 @@ pub fn spawn_auto_analysis(app: &AppHandle, card_id: String) {
     });
 }
 
+/// 绑定建立后的后台建议检查入口：开关关闭时跳过；完成后 emit data-changed，
+/// 失败只记日志。前端 UI 建立绑定走 Tauri 命令自行触发，这里只服务 REST 路径。
+pub fn spawn_auto_suggestions(app: &AppHandle, case_id: String) {
+    if !settings(app).auto_suggest {
+        return;
+    }
+    let app = app.clone();
+    std::thread::spawn(move || {
+        let db = app.state::<crate::db::Db>();
+        let result =
+            tauri::async_runtime::block_on(crate::run_execution_suggestions(&app, &db, &case_id));
+        match result {
+            Ok(case) => {
+                let _ = app.emit(crate::api::DATA_CHANGED_EVENT, &case);
+            }
+            Err(err) => {
+                diagnostics::app_log(&app, format!("auto suggestions failed for case {case_id}: {err}"));
+            }
+        }
+    });
+}
+
 // ==================== CaseCard 结构化提取 ====================
 
-pub const PROMPT_VERSION: &str = "0.2.1-prompt-2";
-pub const ANALYSIS_SCHEMA_VERSION: &str = "0.2.1-schema-2";
+pub const PROMPT_VERSION: &str = "0.3.0-prompt-3";
+pub const ANALYSIS_SCHEMA_VERSION: &str = "0.3.0-schema-3";
 
 pub const LABEL_TYPES: [&str; 11] = [
     "market-context",
@@ -407,36 +435,45 @@ fn phase_label(phase: &str) -> String {
         .unwrap_or_else(|| phase.to_string())
 }
 
-pub fn build_analysis_messages(phase: &str, raw_text: &str) -> Vec<ChatMessage> {
+/// context 为空字符串表示无背景资料。背景资料由 lib.rs 组装（品种/绑定交易/前情卡片），
+/// 只用于辅助理解；quote 与 digest 的信息边界在系统提示中硬性约束。
+pub fn build_analysis_messages(phase: &str, raw_text: &str, context: &str) -> Vec<ChatMessage> {
     let system = "你是一份交易日志的整理秘书。交易者在盘中用口语随手记录了一张卡片，你把它整理成结构化 JSON 供后续复盘使用。你绝不改写、总结或润色原文。
 
 硬性规则：
 - 只输出一个 JSON 对象，不要 markdown 代码块，不要任何解释文字。
-- 所有 quote 字段必须逐字复制原文片段（一字不差，可以截短但不许改字）。原文中没有的信息一律填 null，不许推断补写。
+- 所有 quote 字段必须逐字复制本卡原文片段（一字不差，可以截短但不许改字）。原文中没有的信息一律填 null，不许推断补写。
+- 用户消息可能附带「背景资料」（品种、绑定交易的成交记录、同 Case 前几张卡），它们只用于辅助理解，不是本卡内容：quote 一律来自本卡原文；digest 里不得出现只有背景资料才有的信息。
 - 标签 type 只能从给定清单中选择。
 
 输出字段：
-- barRef：原文提到的 K 线序号，{\"bar\": <正整数>, \"quote\": <原文>}。如 BAR41、bar #38、第 42 根 K 线。没有则 null。
+- digest：不超过 30 个字的一句话，概括这张卡在讲什么（观察/动作/计划/情绪/复盘），供列表快速浏览。保留最有信息量的一个点，忽略语气词和语音识别噪音。
+- barRef：本卡陈述时刻的 K 线序号，{\"bar\": <正整数>, \"quote\": <原文>}。如 BAR41、bar #38、第 42 根 K 线、开头裸数字（「89，价格…」）。开头通常就是陈述时刻；对更早 K 线的回顾性引用不算锚点。没有则 null。
 - labels：按原文出现顺序为关键片段打标签，数组每项 {\"type\": \"...\", \"quote\": \"<原文片段>\"}。type 清单：
   market-context=市场背景；setup-condition=形态成立条件；observed-pattern=观察到的结构或价格行为；inference=推断与预期；entry-plan=入场计划；invalidation=失效条件；risk-plan=止损目标与风险计划；position-management=持仓管理（加减仓、移动止损、离场计划）；action=已发生的动作；emotion=情绪；reflection=复盘与自我评价
 - memo：仅当阶段为「入场」时输出，其余阶段必须为 null。八字段每项为 {\"value\": ..., \"quote\": <原文>} 或 null：
   - direction：做多为 \"long\"，做空为 \"short\"
-  - entryPrice：计划入场价或入场触发方式（字符串，如 \"90360 附近\"、\"突破 90830 追入\"）
-  - stopLoss：止损价或止损位置（字符串）
-  - target：目标位或预期路径（字符串）
+  - entryPrice：计划入场价或入场触发方式。原文给出明确价格时 value 用纯数字字符串（如 \"90360\"）；否则保留口语描述（如 \"突破 90830 追入\"）。K 线序号、盈亏倍数、仓位百分比不是价格，不要写成数字。
+  - stopLoss：止损价或止损位置，价格写法规则同 entryPrice
+  - target：目标位或预期路径，价格写法规则同 entryPrice
   - confidence：信心百分比 0-100 的数字（口语\"七成\"=70；原文没有明确数字则 null）
   - invalidation：什么情况说明这笔判断错了（字符串）
   - rejectedAlternatives：考虑过但放弃的其他方案（字符串）
   - emotion：可选，情绪词（字符串）
 
 输出示例（阶段为入场时）：
-{\"barRef\":{\"bar\":38,\"quote\":\"BAR38\"},\"labels\":[{\"type\":\"observed-pattern\",\"quote\":\"第三次测试区间上沿失败收回\"},{\"type\":\"risk-plan\",\"quote\":\"止损放在区间上沿上方\"}],\"memo\":{\"direction\":{\"value\":\"short\",\"quote\":\"我做空\"},\"entryPrice\":{\"value\":\"41600 下方追入\",\"quote\":\"41600 下方追入\"},\"stopLoss\":{\"value\":\"区间上沿上方\",\"quote\":\"止损放在区间上沿上方\"},\"target\":null,\"confidence\":{\"value\":70,\"quote\":\"胜率我给七成\"},\"invalidation\":null,\"rejectedAlternatives\":null,\"emotion\":null}}";
-    let user = format!(
+{\"digest\":\"第三次测试区间上沿失败，决定做空\",\"barRef\":{\"bar\":38,\"quote\":\"BAR38\"},\"labels\":[{\"type\":\"observed-pattern\",\"quote\":\"第三次测试区间上沿失败收回\"},{\"type\":\"risk-plan\",\"quote\":\"止损放在区间上沿上方\"}],\"memo\":{\"direction\":{\"value\":\"short\",\"quote\":\"我做空\"},\"entryPrice\":{\"value\":\"41600\",\"quote\":\"41600 下方追入\"},\"stopLoss\":{\"value\":\"41750\",\"quote\":\"止损放在区间上沿上方\"},\"target\":null,\"confidence\":{\"value\":70,\"quote\":\"胜率我给七成\"},\"invalidation\":null,\"rejectedAlternatives\":null,\"emotion\":null}}";
+    let mut user = String::new();
+    if !context.trim().is_empty() {
+        user.push_str(context.trim_end());
+        user.push_str("\n\n");
+    }
+    user.push_str(&format!(
         "阶段：{}（{}）\n原文：\n{}",
         phase_label(phase),
         phase,
         raw_text
-    );
+    ));
     vec![ChatMessage::system(system), ChatMessage::user(user)]
 }
 
@@ -524,6 +561,14 @@ pub fn parse_analysis(
     let parsed: Value =
         serde_json::from_str(json_text).map_err(|err| format!("model output is not JSON: {err}"))?;
 
+    // digest 是提炼句而非原文引用，不做逐字校验；只做非空与长度防御。
+    let digest = parsed
+        .get("digest")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(|text| text.chars().take(40).collect::<String>());
+
     let bar_ref = match parsed.get("barRef") {
         Some(Value::Object(map)) => {
             let bar = map.get("bar").and_then(Value::as_i64).filter(|bar| *bar >= 1);
@@ -604,11 +649,347 @@ pub fn parse_analysis(
         "model": model,
         "providerId": provider_id,
         "analyzedAt": now,
+        "digest": digest,
         "barRef": bar_ref,
         "labels": labels,
         "memo": memo,
         "missingFields": missing_fields,
     }))
+}
+
+// ==================== 持仓管理动作补录建议 ====================
+
+pub const SUGGESTION_PROMPT_VERSION: &str = "0.3.0-suggest-1";
+
+/// 建议只覆盖管理类动作（编辑器规范集：stop / target-moved / order-edit）。
+/// 开仓、加仓、减仓、平仓以交易所导入的成交为准，AI 一律不碰。
+
+pub fn build_suggestion_messages(context: &str) -> Vec<ChatMessage> {
+    let system = "你是交易日志的持仓管理核对员。交易者在一个 Case 里用口语记录了全过程，这个 Case 绑定了一笔 Trade（成交记录来自交易所导出）。你的任务：找出「交易者明确说过要做、但成交记录里没有对应落库」的持仓管理动作，作为补录建议。
+
+只关注管理类动作：移动/设置止损、移动/设置止盈、修改挂单价格、撤销挂单。开仓、加仓、减仓、平仓一律不管（成交以交易所记录为准）。
+
+判定规则：
+- 只提取「明确说了价格或明确位置」且语气是「已经决定 / 已经发生」的动作（如 我决定、我把、挪到、改到、挂到、撤掉）。
+- 明确的否定不提取（如 不适合移动止盈止损、不向下移动也不向上移动、保持不变）；纯假设不提取（如 如果…就…）。
+- 每条建议必须给出当时原话 quote（逐字复制、一字不差）和来源卡片编号 cardIndex（用户消息里每张卡开头的编号）。
+- 已落库动作里已有同类且价格基本相同的动作、或与初始止损/止盈价相同的，不要建议（视为已覆盖）。
+- price 是明确的数字价格；只说了位置没说价格（如 挪到成本线下方）时 price 为 null，并在 anchorText 里写位置描述。信息不足的动作宁可不建议。
+
+只输出一个 JSON 对象，不要 markdown 代码块和解释：
+{\"suggestions\":[{\"cardIndex\":<卡片编号>,\"action\":\"stop|target|order-edit\",\"price\":<数字或null>,\"anchorText\":\"<位置描述或null>\",\"orderType\":\"stop-loss|take-profit|limit 或null\",\"signal\":\"<不超过12字的简短理由>\",\"quote\":\"<逐字原话>\"}]}
+没有可建议的就输出 {\"suggestions\":[]}。";
+    vec![ChatMessage::system(system), ChatMessage::user(context.to_string())]
+}
+
+/// 单条建议的规范化结果（尚未与既有 Execution 去重，去重在 lib.rs 做机械比对）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct ParsedSuggestion {
+    pub card_id: String,
+    pub action: String,
+    pub order_type: String,
+    pub price: Option<f64>,
+    pub anchor_text: Option<String>,
+    pub signal: Option<String>,
+    pub quote: String,
+}
+
+/// 校验并规范化模型输出：quote 逐字来自对应卡片原文、action/orderType 白名单、
+/// price 必须是正的有限数、cardIndex 必须落在卡片清单内。不可信的一律丢弃。
+pub fn parse_execution_suggestions(
+    content: &str,
+    cards: &[(String, String)],
+) -> Result<Vec<ParsedSuggestion>, String> {
+    let json_text = extract_json_object(content);
+    let parsed: Value =
+        serde_json::from_str(json_text).map_err(|err| format!("model output is not JSON: {err}"))?;
+    let empty: Vec<Value> = Vec::new();
+    let items = parsed
+        .get("suggestions")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or(empty);
+
+    let mut out: Vec<ParsedSuggestion> = Vec::new();
+    for item in items {
+        let index = match item.get("cardIndex").and_then(Value::as_i64) {
+            Some(index) if index >= 1 && (index as usize) <= cards.len() => index as usize - 1,
+            _ => continue,
+        };
+        let (card_id, raw_text) = &cards[index];
+        let Some(quote) = item
+            .get("quote")
+            .and_then(Value::as_str)
+            .filter(|quote| !quote.trim().is_empty() && raw_text.contains(quote))
+        else {
+            continue;
+        };
+        let action = match item.get("action").and_then(Value::as_str) {
+            Some("stop") => "stop",
+            Some("target") => "target-moved",
+            Some("order-edit") => "order-edit",
+            _ => continue,
+        };
+        let price = item
+            .get("price")
+            .and_then(Value::as_f64)
+            .filter(|price| price.is_finite() && *price > 0.0);
+        let anchor_text = item
+            .get("anchorText")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+            .map(|text| text.chars().take(40).collect::<String>());
+        // 没有价格也没有位置描述的建议无法落地，丢弃
+        if price.is_none() && anchor_text.is_none() {
+            continue;
+        }
+        let order_type = match item.get("orderType").and_then(Value::as_str) {
+            Some("stop-loss") => "stop-loss",
+            Some("take-profit") => "take-profit",
+            Some("limit") => "limit",
+            Some("stop") => "stop",
+            Some("market") => "market",
+            _ => match action {
+                "stop" => "stop-loss",
+                "target-moved" => "take-profit",
+                _ => "limit",
+            },
+        };
+        let signal = item
+            .get("signal")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+            .map(|text| text.chars().take(24).collect::<String>());
+        let suggestion = ParsedSuggestion {
+            card_id: card_id.clone(),
+            action: action.to_string(),
+            order_type: order_type.to_string(),
+            price,
+            anchor_text,
+            signal,
+            quote: quote.to_string(),
+        };
+        if !out.contains(&suggestion) {
+            out.push(suggestion);
+        }
+        if out.len() >= 8 {
+            break;
+        }
+    }
+    Ok(out)
+}
+
+// ==================== 整单 AI 总结 ====================
+
+pub const SUMMARY_PROMPT_VERSION: &str = "0.3.0-summary-1";
+
+pub fn build_summary_messages(context: &str) -> Vec<ChatMessage> {
+    let system = "你是交易日志的复盘整理员。交易者在一个 Case 里用口语记录了一笔交易从观察到离场的全过程，你把它整理成一份复盘总结。
+
+硬性规则：
+- 只输出一个 JSON 对象，不要 markdown 代码块和解释。
+- 只使用背景资料里的信息；资料里没有的不许编造。数字（价格、盈亏、时间）以资料中的数字为准；卡片叙述与数字冲突时，并列陈述不裁决。
+- 只描述事实与偏差，不打分、不下对错结论、不给建议——过程评价永远留给交易者本人。
+- 概括交易者的口语时要忠实原意，语气词和语音识别噪音直接忽略。
+
+输出字段：
+- overview：一句话定性这笔交易（不超过 40 字），例如「BTC 区间突破追多，测距止盈 1:1 离场」。
+- narrative：2-4 段复盘叙述（用 \\n\\n 分段），按时间线串联：计划怎么形成 → 怎么入场 → 持仓中怎么管理 → 怎么离场，穿插交易者的关键判断与情绪。引用原话时用「」。
+- highlights：3-5 条要点字符串数组，每条一个独立事实或偏差（计划价 vs 实际价、说过但没落库的动作、情绪信号等）。
+- missing：资料中缺失或对不上的信息数组（如无止损记录、开平仓时间缺失），没有则空数组。";
+    vec![ChatMessage::system(system), ChatMessage::user(context.to_string())]
+}
+
+pub fn parse_summary(content: &str) -> Result<Value, String> {
+    let json_text = extract_json_object(content);
+    let parsed: Value =
+        serde_json::from_str(json_text).map_err(|err| format!("model output is not JSON: {err}"))?;
+
+    let overview = parsed
+        .get("overview")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(|text| text.chars().take(60).collect::<String>())
+        .ok_or_else(|| "model output has no overview".to_string())?;
+    let narrative = parsed
+        .get("narrative")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(|text| text.chars().take(4000).collect::<String>())
+        .unwrap_or_default();
+    let cap_list = |value: &Value, item_cap: usize, max_items: usize| -> Vec<String> {
+        value
+            .as_array()
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::trim)
+                    .filter(|text| !text.is_empty())
+                    .take(max_items)
+                    .map(|text| text.chars().take(item_cap).collect::<String>())
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let highlights = cap_list(parsed.get("highlights").unwrap_or(&Value::Null), 120, 6);
+    let missing = cap_list(parsed.get("missing").unwrap_or(&Value::Null), 80, 6);
+
+    Ok(json!({
+        "schemaVersion": SUMMARY_PROMPT_VERSION,
+        "promptVersion": SUMMARY_PROMPT_VERSION,
+        "overview": overview,
+        "narrative": narrative,
+        "highlights": highlights,
+        "missing": missing,
+    }))
+}
+
+// ==================== Case↔Trade 关联推荐 ====================
+
+pub const BINDING_PROMPT_VERSION: &str = "0.3.0-binding-1";
+
+pub fn build_binding_messages(context: &str) -> Vec<ChatMessage> {
+    let system = "你是交易日志的关联核对员。一个 Case（交易者的口语记录集合）可能对应一笔 Trade（交易所成交记录）。用户给了一个目标和一份候选清单，你找出最可能匹配的候选并说明理由。
+
+规则：
+- 只输出一个 JSON 对象，不要 markdown 代码块和解释：{\"matches\":[{\"candidateIndex\":<候选编号>,\"reason\":\"<不超过 60 字的理由，指出方向、价格区间、时间上的吻合点>\",\"confidence\":\"high|medium|low\"}]}
+- 按可能性从高到低排列，最多 3 条；都不匹配就输出 {\"matches\":[]}。
+- 只依据资料判断，资料里没有的信息不要编造。方向相反、价格数量级差很远、时间差很大的候选不要选。";
+    vec![ChatMessage::system(system), ChatMessage::user(context.to_string())]
+}
+
+pub fn parse_binding_matches(content: &str, candidate_count: usize) -> Result<Vec<Value>, String> {
+    let json_text = extract_json_object(content);
+    let parsed: Value =
+        serde_json::from_str(json_text).map_err(|err| format!("model output is not JSON: {err}"))?;
+    let empty: Vec<Value> = Vec::new();
+    let items = parsed
+        .get("matches")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or(empty);
+    let mut out: Vec<Value> = Vec::new();
+    for item in items {
+        let index = match item.get("candidateIndex").and_then(Value::as_i64) {
+            Some(index) if index >= 1 && (index as usize) <= candidate_count => index,
+            _ => continue,
+        };
+        if out.iter().any(|kept| kept["candidateIndex"].as_i64() == Some(index)) {
+            continue;
+        }
+        let confidence = match item.get("confidence").and_then(Value::as_str) {
+            Some("high") => "high",
+            Some("medium") => "medium",
+            Some("low") => "low",
+            _ => "low",
+        };
+        let reason = item
+            .get("reason")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+            .map(|text| text.chars().take(80).collect::<String>())
+            .unwrap_or_default();
+        out.push(json!({ "candidateIndex": index, "reason": reason, "confidence": confidence }));
+        if out.len() >= 3 {
+            break;
+        }
+    }
+    Ok(out)
+}
+
+// ==================== 批量语音拆卡 ====================
+
+pub const SPLIT_PROMPT_VERSION: &str = "0.3.0-split-1";
+
+pub fn build_split_messages(phase: &str, raw_text: &str) -> Vec<ChatMessage> {
+    let system = "你是交易日志的拆卡员。交易者用语音一口气讲了几根 K 线的观察，一口气提交了一大段原文。你把这一大段按 K 线锚点拆成多张卡片。
+
+规则：
+- 只输出一个 JSON 对象，不要 markdown 代码块和解释：{\"cards\":[{\"barRef\":<正整数或null>,\"text\":\"<原文逐字连续片段>\"}]}
+- text 必须逐字复制原文（一字不差；可以去掉段首尾的语气词和空白，但不许改字、不许翻译、不许润色），各段按原文出现顺序排列，合起来覆盖全部有信息的内容。
+- 锚点识别的写法：「120号K线」「120 号 K 线」「BAR 120」「bar #120」「第 42 根 K 线」「现在是 254」，以及整段开头的裸数字（「89，价格选择去上涨」）。
+- 「下一根 / 再下一根 / 下一根 K 线」= 上一个 barRef + 1；交易者再次显式报号后以新报的号为准。
+- 回顾更早 K 线的引用不是锚点，以陈述时刻的 K 线为准。
+- 完全没提到 K 线的段落 barRef 为 null。
+- 整段只在讲一根 K 线（或一件事）就输出一张卡，不要硬拆。";
+    let user = format!("记录阶段：{}（{}）\n原文：\n{}", phase_label(phase), phase, raw_text);
+    vec![ChatMessage::system(system), ChatMessage::user(user)]
+}
+
+/// 一段拆分结果：barRef 可缺失，text 是原文逐字片段。
+#[derive(Debug, Clone, PartialEq)]
+pub struct ParsedCardSplit {
+    pub bar_ref: Option<i64>,
+    pub text: String,
+}
+
+/// 机械校验模型拆分：每段 text 必须是原文的子串且按序不重叠；barRef 合法（1-1440）
+/// 且出现时单调递增（违反则该段 barRef 置空）；段数 ≤20；各段合计需覆盖原文 ≥85%
+/// 的非空白字符——模型漏句时宁可整体 Err（调用方退化为完整单卡），绝不静默丢内容。
+pub fn parse_card_splits(content: &str, raw_text: &str) -> Result<Vec<ParsedCardSplit>, String> {
+    let json_text = extract_json_object(content);
+    let parsed: Value =
+        serde_json::from_str(json_text).map_err(|err| format!("model output is not JSON: {err}"))?;
+    let empty: Vec<Value> = Vec::new();
+    let items = parsed
+        .get("cards")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or(empty);
+    if items.is_empty() {
+        return Err("model output has no cards".to_string());
+    }
+    if items.len() > 20 {
+        return Err(format!("model output has {} cards (max 20)", items.len()));
+    }
+
+    let mut out: Vec<ParsedCardSplit> = Vec::new();
+    let mut search_from = 0usize;
+    let mut last_bar: Option<i64> = None;
+    for item in &items {
+        let text = item
+            .get("text")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+            .ok_or_else(|| "split text is empty".to_string())?;
+        let position = raw_text[search_from..]
+            .find(text)
+            .map(|offset| search_from + offset)
+            .ok_or_else(|| format!("split text is not a verbatim substring: {text}"))?;
+        search_from = position + text.len();
+
+        let mut bar_ref = item
+            .get("barRef")
+            .and_then(Value::as_i64)
+            .filter(|bar| (1..=1440).contains(bar));
+        if let (Some(bar), Some(last)) = (bar_ref, last_bar) {
+            if bar <= last {
+                bar_ref = None;
+            }
+        }
+        if bar_ref.is_some() {
+            last_bar = bar_ref;
+        }
+        out.push(ParsedCardSplit { bar_ref, text: text.to_string() });
+    }
+
+    // 覆盖率：漏句（哪怕只是开头/结尾）不达标即整体拒绝，退化为完整单卡
+    let non_whitespace = |text: &str| text.chars().filter(|ch| !ch.is_whitespace()).count();
+    let raw_chars = non_whitespace(raw_text);
+    let covered: usize = out.iter().map(|split| non_whitespace(&split.text)).sum();
+    if (covered as f64) < raw_chars as f64 * 0.85 {
+        return Err(format!(
+            "split coverage {covered}/{raw_chars} chars below 85% — content would be lost"
+        ));
+    }
+    Ok(out)
 }
 
 // ==================== Case 标题代拟 ====================
@@ -675,10 +1056,44 @@ mod tests {
 
     #[test]
     fn analysis_messages_carry_phase_and_raw_text() {
-        let messages = build_analysis_messages("entry", RAW);
+        let messages = build_analysis_messages("entry", RAW, "");
         assert_eq!(messages[0].role, "system");
         assert!(messages[1].content.contains("入场"));
         assert!(messages[1].content.contains(RAW));
+        assert!(!messages[1].content.contains("背景资料"), "empty context adds no header");
+    }
+
+    #[test]
+    fn analysis_messages_prepend_context_block() {
+        let context = "背景资料（仅供理解，不是本卡内容）：\n品种：BINANCE BTCUSDT\n绑定交易：做多（持仓中）";
+        let messages = build_analysis_messages("intermediate", RAW, context);
+        let user = &messages[1].content;
+        let context_end = user.find(context).expect("context included verbatim");
+        let phase_at = user.find("阶段：").expect("phase section present");
+        assert!(context_end < phase_at, "context precedes phase/raw text");
+        assert!(user.contains(RAW));
+    }
+
+    #[test]
+    fn parse_analysis_accepts_digest_and_truncates() {
+        let long = "很".repeat(60);
+        let content = format!(r#"{{"digest":"{long}","barRef":null,"labels":[]}}"#);
+        let analysis = parse_analysis("pre-entry", RAW, &content, "m", "p", 1).unwrap();
+        let digest = analysis["digest"].as_str().unwrap();
+        assert_eq!(digest.chars().count(), 40, "digest capped at 40 chars");
+
+        let content = r#"{"digest":"  窄震荡区间等待突破  ","barRef":null,"labels":[]}"#;
+        let analysis = parse_analysis("pre-entry", RAW, content, "m", "p", 1).unwrap();
+        assert_eq!(analysis["digest"], "窄震荡区间等待突破", "digest trimmed");
+    }
+
+    #[test]
+    fn parse_analysis_defaults_missing_digest_to_null() {
+        let content = r#"{"barRef":null,"labels":[]}"#;
+        let analysis = parse_analysis("pre-entry", RAW, content, "m", "p", 1).unwrap();
+        assert!(analysis["digest"].is_null());
+        assert_eq!(analysis["schemaVersion"], ANALYSIS_SCHEMA_VERSION);
+        assert_eq!(analysis["promptVersion"], PROMPT_VERSION);
     }
 
     #[test]
@@ -686,6 +1101,7 @@ mod tests {
         let content = "```json\n{\"barRef\":{\"bar\":38,\"quote\":\"BAR38\"},\"labels\":[{\"type\":\"observed-pattern\",\"quote\":\"第三次测试区间上沿失败收回\"},{\"type\":\"made-up\",\"quote\":\"我做空\"},{\"type\":\"risk-plan\",\"quote\":\"模型编的话\"}],\"memo\":{\"direction\":{\"value\":\"short\",\"quote\":\"我做空\"},\"entryPrice\":{\"value\":\"41600 下方追入\",\"quote\":\"41600 下方追入\"},\"stopLoss\":{\"value\":\"区间上沿上方\",\"quote\":\"止损区间上沿上方\"},\"confidence\":{\"value\":\"70%\",\"quote\":\"胜率我给七成\"},\"target\":null}}\n```";
         let analysis =
             parse_analysis("entry", RAW, content, "test-model", "ai-test", 1).unwrap();
+        assert!(analysis["digest"].is_null(), "no digest in content → null");
         assert_eq!(analysis["barRef"]["bar"], 38);
         let labels = analysis["labels"].as_array().unwrap();
         assert_eq!(labels.len(), 1, "unknown type and non-verbatim quote dropped");
@@ -716,6 +1132,102 @@ mod tests {
     #[test]
     fn parse_analysis_rejects_non_json() {
         assert!(parse_analysis("entry", RAW, "抱歉我不能", "m", "p", 1).is_err());
+    }
+
+    #[test]
+    fn parse_execution_suggestions_validates_and_normalizes() {
+        let raw1 = "BAR152 我决定现在把我的止损价格移动到 90820.36 这个位置";
+        let raw2 = "目前不适合移动止盈止损，也没有什么需要改变的";
+        let cards = vec![
+            ("card-1".to_string(), raw1.to_string()),
+            ("card-2".to_string(), raw2.to_string()),
+        ];
+        let content = r#"{"suggestions":[
+            {"cardIndex":1,"action":"stop","price":90820.36,"anchorText":null,"orderType":null,"signal":"保护利润","quote":"把我的止损价格移动到 90820.36"},
+            {"cardIndex":2,"action":"stop","price":90820.36,"anchorText":null,"orderType":null,"signal":"x","quote":"编的话"},
+            {"cardIndex":3,"action":"target","price":91000,"anchorText":null,"orderType":null,"signal":"y","quote":"BAR152"},
+            {"cardIndex":1,"action":"scale-in","price":1,"anchorText":null,"orderType":null,"signal":"z","quote":"我决定"},
+            {"cardIndex":1,"action":"stop","price":null,"anchorText":"成本线下方","orderType":"stop-loss","signal":"w","quote":"我决定"}
+        ]}"#;
+        let parsed = parse_execution_suggestions(content, &cards).unwrap();
+        // 非逐字 quote、越界 cardIndex、非白名单 action 全部丢弃
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0].card_id, "card-1");
+        assert_eq!(parsed[0].action, "stop");
+        assert_eq!(parsed[0].order_type, "stop-loss", "orderType defaults per action");
+        assert_eq!(parsed[0].price, Some(90820.36));
+        assert_eq!(parsed[0].signal.as_deref(), Some("保护利润"));
+        assert_eq!(parsed[1].price, None);
+        assert_eq!(parsed[1].anchor_text.as_deref(), Some("成本线下方"));
+
+        let empty = parse_execution_suggestions(r#"{"suggestions":[]}"#, &cards).unwrap();
+        assert!(empty.is_empty());
+        assert!(parse_execution_suggestions("我不会", &cards).is_err());
+    }
+
+    #[test]
+    fn summary_parse_validates_and_caps() {
+        let content = r#"{"overview":"BTC 区间突破追多，测距止盈 1:1 离场","narrative":"第一段。\n\n第二段。","highlights":["计划止损 90364，最终止损 90820（有移动）","说过要在 91000 挂止盈，成交记录里没有"],"missing":["复盘卡缺失"]}"#;
+        let summary = parse_summary(content).unwrap();
+        assert_eq!(summary["overview"], "BTC 区间突破追多，测距止盈 1:1 离场");
+        assert_eq!(summary["schemaVersion"], SUMMARY_PROMPT_VERSION);
+        assert_eq!(summary["highlights"].as_array().unwrap().len(), 2);
+        assert_eq!(summary["missing"].as_array().unwrap().len(), 1);
+
+        // overview 缺失 → 报错；空字段数组容忍
+        let content = r#"{"overview":"  ","narrative":"","highlights":[]}"#;
+        assert!(parse_summary(content).is_err());
+        let content = r#"{"overview":"观察记录","narrative":"","highlights":null,"missing":null}"#;
+        let summary = parse_summary(content).unwrap();
+        assert_eq!(summary["highlights"].as_array().unwrap().len(), 0);
+        assert_eq!(summary["narrative"], "");
+    }
+
+    #[test]
+    fn parse_card_splits_validates_substrings_and_bar_monotonic() {
+        let raw = "120号K线收了长上影，上沿又一次失败。下一根直接砸下来，跌破昨天低点。再下一根缩量回抽，空头没有跟随。整体我打算继续等。";
+        let content = r#"{"cards":[
+            {"barRef":120,"text":"120号K线收了长上影，上沿又一次失败。"},
+            {"barRef":121,"text":"下一根直接砸下来，跌破昨天低点。"},
+            {"barRef":119,"text":"再下一根缩量回抽，空头没有跟随。"},
+            {"barRef":null,"text":"整体我打算继续等。"}
+        ]}"#;
+        let splits = parse_card_splits(content, raw).unwrap();
+        assert_eq!(splits.len(), 4);
+        assert_eq!(splits[0].bar_ref, Some(120));
+        assert_eq!(splits[1].bar_ref, Some(121));
+        assert_eq!(splits[2].bar_ref, None, "非递增 barRef 置空");
+        assert_eq!(splits[3].bar_ref, None);
+
+        // 非逐字片段 → 整体 Err（调用方退化为单卡）
+        let bad = r#"{"cards":[{"barRef":1,"text":"模型编的话"}]}"#;
+        assert!(parse_card_splits(bad, raw).is_err());
+        // 乱序片段（后段先于前段出现）→ Err
+        let reversed = r#"{"cards":[{"barRef":2,"text":"再下一根缩量回抽，空头没有跟随。"},{"barRef":1,"text":"120号K线收了长上影，上沿又一次失败。"}]}"#;
+        assert!(parse_card_splits(reversed, raw).is_err());
+        assert!(parse_card_splits("拆不了", raw).is_err());
+    }
+
+    #[test]
+    fn parse_card_splits_rejects_low_coverage() {
+        let raw = "120号K线收了长上影，上沿又一次失败。下一根直接砸下来，跌破昨天低点。再下一根缩量回抽，空头没有跟随。整体来看我打算继续等待，等一个更干净也更明确的入场位置再动手。";
+        // 模型漏掉最后一句（约三分之一内容）→ 覆盖率不足 → 整体 Err，调用方退化为完整单卡
+        let content = r#"{"cards":[
+            {"barRef":120,"text":"120号K线收了长上影，上沿又一次失败。"},
+            {"barRef":121,"text":"下一根直接砸下来，跌破昨天低点。"},
+            {"barRef":122,"text":"再下一根缩量回抽，空头没有跟随。"}
+        ]}"#;
+        let err = parse_card_splits(content, raw).unwrap_err();
+        assert!(err.contains("coverage"), "coverage error, got: {err}");
+
+        // 全覆盖版本通过
+        let full = r#"{"cards":[
+            {"barRef":120,"text":"120号K线收了长上影，上沿又一次失败。"},
+            {"barRef":121,"text":"下一根直接砸下来，跌破昨天低点。"},
+            {"barRef":122,"text":"再下一根缩量回抽，空头没有跟随。"},
+            {"barRef":null,"text":"整体来看我打算继续等待，等一个更干净也更明确的入场位置再动手。"}
+        ]}"#;
+        assert_eq!(parse_card_splits(full, raw).unwrap().len(), 4);
     }
 
     #[test]
@@ -759,7 +1271,7 @@ mod tests {
         let model = provider.default_model.as_deref().expect("no default model");
 
         let text = "BAR38 这里第三次测试区间上沿失败收回，我决定做空，止损放在区间上沿上方 41650，目标先看区间中轨 40800，这个把握我给七成，如果重新站上 41700 说明我判断错了收手，本来还想做多以太但大级别偏空放弃了，说实话有点兴奋";
-        let messages = build_analysis_messages("entry", text);
+        let messages = build_analysis_messages("entry", text, "");
         let output = tauri::async_runtime::block_on(chat_completion(provider, model, &messages))
             .expect("chat completion");
         println!("--- raw model output ---\n{output}\n------------------------");
@@ -792,7 +1304,7 @@ mod tests {
 
         // 故意含糊：41650 既能读成止损也能读成失效条件
         let text = "BAR38 这里跌不动了我想空，41650 我就跑，目标 40800，把握七成";
-        let mut messages = build_analysis_messages("entry", text);
+        let mut messages = build_analysis_messages("entry", text, "");
         messages.push(ChatMessage::user(
             "补充整理要求：41650 是止损价，请放进 stopLoss，不要放进 invalidation。",
         ));

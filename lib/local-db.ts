@@ -2,7 +2,8 @@ import { invoke } from '@tauri-apps/api/core'
 
 import type { CairnStateSnapshot } from './seed'
 import { seedState } from './seed'
-import type { CaseCard } from './types'
+import type { BindingMatch } from './binding-suggestions'
+import type { CaseCard, CaseSummary, TradeCase } from './types'
 
 type CollectionName =
   | 'accounts'
@@ -243,12 +244,40 @@ export async function draftCaseTitle(caseId: string): Promise<string> {
   return invoke<string>('draft_case_title', { caseId })
 }
 
+/** AI 持仓管理补录建议：检查绑定 Trade 的卡片动作覆盖情况，返回更新后的 Case。 */
+export async function suggestCaseExecutions(caseId: string): Promise<TradeCase> {
+  if (!isTauriRuntime()) {
+    throw new Error('AI 建议需要桌面版运行')
+  }
+  return invoke<TradeCase>('suggest_case_executions', { caseId })
+}
+
+/** 整单总结：上下文由前端组装，Rust 只做 AI 管道；返回总结 blob（analyzedAt 由调用方补）。 */
+export async function summarizeCase(context: string, instruction?: string): Promise<CaseSummary> {
+  if (!isTauriRuntime()) {
+    throw new Error('AI 总结需要桌面版运行')
+  }
+  return invoke<CaseSummary>('ai_summarize_case', { context, instruction: instruction ?? null })
+}
+
+/** 关联推荐：AI 只排序+给理由，绑定由用户确认。 */
+export async function suggestBindings(context: string, candidateCount: number): Promise<{ matches: BindingMatch[] }> {
+  if (!isTauriRuntime()) {
+    throw new Error('AI 推荐需要桌面版运行')
+  }
+  return invoke<{ matches: BindingMatch[] }>('ai_suggest_bindings', { context, candidateCount })
+}
+
 export interface AiSettings {
   autoAnalyze: boolean
+  /** 0.3.0：绑定后自动建议 / 导入后自动关联推荐 */
+  autoSuggest?: boolean
+  /** 0.3.0：Trade 关闭时自动整单总结 */
+  autoSummary?: boolean
 }
 
 export async function getAiSettings(): Promise<AiSettings> {
-  if (!isTauriRuntime()) return { autoAnalyze: true }
+  if (!isTauriRuntime()) return { autoAnalyze: true, autoSuggest: true, autoSummary: true }
   return invoke<AiSettings>('get_ai_settings')
 }
 

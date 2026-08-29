@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Cairn 记一笔
 // @namespace    cairn
-// @version      0.2.4
+// @version      0.3.0
 // @description  TradingView 悬浮记录浮窗：口述或打字记录交易思考，实时写入本地 Cairn（127.0.0.1 本地 API）
 // @author       Cairn
 // @match        https://*.tradingview.com/*
@@ -65,6 +65,10 @@
     entryDecision: store.get('entryDecision', 'pending'),
     lastAccountId: store.get('ncAccount', ''),
     lastPeriodId: store.get('ncPeriod', ''),
+    // 最近一次批量拆卡请求（文本未变的重试复用同一 clientRequestId，撞上幂等探针；
+    // 成功或文本变化后作废）。后端超时上限 90s×2（网络类失败重试一次）。
+    lastBatchRequest: null, // { text, id }
+    missingFieldsTick: 0,
   };
 
   const PHASE_META = {
@@ -90,7 +94,8 @@
     return 'http://127.0.0.1:' + state.port + '/api/v1';
   }
 
-  function api(method, path, body) {
+  function api(method, path, body, timeoutMs) {
+    const timeout = timeoutMs || 8000;
     const payload = body == null ? null : JSON.stringify(body);
     const headers = { Authorization: 'Bearer ' + state.token };
     if (payload != null) headers['Content-Type'] = 'application/json';
@@ -102,14 +107,14 @@
           url: baseUrl() + path,
           headers,
           data: payload,
-          timeout: 8000,
+          timeout,
           onload: (res) => resolve({ status: res.status, json: parseJson(res.responseText) }),
           onerror: () => reject(new Error('network')),
           ontimeout: () => reject(new Error('timeout')),
         });
       });
     }
-    return fetch(baseUrl() + path, { method, headers, body: payload })
+    return fetch(baseUrl() + path, { method, headers, body: payload, signal: AbortSignal.timeout(timeout) })
       .then(async (res) => ({ status: res.status, json: parseJson(await res.text()) }))
       .catch(() => { throw new Error('network'); });
   }
@@ -530,8 +535,10 @@
   #cairn-cw-wrap .cw-card.fresh { animation: cw-fresh .5s ease; }
   @keyframes cw-fresh { from { background: rgba(38,166,154,.14); } }
 
-  /* 卡片行内编辑：常驻 ✎ 进入，改 rawText（错字修正，原文进历史）与 barRef（留空清除） */
-  #cairn-cw-wrap .cw-card .mc-edit {
+  /* 卡片行内编辑：常驻 ✎ 进入，改 rawText（错字修正，原文进历史）与 barRef（留空清除）；
+     ✕ 删除整卡（软删，可从备份恢复） */
+  #cairn-cw-wrap .cw-card .mc-edit,
+  #cairn-cw-wrap .cw-card .mc-del {
     background: none; border: none;
     color: var(--text-dim);
     cursor: pointer; font-size: 11px;
@@ -539,6 +546,7 @@
     flex-shrink: 0; margin-left: 4px;
   }
   #cairn-cw-wrap .cw-card .mc-edit:hover { color: var(--text); }
+  #cairn-cw-wrap .cw-card .mc-del:hover { color: var(--red); }
   #cairn-cw-wrap .cw-card.editing { display: flex; flex-direction: column; gap: 6px; }
   #cairn-cw-wrap .cw-card.editing .ec-text {
     width: 100%;
@@ -1070,12 +1078,14 @@
             ${barHtml}
             <span class="mc-time"></span>
             <button type="button" class="mc-edit" title="修改这张卡">✎</button>
+            <button type="button" class="mc-del" title="删除这张卡（可从备份恢复）">✕</button>
           </div>
           <div class="mc-text"></div>`;
         el.querySelector('.mc-phase').textContent = meta.label;
         el.querySelector('.mc-time').textContent = card.createdAt ? fmtTime(card.createdAt) : '';
         el.querySelector('.mc-text').textContent = card.rawText || '';
         el.querySelector('.mc-edit').addEventListener('click', () => startEditCard(card.id));
+        el.querySelector('.mc-del').addEventListener('click', () => deleteCard(card.id));
       }
       list.appendChild(el);
     }
@@ -1155,6 +1165,91 @@
     return hints;
   }
 
+  // Entry 卡提交后轮询 AI 分析结果：missingFields 比 0.2 的正则提示更准，
+  // 到达后替换提示文案；~3s × 5 次后放弃（自动分析关闭/失败时正则提示仍在）。
+  const MEMO_FIELD_LABELS = {
+    direction: '方向',
+    entryPrice: '入场价',
+    stopLoss: '止损',
+    target: '目标',
+    confidence: '置信度',
+    invalidation: '失效条件',
+    rejectedAlternatives: '放弃的方案',
+  };
+
+  function sleep(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  async function pollMissingFields(cardId) {
+    const tip = $('completeness-tip');
+    const caseId = state.caseId; // 切 Case 后本轮作废，不再白拉
+    const tick = ++state.missingFieldsTick; // 并发轮询：只有最新一轮有权写提示
+    for (let attempt = 0; attempt < 5; attempt++) {
+      await sleep(3000);
+      if (!tip.classList.contains('show') || state.caseId !== caseId || tick !== state.missingFieldsTick) return;
+      try {
+        const res = await api('GET', '/cases/' + encodeURIComponent(caseId) + '/cards');
+        if (res.status !== 200 || !res.json || !Array.isArray(res.json.cards)) return;
+        if (tick !== state.missingFieldsTick) return;
+        const card = res.json.cards.find((c) => c.id === cardId);
+        if (!card || !card.aiAnalysis) continue; // 分析还没到，继续等
+        const missing = Array.isArray(card.aiAnalysis.missingFields) ? card.aiAnalysis.missingFields : [];
+        if (missing.length > 0) {
+          $('ct-body').textContent = 'AI 整理：还缺 ' + missing.map((k) => MEMO_FIELD_LABELS[k] || k).join('、') + '（可以补一张卡）';
+        } else {
+          tip.classList.remove('show'); // 字段齐了，撤掉提示
+        }
+        return;
+      } catch {
+        return;
+      }
+    }
+  }
+
+  /* ================= 批量拆卡预检 ================= */
+
+  // 显式 K 线锚点的口语变体（生产语料校准）：「BAR 120」「bar #120」「120号K线」「第 42 根」
+  const ANCHOR_PATTERNS = [
+    /\bbar\s*#?\s*\d+\b/gi,
+    /\d+\s*号\s*k\s*线/gi,
+    /第\s*\d+\s*根/g,
+  ];
+
+  function countExplicitAnchors(text) {
+    let count = 0;
+    for (const pattern of ANCHOR_PATTERNS) {
+      const matches = text.match(pattern);
+      if (matches) count += matches.length;
+    }
+    return count;
+  }
+
+  // 命中批量特征（显式锚点 ≥2，或 ≥1 锚点 + 「下一根」类推进）→ 走 batch-split；
+  // 手动填了 BAR 的提交视为单卡（用户已明确锚点），不拆。
+  function looksLikeBatch(text) {
+    const anchors = countExplicitAnchors(text);
+    if (anchors === 0) return false;
+    if (anchors >= 2) return true;
+    const nexts = (text.match(/下一根/g) || []).length;
+    return nexts >= 1;
+  }
+
+  function makeRequestIds() {
+    return 'bs-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
+  }
+
+  // 同一段文本的批量提交复用同一 clientRequestId：超时后重按提交会命中后端幂等探针，
+  // 返回第一次（可能仍在处理、最终会落库）的结果，而不是重复落一整段卡。
+  function batchRequestIdFor(text) {
+    if (state.lastBatchRequest && state.lastBatchRequest.text === text) {
+      return state.lastBatchRequest.id;
+    }
+    const id = makeRequestIds();
+    state.lastBatchRequest = { text, id };
+    return id;
+  }
+
   /* ================= 提交 Card ================= */
 
   async function submitCard() {
@@ -1172,11 +1267,60 @@
     if (Number.isInteger(manualBar) && manualBar > 0) payload.barRef = manualBar;
     if (state.phase === 'entry') payload.entryDecision = state.entryDecision;
 
+    // 批量语音拆卡：直接拆分落库（不做预览，流畅优先）；拆错了用 ✎/✕ 修正或删除
+    const useBatch = payload.barRef == null && looksLikeBatch(text);
+
     const btn = $('submit-btn');
     state.busy = true;
     btn.disabled = true;
-    btn.textContent = '保存中…';
+    btn.textContent = useBatch ? '拆分中…' : '保存中…';
     try {
+      if (useBatch) {
+        const batchBody = { phase: payload.phase, rawText: text, clientRequestId: batchRequestIdFor(text) };
+        if (payload.entryDecision) batchBody.entryDecision = payload.entryDecision;
+        // 后端超时上限 90s×2（网络类失败自动重试一次）——客户端超时必须更长，
+        // 否则超时重发会在服务端排队后命中幂等探针之前就产生新请求（同文本复用 id 兜底）。
+        let res = await api('POST', '/cases/' + encodeURIComponent(state.caseId) + '/cards/batch-split', batchBody, 200000);
+        if (res.status === 404 || res.status === 405) {
+          res = await api('POST', '/cases/' + encodeURIComponent(state.caseId) + '/cards', payload);
+          res = { status: res.status, json: res.json && res.json.id ? { cards: [res.json] } : res.json };
+        }
+        if (res.status === 401) {
+          state.connected = false;
+          showToast('Token 无效', 'err');
+          showSettings(true);
+          return;
+        }
+        const cards = res.json && Array.isArray(res.json.cards) ? res.json.cards : null;
+        if (res.status !== 200 || !cards) {
+          showToast((res.json && res.json.error) || '拆分失败', 'err');
+          return;
+        }
+        state.lastBatchRequest = null;
+        state.cards = [...cards].reverse().concat(state.cards);
+        renderCards();
+        const first = $('card-list').firstElementChild;
+        if (first) first.classList.add('fresh');
+        ta.value = '';
+        $('bar-input').value = '';
+        // 降级为单卡（AI 不可用/覆盖率不过）时与单卡路径行为一致：entry 正则提示 + AI 轮询
+        if (cards.length === 1) {
+          const hints = checkCompleteness(payload.phase, text);
+          if (hints.length > 0) {
+            $('ct-body').textContent = '还没提到：' + hints.join('、');
+            $('completeness-tip').classList.add('show');
+            if (payload.phase === 'entry') void pollMissingFields(cards[0].id);
+          } else {
+            $('completeness-tip').classList.remove('show');
+          }
+        } else {
+          $('completeness-tip').classList.remove('show');
+        }
+        showToast(cards.length > 1 ? '✓ 已拆成 ' + cards.length + ' 张卡' : '✓ 已保存');
+        ta.focus();
+        return;
+      }
+
       const res = await api('POST', '/cases/' + encodeURIComponent(state.caseId) + '/cards', payload);
       if (res.status === 401) {
         state.connected = false;
@@ -1199,6 +1343,8 @@
       if (hints.length > 0) {
         $('ct-body').textContent = '还没提到：' + hints.join('、');
         $('completeness-tip').classList.add('show');
+        // AI 自动整理通常几秒内到达：用 missingFields 替换正则提示（更准）
+        if (payload.phase === 'entry' && res.json && res.json.id) void pollMissingFields(res.json.id);
       } else {
         $('completeness-tip').classList.remove('show');
       }
@@ -1214,6 +1360,43 @@
   }
 
   /* ================= 修改已登记卡片 ================= */
+
+  // 卡片删除（软删，可从备份恢复）：清理误录/拆错的卡。
+  // 契约：DELETE /cases/{caseId}/cards/{cardId}；0.3.0 起提供，旧后端 404/405 提示升级。
+  async function deleteCard(id) {
+    const card = state.cards.find((c) => c.id === id);
+    if (!card || state.busy) return;
+    if (!window.confirm('删除这张卡片？原文与分析一起移除（可从备份恢复）。')) return;
+    if (!state.connected) {
+      const err = await connect({ silent: true });
+      if (err) { showToast('无法连接 Cairn', 'err'); showSettings(true); return; }
+    }
+    state.busy = true;
+    try {
+      const caseId = card.caseId || state.caseId;
+      const res = await api('DELETE', '/cases/' + encodeURIComponent(caseId) + '/cards/' + encodeURIComponent(id));
+      if (res.status === 401) {
+        state.connected = false;
+        showToast('Token 无效', 'err');
+        showSettings(true);
+        return;
+      }
+      if (res.status === 200) {
+        state.cards = state.cards.filter((c) => c.id !== id);
+        if (state.editingCardId === id) state.editingCardId = '';
+        renderCards();
+        showToast('✓ 已删除');
+      } else if (res.status === 404 || res.status === 405) {
+        showToast('当前 Cairn 版本还不支持删除卡片，请更新 Cairn（0.3.0+）后重试', 'err');
+      } else {
+        showToast((res.json && res.json.error) || '删除失败', 'err');
+      }
+    } catch {
+      showToast('无法连接 Cairn', 'err');
+    } finally {
+      state.busy = false;
+    }
+  }
 
   function startEditCard(id) {
     state.editingCardId = id;

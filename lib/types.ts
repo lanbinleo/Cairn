@@ -84,6 +84,38 @@ export interface CaseTagDef {
   createdAt: number
 }
 
+/** 一条 AI 补录建议（管理类动作候选）。落地与否永远由用户确认。 */
+export interface CaseExecutionSuggestion {
+  id: string
+  /** 编辑器规范集：stop | target-moved | order-edit */
+  action: 'stop' | 'target-moved' | 'order-edit'
+  orderType: OrderType
+  /** 明确数字价格；只说了位置时为空，看 anchorText */
+  price?: number
+  /** 位置描述（如「成本线下方」） */
+  anchorText?: string
+  /** 简短理由（AI 生成，≤12 字） */
+  signal?: string
+  /** 证据：来源卡片 + 逐字原话 + 卡片 BAR */
+  cardId: string
+  quote: string
+  barRef?: number
+  status: 'pending' | 'accepted' | 'dismissed'
+  /** 接受后生成的 Execution id */
+  acceptedExecutionId?: string
+  dismissedAt?: number
+}
+
+/** Case 上的版本化建议派生数据（0.3.0）。重跑按指纹延续 accepted/dismissed。 */
+export interface CaseExecutionSuggestions {
+  schemaVersion: string
+  promptVersion: string
+  model: string
+  providerId: string
+  analyzedAt: number
+  suggestions: CaseExecutionSuggestion[]
+}
+
 /** 一段围绕潜在或已完成 Trade 的连续决策记录。 */
 export interface TradeCase {
   id: string
@@ -95,6 +127,27 @@ export interface TradeCase {
   tagIds: string[]
   createdAt: number
   updatedAt: number
+  /** AI 持仓管理补录建议（绑定 Trade 后生成） */
+  aiExecutionSuggestions?: CaseExecutionSuggestions
+  /** AI 整单总结（Trade 关闭后自动或手动生成） */
+  aiSummary?: CaseSummary
+}
+
+/** AI 整单总结：只摆事实与偏差，不打分不下对错结论。 */
+export interface CaseSummary {
+  schemaVersion: string
+  promptVersion: string
+  model: string
+  providerId: string
+  analyzedAt: number
+  /** 一句话定性 */
+  overview: string
+  /** 2-4 段时间线叙述 */
+  narrative: string
+  /** 3-5 条要点 */
+  highlights: string[]
+  /** 缺失/未落库的信息 */
+  missing: string[]
 }
 
 /** AI 秘书对一段原文的 span 引用标签。quote 必须逐字来自原文。 */
@@ -129,6 +182,8 @@ export interface CaseCardAnalysis {
   model: string
   providerId: string
   analyzedAt: number
+  /** 一句话提炼（0.3.0 schema-3 起）；旧分析无此字段，UI 回退原文截断 */
+  digest?: string | null
   barRef: { bar: number; quote?: string } | null
   labels: CaseCardLabel[]
   memo: CaseCardMemo | null

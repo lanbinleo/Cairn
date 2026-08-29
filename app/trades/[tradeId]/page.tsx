@@ -13,6 +13,7 @@ import { EditTradeDialog } from '@/components/edit-trade-dialog'
 import { TagBadge } from '@/components/tag-badge'
 import { TradeProcessScoreCard } from '@/components/trade-process-score'
 import { TradePlanCompareCard } from '@/components/trade-plan-compare'
+import { CaseSummaryCard } from '@/components/case-summary-card'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
@@ -35,8 +36,8 @@ import { readFileAsDataUrl } from '@/lib/tradingview-import'
 import { createTradeTransferPayload, stringifyTradeTransfer } from '@/lib/trade-transfer'
 import { CHART_TIMEFRAMES, chartTimeframeLabel, chartTimeframeMinutes } from '@/lib/chart-timeframes'
 import { logFrontendError } from '@/lib/frontend-log'
-import { casePhaseLabel } from '@/lib/cases'
-import type { CaseCardPhase, ChartTimeframe } from '@/lib/types'
+import { caseCardDigest, casePhaseLabel } from '@/lib/cases'
+import type { CaseCardPhase, ChartTimeframe, Execution } from '@/lib/types'
 
 type TradeDetailTab = 'overview' | 'case' | 'trade'
 
@@ -71,6 +72,8 @@ export default function TradeDetailPage() {
   const [planPromptOpen, setPlanPromptOpen] = useState(false)
   const [planPrefillHint, setPlanPrefillHint] = useState('')
   const [editOpenRequest, setEditOpenRequest] = useState(0)
+  /* AI 补录建议「修改后添加」：nonce 触发 EditTradeDialog 打开并预填草稿 */
+  const [suggestPrefill, setSuggestPrefill] = useState<{ execution: Execution; nonce: number } | null>(null)
   const planPromptShownRef = useRef<string | null>(null)
   const { getTrade, getAccount, getPeriod, getSymbol, getNotesMentioningTrade, symbolLabel, setTradeStatus, updateTrade, createNote, createImageAttachment, deleteAttachment, getChartCandles, tagDefs, cases, caseCards, caseBindings, prefillTradePlanFromBoundCase } = useCairn()
   /* 缺失计划价提醒：每笔 Trade 每次访问最多弹一次；「忽略」持久化，「待会儿提醒」下次访问再弹 */
@@ -225,7 +228,8 @@ export default function TradeDetailPage() {
         kind: 'case' as const,
         time,
         title: `${casePhaseLabel[card.phase]}${resolved?.invalid ? ' · BAR 异常' : ''}`,
-        detail: card.rawText,
+        // 时间线上先看一句话提炼（点击跳 Case Tab 看原文）；无 digest 回退原文
+        detail: caseCardDigest(card) ?? card.rawText,
         tone: 'case' as const,
         cardId: card.id,
         barNumber: timeToBarNumber(time, barMinutes),
@@ -293,7 +297,7 @@ export default function TradeDetailPage() {
               标记为已平仓
             </Button>
           )}
-          <EditTradeDialog trade={trade} openRequest={editOpenRequest} />
+          <EditTradeDialog trade={trade} openRequest={editOpenRequest} prefill={suggestPrefill} />
         </div>
       </header>
 
@@ -704,11 +708,18 @@ export default function TradeDetailPage() {
         </TabsContent>
 
         <TabsContent value="case">
-          <TradeCasePanel trade={trade} targetCardId={targetCaseCardId} />
+          <TradeCasePanel
+            trade={trade}
+            targetCardId={targetCaseCardId}
+            cardTimes={cardBarTimes}
+            onJumpCard={(cardId) => setTargetCaseCardId(cardId)}
+            onSuggestEditPrefill={(draft) => setSuggestPrefill({ execution: draft, nonce: Date.now() })}
+          />
         </TabsContent>
 
         <TabsContent value="trade">
           <div className="flex flex-col gap-6">
+            {boundCase && <CaseSummaryCard caseRecord={boundCase} cards={caseCards} variant="full" trade={trade} />}
             <Card>
               <CardHeader><CardTitle className="text-base">结果事实</CardTitle><p className="text-sm text-muted-foreground">结果只记录，不参与过程评分。</p></CardHeader>
               <CardContent className="flex flex-col gap-3">

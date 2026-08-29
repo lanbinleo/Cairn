@@ -5,7 +5,7 @@ import type { ReactNode } from 'react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { memoDirectionLabel } from '@/lib/cases'
 import { fmtPrice } from '@/lib/format'
-import { firstNumberIn } from '@/lib/process-score'
+import { firstPlausibleNumberIn } from '@/lib/process-score'
 import type { CaseCardMemo, Trade, TradeMetrics } from '@/lib/types'
 import { cn } from '@/lib/utils'
 
@@ -39,12 +39,14 @@ export function TradePlanCompareCard({ trade, m, entryMemo, pricePrecision }: {
   pricePrecision?: number
 }) {
   const planDirection = memoDirectionLabel(entryMemo?.direction?.value)
+  // memo 值里挑价格时以实际均价为数量级参照，过滤 K 线号/倍数被误读成价格的情况
+  const reference = m.avgEntry > 0 ? m.avgEntry : null
   const planEntryFromTrade = trade.initialEntryPrice ?? null
-  const planEntry = planEntryFromTrade ?? (entryMemo?.entryPrice ? firstNumberIn(entryMemo.entryPrice.value) : null)
+  const planEntry = planEntryFromTrade ?? (entryMemo?.entryPrice ? firstPlausibleNumberIn(entryMemo.entryPrice.value, reference) : null)
   const planStopFromTrade = trade.initialStopLoss ?? null
-  const planStop = planStopFromTrade ?? (entryMemo?.stopLoss ? firstNumberIn(entryMemo.stopLoss.value) : null)
+  const planStop = planStopFromTrade ?? (entryMemo?.stopLoss ? firstPlausibleNumberIn(entryMemo.stopLoss.value, reference) : null)
   const planTargetFromTrade = trade.initialTakeProfit ?? null
-  const planTarget = planTargetFromTrade ?? (entryMemo?.target ? firstNumberIn(entryMemo.target.value) : null)
+  const planTarget = planTargetFromTrade ?? (entryMemo?.target ? firstPlausibleNumberIn(entryMemo.target.value, reference) : null)
   const hasPlan = planDirection != null || planEntry != null || planStop != null || planTarget != null
 
   function SourceTag({ fromTrade }: { fromTrade: boolean }) {

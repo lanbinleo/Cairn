@@ -51,6 +51,23 @@ export function displayPhaseForCaseCard(card: CaseCard): CaseCardPhase {
   return card.phase === 'entry' && card.entryDecision === 'continue-observing' ? 'pre-entry' : card.phase
 }
 
+/** 分析已过期：原文在分析后被修正过，且用户没有忽略这次过期。 */
+export function isCaseCardAnalysisStale(card: CaseCard): boolean {
+  const analysis = card.aiAnalysis
+  if (!analysis || card.rawTextEditedAt == null) return false
+  if (analysis.analyzedAt >= card.rawTextEditedAt) return false
+  return (analysis.staleDismissedAt ?? 0) < card.rawTextEditedAt
+}
+
+/** 卡片一句话提炼：仅有未过期的 digest 时返回，否则 null（调用方回退原文）。 */
+export function caseCardDigest(card: CaseCard): string | null {
+  const digest = card.aiAnalysis?.digest
+  return digest && !isCaseCardAnalysisStale(card) ? digest : null
+}
+
+/** 提取结果与手工输入/REST PUT 同界：BAR 按 UTC 日重置，一天最多 1440 根。 */
+const MAX_BAR_NUMBER = 1440
+
 export function extractExplicitBarRef(rawText: string): number | undefined {
   const refs: Array<{ index: number; value: number }> = []
   const patterns = [
@@ -60,7 +77,7 @@ export function extractExplicitBarRef(rawText: string): number | undefined {
   for (const pattern of patterns) {
     for (const match of rawText.matchAll(pattern)) {
       const value = Number(match[1])
-      if (Number.isInteger(value) && value > 0) refs.push({ index: match.index ?? Number.MAX_SAFE_INTEGER, value })
+      if (Number.isInteger(value) && value > 0 && value <= MAX_BAR_NUMBER) refs.push({ index: match.index ?? Number.MAX_SAFE_INTEGER, value })
     }
   }
   return refs.sort((a, b) => a.index - b.index)[0]?.value
