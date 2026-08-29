@@ -12,7 +12,7 @@ import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { useCairn } from '@/lib/store'
 import { computeStats, computeEquityCurve } from '@/lib/metrics'
-import { fmtMoney, fmtPct, fmtDateRange } from '@/lib/format'
+import { fmtMoney, fmtCompactMoney, fmtPct, fmtDateRange } from '@/lib/format'
 
 export default function PeriodDetailPage() {
   const { accountId = '', periodId = '' } = useParams()
@@ -73,14 +73,15 @@ export default function PeriodDetailPage() {
         <StatCard
           label="Profit Factor"
           value={stats.profitFactor == null ? '—' : stats.profitFactor.toFixed(2)}
-          sub={`期望值 ${fmtMoney(stats.expectancy, account.currency)} / 笔`}
+          sub={`期望值 ${fmtCompactMoney(stats.expectancy, account.currency)} / 笔`}
         />
         <StatCard
           label="平均盈 / 亏"
-          value={`${fmtMoney(stats.avgWin, account.currency)} / ${fmtMoney(stats.avgLoss, account.currency)}`}
+          value={`${fmtCompactMoney(stats.avgWin, account.currency)} / ${fmtCompactMoney(stats.avgLoss, account.currency)}`}
+          title={`${fmtMoney(stats.avgWin, account.currency)} / ${fmtMoney(stats.avgLoss, account.currency)}`}
           sub={`平均 R ${stats.avgR == null ? '—' : stats.avgR.toFixed(2)}`}
         />
-        <StatCard label="最大回撤" value={fmtPct(stats.maxDrawdownPct)} sub={fmtMoney(stats.maxDrawdown, account.currency)} />
+        <StatCard label="最大回撤" value={fmtPct(stats.maxDrawdownPct)} sub={fmtCompactMoney(stats.maxDrawdown, account.currency)} />
       </div>
 
       <Card>

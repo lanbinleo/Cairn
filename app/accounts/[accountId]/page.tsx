@@ -13,7 +13,7 @@ import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { useCairn } from '@/lib/store'
 import { computeStats, computeEquityCurve } from '@/lib/metrics'
-import { fmtMoney, fmtPct, fmtDateRange, fmtUtcDate } from '@/lib/format'
+import { fmtMoney, fmtCompactMoney, fmtPct, fmtDateRange, fmtUtcDate } from '@/lib/format'
 
 export default function AccountDetailPage() {
   const { accountId = '' } = useParams()
@@ -55,12 +55,14 @@ export default function AccountDetailPage() {
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-5">
         <StatCard
           label="当前权益"
-          value={fmtMoney(equity, account.currency)}
+          value={fmtCompactMoney(equity, account.currency)}
+          title={fmtMoney(equity, account.currency)}
           sub={<PnlText value={stats.totalPnl} currency={account.currency} className="text-xs" />}
         />
         <StatCard
           label="初始资金"
-          value={fmtMoney(account.initialBalance, account.currency)}
+          value={fmtCompactMoney(account.initialBalance, account.currency)}
+          title={fmtMoney(account.initialBalance, account.currency)}
           sub={`创建于 ${fmtUtcDate(account.createdAt)}`}
         />
         <StatCard
@@ -71,7 +73,7 @@ export default function AccountDetailPage() {
         <StatCard
           label="Profit Factor"
           value={stats.profitFactor == null ? '—' : stats.profitFactor.toFixed(2)}
-          sub={`期望值 ${fmtMoney(stats.expectancy, account.currency)} / 笔`}
+          sub={`期望值 ${fmtCompactMoney(stats.expectancy, account.currency)} / 笔`}
         />
         <StatCard
           label="最大回撤"
