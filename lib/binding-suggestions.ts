@@ -1,8 +1,10 @@
 /**
- * Case↔Trade AI 关联推荐：候选池机械预筛（同账户、未绑定、按时间距离排序取前 6），
- * AI 只负责排序和给理由，绑定动作永远由用户确认。
+ * Case↔Trade AI 关联推荐：候选池机械预筛（同账户、未绑定、强匹配优先 + 图表轴
+ * 时间距离排序取前 6——0.3.3 起与导入匹配共用 barRef 锚定，回放工作流下录音墙钟
+ * 时间不再误导排序），AI 只负责排序和给理由，绑定动作永远由用户确认。
  */
 
+import { analyzeCaseTradeMatch } from './case-import-matching'
 import { caseCardDigest } from './cases'
 import { computeTradeMetrics } from './metrics'
 import { fmtUtcDateTime } from './format'
@@ -21,6 +23,19 @@ export interface BindingSuggestion<T> {
 }
 
 const MAX_CANDIDATES = 6
+
+/**
+ * 候选排序键：强匹配（时间轴 + 价格佐证，见 case-import-matching）优先，
+ * 再按图表轴距离（Entry 卡 barRef 换算时间与首笔成交的差距；无 barRef 时退
+ * 墙钟距离——只对场内实时记录的 Case 有意义）。
+ */
+function candidateRank(trade: Trade, caseRecord: TradeCase, cards: CaseCard[]): { strong: boolean; distance: number } {
+  const metrics = computeTradeMetrics(trade)
+  const clockDistance = Math.abs((cards[0]?.createdAt ?? caseRecord.createdAt) - metrics.entryTime)
+  if (cards.length === 0) return { strong: false, distance: clockDistance }
+  const signals = analyzeCaseTradeMatch(trade, cards)
+  return { strong: signals.strong, distance: signals.chartDistanceMs ?? clockDistance }
+}
 
 function truncate(text: string, limit: number): string {
   return text.length > limit ? `${text.slice(0, limit)}…` : text
@@ -63,10 +78,11 @@ export function bindingContextForCase(
   bindings: CaseTradeBinding[],
 ): { context: string; candidates: Trade[] } {
   const boundTradeIds = new Set(bindings.map((binding) => binding.tradeId))
+  const caseCardsForCase = cards
   const candidates = trades
     .filter((trade) => trade.accountId === caseRecord.accountId && !boundTradeIds.has(trade.id))
-    .map((trade) => ({ trade, distance: Math.abs(computeTradeMetrics(trade).entryTime - caseRecord.createdAt) }))
-    .sort((a, b) => a.distance - b.distance)
+    .map((trade) => ({ trade, rank: candidateRank(trade, caseRecord, caseCardsForCase) }))
+    .sort((a, b) => (a.rank.strong !== b.rank.strong ? Number(a.rank.strong) - Number(b.rank.strong) : a.rank.distance - b.rank.distance))
     .slice(0, MAX_CANDIDATES)
     .map((item) => item.trade)
 
@@ -93,11 +109,13 @@ export function bindingContextForTrade(
   bindings: CaseTradeBinding[],
 ): { context: string; cases: TradeCase[] } {
   const boundCaseIds = new Set(bindings.map((binding) => binding.caseId))
-  const entryTime = computeTradeMetrics(trade).entryTime
   const candidates = cases
     .filter((caseRecord) => caseRecord.accountId === trade.accountId && !boundCaseIds.has(caseRecord.id))
-    .map((caseRecord) => ({ caseRecord, distance: Math.abs(caseRecord.createdAt - entryTime) }))
-    .sort((a, b) => a.distance - b.distance)
+    .map((caseRecord) => ({
+      caseRecord,
+      rank: candidateRank(trade, caseRecord, caseCards.filter((card) => card.caseId === caseRecord.id)),
+    }))
+    .sort((a, b) => (a.rank.strong !== b.rank.strong ? Number(a.rank.strong) - Number(b.rank.strong) : a.rank.distance - b.rank.distance))
     .slice(0, MAX_CANDIDATES)
     .map((item) => item.caseRecord)
 

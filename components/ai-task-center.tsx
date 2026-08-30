@@ -2,7 +2,7 @@
 
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { CheckCircle2, ChevronDown, ChevronRight, CircleAlert, Loader2, Sparkles } from 'lucide-react'
+import { CheckCircle2, ChevronDown, ChevronRight, CircleAlert, Loader2, Sparkles, X } from 'lucide-react'
 
 import { RelativeTime } from '@/components/relative-time'
 import { Button } from '@/components/ui/button'
@@ -15,10 +15,10 @@ import { cn } from '@/lib/utils'
 /**
  * 侧边栏底部的 AI 任务中心：哪些 AI 正在进行、哪些成功/失败一目了然。
  * 「需重试」不算完成——只有内建重试后的最终结果才落到 succeeded/failed。
- * 徽标 = 未读的已完成数，点开弹层即清零。
+ * 徽标 = 未读的已完成数，点开弹层即清零。失败项确认后可「知道了」移出列表。
  */
 export function AiTaskCenter() {
-  const { aiTaskList, markAiTasksRead, caseCards } = useCairn()
+  const { aiTaskList, markAiTasksRead, dismissAiTask, caseCards } = useCairn()
   const navigate = useNavigate()
   const [open, setOpen] = useState(false)
   const [expandedId, setExpandedId] = useState<string>()
@@ -98,6 +98,7 @@ export function AiTaskCenter() {
                   expandable={task.status === 'failed'}
                   expanded={expandedId === task.id}
                   onToggleExpand={() => setExpandedId((prev) => (prev === task.id ? undefined : task.id))}
+                  onDismiss={task.status === 'failed' ? () => dismissAiTask(task.id) : undefined}
                 />
               ))}
           </TabsContent>
@@ -113,12 +114,15 @@ function TaskRow({
   expandable,
   expanded,
   onToggleExpand,
+  onDismiss,
 }: {
   task: AiTask
   onJump: (task: AiTask) => void
   expandable?: boolean
   expanded?: boolean
   onToggleExpand?: () => void
+  /** 失败任务的「知道了」：确认后从列表移除，不再顶着失败状态提醒 */
+  onDismiss?: () => void
 }) {
   return (
     <div className="rounded-lg transition-colors hover:bg-muted/60">
@@ -144,6 +148,17 @@ function TaskRow({
             {expanded ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
           </button>
         )}
+        {onDismiss && (
+          <button
+            type="button"
+            aria-label="知道了，不再提示"
+            title="知道了，不再提示"
+            className="shrink-0 rounded-md p-1 text-muted-foreground transition-colors hover:text-foreground"
+            onClick={onDismiss}
+          >
+            <X className="size-3.5" />
+          </button>
+        )}
       </div>
       {task.status === 'running' && task.kind === 'summary' && (task.phase != null || (task.outputChars ?? 0) > 0) && (
         <p className="px-2 pb-1.5 text-[11px] leading-4 text-muted-foreground">
@@ -158,9 +173,18 @@ function TaskRow({
         </p>
       )}
       {expandable && expanded && task.error && (
-        <p className="mx-2 mb-1.5 rounded-md border border-destructive/40 bg-destructive/10 px-2 py-1.5 text-xs leading-relaxed break-all text-destructive">
-          {task.error}
-        </p>
+        <div className="mx-2 mb-1.5 flex flex-col gap-1.5">
+          <p className="rounded-md border border-destructive/40 bg-destructive/10 px-2 py-1.5 text-xs leading-relaxed break-all text-destructive">
+            {task.error}
+          </p>
+          <button
+            type="button"
+            className="self-end text-xs text-muted-foreground underline underline-offset-2 transition-colors hover:text-foreground"
+            onClick={onDismiss}
+          >
+            知道了，不再提示
+          </button>
+        </div>
       )}
     </div>
   )

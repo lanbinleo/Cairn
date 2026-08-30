@@ -36,8 +36,9 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { checkWidgetScriptUpdate, deleteAiProvider, getAiSettings, getApiStatus, getNetworkSettings, getWidgetScript, listAiProviders, regenerateApiToken, saveAiSettings, saveNetworkSettings, setApiConfig, type AiProvider, type ApiStatus, type WidgetScript, type WidgetScriptUpdate } from '@/lib/local-db'
+import { checkWidgetScriptUpdate, deleteAiProvider, getAiSettings, getApiStatus, getNetworkSettings, getWidgetScript, listAiProviders, regenerateApiToken, saveAiSettings, saveNetworkSettings, setApiConfig, setDefaultAiProvider, type AiProvider, type ApiStatus, type WidgetScript, type WidgetScriptUpdate } from '@/lib/local-db'
 import { useCairn } from '@/lib/store'
+import { cn } from '@/lib/utils'
 
 const categoryLabel: Record<string, string> = {
   crypto: '加密货币',
@@ -96,8 +97,9 @@ export default function SettingsPage() {
   const [aiAutoAnalyze, setAiAutoAnalyze] = useState(true)
   const [aiAutoSuggest, setAiAutoSuggest] = useState(true)
   const [aiAutoSummary, setAiAutoSummary] = useState(true)
-  const [proxyEnabled, setProxyEnabled] = useState(false)
+  const [proxyModeDraft, setProxyModeDraft] = useState<'system' | 'manual' | 'off'>('system')
   const [proxyUrlDraft, setProxyUrlDraft] = useState('http://127.0.0.1:7890')
+  const [effectiveProxy, setEffectiveProxy] = useState<string | undefined>()
   const [networkMessage, setNetworkMessage] = useState('')
   const [savingNetwork, setSavingNetwork] = useState(false)
 
@@ -126,8 +128,9 @@ export default function SettingsPage() {
       .catch(() => undefined)
     void getNetworkSettings()
       .then((settings) => {
-        setProxyEnabled(settings.proxyEnabled)
+        setProxyModeDraft(settings.mode ?? (settings.proxyEnabled ? 'manual' : 'system'))
         setProxyUrlDraft(settings.proxyUrl)
+        setEffectiveProxy(settings.effectiveProxyUrl)
       })
       .catch(() => undefined)
   }, [])
@@ -136,13 +139,22 @@ export default function SettingsPage() {
     setSavingNetwork(true)
     setNetworkMessage('')
     try {
-      const saved = await saveNetworkSettings({ proxyEnabled, proxyUrl: proxyUrlDraft })
+      const saved = await saveNetworkSettings({ mode: proxyModeDraft, proxyUrl: proxyUrlDraft })
       setProxyUrlDraft(saved.proxyUrl)
+      setEffectiveProxy(saved.effectiveProxyUrl)
       setNetworkMessage('已保存，出站请求立即走新配置。')
     } catch (error) {
       setNetworkMessage(`保存失败：${String(error)}`)
     } finally {
       setSavingNetwork(false)
+    }
+  }
+
+  async function setDefaultProvider(id: string) {
+    try {
+      setAiProviders(await setDefaultAiProvider(id))
+    } catch (error) {
+      console.warn('[cairn] set default provider failed:', error)
     }
   }
 
@@ -233,7 +245,9 @@ export default function SettingsPage() {
     setCheckingUpdate(true)
     setUpdateStatus('正在检查更新')
     try {
-      const update = await check()
+      // 更新器插件自建 HTTP 通道，需要把生效代理显式传给它（跟随系统/手动都生效）
+      const proxy = (await getNetworkSettings().catch(() => null))?.effectiveProxyUrl
+      const update = await check(proxy ? { proxy } : undefined)
       if (!update) {
         setUpdateStatus('当前已经是最新版本')
         return
@@ -633,28 +647,53 @@ export default function SettingsPage() {
           <Card>
             <CardHeader>
               <CardTitle>网络</CardTitle>
-              <CardDescription>AI 调用与浮窗脚本更新检查可以走代理服务器</CardDescription>
+              <CardDescription>AI 调用、GitHub 检查与应用内更新检查共用的出站通道</CardDescription>
             </CardHeader>
             <CardContent>
               <div className="flex max-w-2xl flex-col">
-                <SettingRow title="出站代理" description="开启后 AI 请求与 GitHub 检查经代理转发；关闭则直连">
-                  <Switch checked={proxyEnabled} onCheckedChange={(checked) => setProxyEnabled(checked === true)} />
-                </SettingRow>
-                <SettingRow title="代理地址" description="http(s):// 开头；默认本机 7890 端口（Clash 等常用）">
+                <SettingRow title="出站代理" description="默认跟随操作系统代理设置；更新检查同样经代理转发">
                   <div className="flex items-center gap-2">
+                    <Select
+                      items={[
+                        { value: 'system', label: '跟随系统代理' },
+                        { value: 'manual', label: '手动指定' },
+                        { value: 'off', label: '直连' },
+                      ]}
+                      value={proxyModeDraft}
+                      onValueChange={(value) => setProxyModeDraft((value as 'system' | 'manual' | 'off') ?? 'system')}
+                    >
+                      <SelectTrigger className="w-36">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectGroup>
+                          <SelectItem value="system">跟随系统代理</SelectItem>
+                          <SelectItem value="manual">手动指定</SelectItem>
+                          <SelectItem value="off">直连</SelectItem>
+                        </SelectGroup>
+                      </SelectContent>
+                    </Select>
+                    <Button variant="outline" size="sm" disabled={savingNetwork || !isTauriRuntime()} onClick={saveProxyConfig}>
+                      {savingNetwork ? '保存中' : '保存'}
+                    </Button>
+                  </div>
+                </SettingRow>
+                {proxyModeDraft === 'manual' && (
+                  <SettingRow title="代理地址" description="http(s):// 开头；默认本机 7890 端口（Clash 等常用）">
                     <Input
                       className="w-64 font-mono text-xs"
                       value={proxyUrlDraft}
                       onChange={(event) => setProxyUrlDraft(event.target.value)}
                       spellCheck={false}
                     />
-                    <Button variant="outline" size="sm" disabled={savingNetwork || !isTauriRuntime()} onClick={saveProxyConfig}>
-                      {savingNetwork ? '保存中' : '保存'}
-                    </Button>
-                  </div>
-                </SettingRow>
+                  </SettingRow>
+                )}
                 {networkMessage && <div className="text-xs text-muted-foreground">{networkMessage}</div>}
-                <p className="mt-2 text-xs text-muted-foreground">应用内更新检查走系统通道，不受此代理影响。</p>
+                {proxyModeDraft === 'system' && (
+                  <p className="mt-2 text-xs text-muted-foreground">
+                    {effectiveProxy ? `已检测到系统代理：${effectiveProxy}` : '未检测到系统代理，将直连'}
+                  </p>
+                )}
               </div>
             </CardContent>
           </Card>
@@ -702,7 +741,7 @@ export default function SettingsPage() {
           <Card className="mt-6">
             <CardHeader>
               <CardTitle>AI Providers</CardTitle>
-              <CardDescription>OpenAI compatible 接口配置；AI 识别与完整性检查将使用默认 Provider</CardDescription>
+              <CardDescription>OpenAI compatible 接口配置；点击 Provider 选用默认（AI 识别等自动功能使用默认 Provider）</CardDescription>
               <CardAction>
                 <Button
                   variant="outline"
@@ -726,7 +765,29 @@ export default function SettingsPage() {
               ) : (
                 <div className="flex flex-col">
                   {aiProviders.map((provider) => (
-                    <div key={provider.id} className="flex items-center gap-3 border-b py-3.5 last:border-b-0">
+                    <div
+                      key={provider.id}
+                      role="button"
+                      tabIndex={0}
+                      aria-pressed={provider.isDefault}
+                      aria-label={`使用 ${provider.name} 作为默认 Provider`}
+                      title={provider.isDefault ? undefined : '点击设为默认 Provider'}
+                      className={cn(
+                        'flex cursor-pointer items-center gap-3 rounded-lg border-b py-3.5 pl-2 pr-1 transition-colors last:border-b-0',
+                        provider.isDefault
+                          ? 'ring-2 ring-primary'
+                          : 'hover:bg-muted/50',
+                      )}
+                      onClick={() => {
+                        if (!provider.isDefault) void setDefaultProvider(provider.id)
+                      }}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter' || event.key === ' ') {
+                          event.preventDefault()
+                          if (!provider.isDefault) void setDefaultProvider(provider.id)
+                        }
+                      }}
+                    >
                       <AiProviderBadge presetId={provider.presetId} />
                       <div className="flex min-w-0 flex-1 flex-col gap-0.5">
                         <div className="flex items-center gap-2">
@@ -749,7 +810,8 @@ export default function SettingsPage() {
                           variant="ghost"
                           size="icon-sm"
                           aria-label={`编辑 ${provider.name}`}
-                          onClick={() => {
+                          onClick={(event) => {
+                            event.stopPropagation()
                             setEditingProvider(provider)
                             setAiDialogOpen(true)
                           }}
@@ -760,7 +822,8 @@ export default function SettingsPage() {
                           variant="ghost"
                           size="icon-sm"
                           aria-label={`删除 ${provider.name}`}
-                          onClick={() => {
+                          onClick={(event) => {
+                            event.stopPropagation()
                             if (window.confirm(`删除 AI Provider「${provider.name}」？`)) {
                               void deleteAiProvider(provider.id).then(setAiProviders)
                             }

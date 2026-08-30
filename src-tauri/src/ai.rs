@@ -89,12 +89,30 @@ fn apply_thinking_param(body: &mut Value, provider: &AiProvider, model: &str) {
             "on" => body["reasoning_effort"] = json!("medium"),
             _ => {}
         },
-        // 智谱 GLM：只有开关，无等级
-        Some("zhipu") => match level {
-            "on" | "low" | "medium" | "high" => body["thinking"] = json!({ "type": "enabled" }),
-            "off" => body["thinking"] = json!({ "type": "disabled" }),
-            _ => {}
-        },
+        // 智谱 GLM：thinking.type 开关 + reasoning_effort 分档（GLM-5.2 起支持，
+        // 官方档位 low/high/max）。GLM-5.3/5.3-FLASH 官方明确「始终思考，不能关闭」，
+        // 实测发 disabled 会 400（「该模型始终思考，不支持关闭思考；请使用 low、high 或 max」），
+        // 对这些模型的「关闭」降级为最低档 low——最接近省 token 的意图。
+        Some("zhipu") => {
+            let forced_thinking = model.to_ascii_lowercase().starts_with("glm-5.3");
+            match level {
+                "on" => body["thinking"] = json!({ "type": "enabled" }),
+                "low" => {
+                    body["thinking"] = json!({ "type": "enabled" });
+                    body["reasoning_effort"] = json!("low");
+                }
+                "medium" | "high" => {
+                    body["thinking"] = json!({ "type": "enabled" });
+                    body["reasoning_effort"] = json!("high");
+                }
+                "off" if forced_thinking => {
+                    body["thinking"] = json!({ "type": "enabled" });
+                    body["reasoning_effort"] = json!("low");
+                }
+                "off" => body["thinking"] = json!({ "type": "disabled" }),
+                _ => {}
+            }
+        }
         // 通义千问（DashScope 兼容模式）：enable_thinking 开关 + thinking_budget 分档
         //（high 不设上限，交给模型默认最大值）
         Some("qwen") => match level {
@@ -214,6 +232,9 @@ pub fn save(app: &AppHandle, mut provider: AiProvider) -> Result<Vec<AiProvider>
         Some(index) => {
             provider.created_at = file.providers[index].created_at;
             provider.updated_at = now;
+            // 默认 Provider 只在列表上显式切换（set_default），编辑不动它——
+            // 否则「打开另一个 Provider 保存一下」就可能把默认标记挤掉。
+            provider.is_default = file.providers[index].is_default;
             file.providers[index] = provider;
         }
         None => {
@@ -222,6 +243,7 @@ pub fn save(app: &AppHandle, mut provider: AiProvider) -> Result<Vec<AiProvider>
             }
             provider.created_at = now;
             provider.updated_at = now;
+            provider.is_default = false;
             file.providers.push(provider);
         }
     }
@@ -229,6 +251,23 @@ pub fn save(app: &AppHandle, mut provider: AiProvider) -> Result<Vec<AiProvider>
         let has_default = file.providers.iter().any(|item| item.is_default);
         if let Some(first) = file.providers.first_mut() {
             first.is_default = !has_default;
+        }
+    }
+    write_file(app, &file)?;
+    Ok(file.providers)
+}
+
+/// 把默认 Provider 切换到指定 id（设置页点击 Provider 卡片即选中）。
+pub fn set_default(app: &AppHandle, id: String) -> Result<Vec<AiProvider>, String> {
+    let mut file = read_file(app)?;
+    if !file.providers.iter().any(|item| item.id == id) {
+        return Err("provider not found".to_string());
+    }
+    let now = now_ms();
+    for item in file.providers.iter_mut() {
+        item.is_default = item.id == id;
+        if item.is_default {
+            item.updated_at = now;
         }
     }
     write_file(app, &file)?;
@@ -697,17 +736,43 @@ pub async fn chat_completion_stream_with_retry(
     }
 }
 
-// ==================== 出站网络设置（代理，0.3.2） ====================
+// ==================== 出站网络设置（代理） ====================
+
+/// 代理模式：跟随系统（默认）/ 手动 / 直连。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProxyMode {
+    System,
+    Manual,
+    Off,
+}
+
+impl ProxyMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ProxyMode::System => "system",
+            ProxyMode::Manual => "manual",
+            ProxyMode::Off => "off",
+        }
+    }
+}
 
 /// 全局出站代理设置，存 app_data_dir/network-settings.json，不进入备份。
-/// 作用于 Rust 侧全部出站请求（AI 请求 + GitHub 浮窗脚本检查）。
+/// 作用于 Rust 侧全部出站请求（AI 请求 + GitHub 浮窗脚本检查 + 应用内更新检查）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NetworkSettings {
+    /// "system" | "manual" | "off"；None = 0.3.2 旧文件，由 proxy_enabled 迁移。
     #[serde(default)]
-    pub proxy_enabled: bool,
+    pub mode: Option<String>,
     #[serde(default = "default_proxy_url")]
     pub proxy_url: String,
+    /// 0.3.2 旧字段：只读迁移用（true → manual），保存时按 mode 重写。
+    #[serde(default)]
+    pub proxy_enabled: bool,
+    /// 当前实际生效的代理地址（manual 配置值，或 system 模式探测到的系统代理）；
+    /// 直连 / 未探测到为 None。只读，由 get/save 命令回填。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effective_proxy_url: Option<String>,
 }
 
 fn default_proxy_url() -> String {
@@ -716,7 +781,19 @@ fn default_proxy_url() -> String {
 
 impl Default for NetworkSettings {
     fn default() -> Self {
-        Self { proxy_enabled: false, proxy_url: default_proxy_url() }
+        Self { mode: None, proxy_url: default_proxy_url(), proxy_enabled: false, effective_proxy_url: None }
+    }
+}
+
+impl NetworkSettings {
+    pub fn proxy_mode(&self) -> ProxyMode {
+        match self.mode.as_deref() {
+            Some("manual") => ProxyMode::Manual,
+            Some("off") => ProxyMode::Off,
+            Some("system") => ProxyMode::System,
+            _ if self.proxy_enabled => ProxyMode::Manual,
+            _ => ProxyMode::System,
+        }
     }
 }
 
@@ -735,55 +812,103 @@ pub fn network_settings(app: &AppHandle) -> NetworkSettings {
 }
 
 pub fn save_network_settings(app: &AppHandle, value: NetworkSettings) -> Result<NetworkSettings, String> {
-    let mut value = value;
-    value.proxy_url = value.proxy_url.trim().to_string();
-    if value.proxy_enabled {
-        if !value.proxy_url.starts_with("http://") && !value.proxy_url.starts_with("https://") {
+    let mode = value.proxy_mode();
+    let mut proxy_url = value.proxy_url.trim().to_string();
+    if matches!(mode, ProxyMode::Manual) {
+        if !proxy_url.starts_with("http://") && !proxy_url.starts_with("https://") {
             return Err("代理地址必须以 http:// 或 https:// 开头".to_string());
         }
-        if reqwest::Proxy::all(&value.proxy_url).is_err() {
+        if reqwest::Proxy::all(&proxy_url).is_err() {
             return Err("代理地址无效".to_string());
         }
-    } else if value.proxy_url.is_empty() {
-        value.proxy_url = default_proxy_url();
+    } else if proxy_url.is_empty() {
+        proxy_url = default_proxy_url();
     }
+    // 保存时把解析后的 mode 落盘，旧版 {proxyEnabled} 文件自此升级
+    let stored = NetworkSettings {
+        mode: Some(mode.as_str().to_string()),
+        proxy_url,
+        proxy_enabled: matches!(mode, ProxyMode::Manual),
+        effective_proxy_url: None,
+    };
     let path = network_settings_path(app)?;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|err| err.to_string())?;
     }
-    let content = serde_json::to_string_pretty(&value).map_err(|err| err.to_string())?;
+    let content = serde_json::to_string_pretty(&stored).map_err(|err| err.to_string())?;
     let tmp = path.with_extension("json.tmp");
     fs::write(&tmp, content).map_err(|err| err.to_string())?;
     fs::rename(&tmp, &path).map_err(|err| err.to_string())?;
     refresh_proxy(app);
-    Ok(value)
+    let mut stored = stored;
+    stored.effective_proxy_url = effective_proxy_url();
+    Ok(stored)
 }
 
 /// 进程内代理缓存：启动与保存时刷新，请求路径只读这里——
-/// fetch_models 等无 AppHandle 的调用也能走代理，且不用每次请求读文件。
-static PROXY_URL: std::sync::RwLock<Option<String>> = std::sync::RwLock::new(None);
+/// fetch_models 等无 AppHandle 的调用也能走代理，且不用每次请求探测。
+#[derive(Clone)]
+struct ProxyState {
+    mode: ProxyMode,
+    /// 生效代理地址；system 未探测到为 None
+    url: Option<String>,
+}
+
+static PROXY_STATE: std::sync::RwLock<ProxyState> = std::sync::RwLock::new(ProxyState {
+    mode: ProxyMode::System,
+    url: None,
+});
 
 pub fn refresh_proxy(app: &AppHandle) {
     let settings = network_settings(app);
-    let value = if settings.proxy_enabled && !settings.proxy_url.trim().is_empty() {
-        Some(settings.proxy_url.trim().to_string())
-    } else {
-        None
+    let mode = settings.proxy_mode();
+    let url = match mode {
+        ProxyMode::Manual => {
+            let url = settings.proxy_url.trim().to_string();
+            (!url.is_empty()).then_some(url)
+        }
+        ProxyMode::System => detect_system_proxy(),
+        ProxyMode::Off => None,
     };
-    *PROXY_URL.write().unwrap() = value;
+    *PROXY_STATE.write().unwrap() = ProxyState { mode, url };
 }
 
-/// 统一出站 Client 构建：启用代理时 AI 与 GitHub 检查等请求全部走代理；
-/// 代理地址失效时降级直连（不让配置错误打断所有请求）。
+/// 探测操作系统代理（Windows 注册表 / macOS scutil / Linux 桌面设置）。
+/// 系统未配置或仅 PAC 自动配置时返回 None → 直连。
+fn detect_system_proxy() -> Option<String> {
+    let proxy = sysproxy::Sysproxy::get_system_proxy().ok()?;
+    let host = proxy.host.trim();
+    if host.is_empty() || proxy.port == 0 {
+        return None;
+    }
+    let url = if host.contains("://") {
+        format!("{host}:{}", proxy.port)
+    } else {
+        format!("http://{host}:{}", proxy.port)
+    };
+    reqwest::Proxy::all(&url).is_ok().then_some(url)
+}
+
+/// 统一出站 Client 构建：manual/system 解析出地址则全部请求经代理；
+/// 地址无效时降级直连（不让配置错误打断所有请求）；off 强制直连
+/// （no_proxy 压掉 reqwest 的系统代理默认探测）。
 pub fn http_client() -> reqwest::ClientBuilder {
     let mut builder = reqwest::Client::builder();
-    let proxy = PROXY_URL.read().unwrap().clone();
-    if let Some(url) = proxy {
+    let state = PROXY_STATE.read().unwrap().clone();
+    if let Some(url) = state.url {
         if let Ok(proxy) = reqwest::Proxy::all(&url) {
             builder = builder.proxy(proxy);
         }
+    } else if state.mode == ProxyMode::Off {
+        builder = builder.no_proxy();
     }
     builder
+}
+
+/// 当前生效的代理地址（manual 配置或 system 探测结果）；直连为 None。
+/// 更新器插件自建 HTTP client、不走 http_client()，前端把这个值传给 check({proxy})。
+pub fn effective_proxy_url() -> Option<String> {
+    PROXY_STATE.read().unwrap().url.clone()
 }
 
 // ==================== AI 通用设置 ====================
@@ -1622,10 +1747,19 @@ mod tests {
         assert_eq!(body_after(Some("openai"), Some("high")), json!({ "reasoning_effort": "high" }));
         assert_eq!(body_after(Some("openai"), Some("on")), json!({ "reasoning_effort": "medium" }));
         assert_eq!(body_after(Some("openai"), Some("off")), json!({}));
-        // GLM：只有开关
+        // GLM：thinking.type 开关 + reasoning_effort 分档（GLM-5.2+）；
+        // GLM-5.3 系列强制思考，off 降级为 enabled+low（官方 400：不支持关闭）
         assert_eq!(body_after(Some("zhipu"), Some("on")), json!({ "thinking": { "type": "enabled" } }));
-        assert_eq!(body_after(Some("zhipu"), Some("low")), json!({ "thinking": { "type": "enabled" } }));
+        assert_eq!(body_after(Some("zhipu"), Some("low")), json!({ "thinking": { "type": "enabled" }, "reasoning_effort": "low" }));
+        assert_eq!(body_after(Some("zhipu"), Some("high")), json!({ "thinking": { "type": "enabled" }, "reasoning_effort": "high" }));
         assert_eq!(body_after(Some("zhipu"), Some("off")), json!({ "thinking": { "type": "disabled" } }));
+        {
+            let mut body = json!({});
+            let mut provider = provider(Some("zhipu"), Some("off"));
+            provider.models = vec![AiModelConfig { id: "glm-5.3-flash".into(), thinking: Some("off".into()) }];
+            apply_thinking_param(&mut body, &provider, "glm-5.3-flash");
+            assert_eq!(body, json!({ "thinking": { "type": "enabled" }, "reasoning_effort": "low" }));
+        }
         // 千问：开关 + budget 分档
         assert_eq!(body_after(Some("qwen"), Some("low")), json!({ "enable_thinking": true, "thinking_budget": 2048 }));
         assert_eq!(body_after(Some("qwen"), Some("medium")), json!({ "enable_thinking": true, "thinking_budget": 8192 }));
@@ -1676,6 +1810,26 @@ mod tests {
         stale.models = vec![AiModelConfig { id: "kept".into(), thinking: None }];
         let normalized = normalize(stale).unwrap();
         assert_eq!(normalized.default_model.as_deref(), Some("kept"));
+    }
+
+    #[test]
+    fn network_settings_mode_migration() {
+        // 显式 mode 优先
+        let explicit = NetworkSettings {
+            mode: Some("off".into()),
+            proxy_url: String::new(),
+            proxy_enabled: true,
+            effective_proxy_url: None,
+        };
+        assert_eq!(explicit.proxy_mode(), ProxyMode::Off);
+        // 0.3.2 旧文件：proxyEnabled=true → manual，否则默认跟随系统
+        let legacy_on = NetworkSettings { mode: None, proxy_url: String::new(), proxy_enabled: true, effective_proxy_url: None };
+        assert_eq!(legacy_on.proxy_mode(), ProxyMode::Manual);
+        let legacy_off = NetworkSettings { mode: None, proxy_url: String::new(), proxy_enabled: false, effective_proxy_url: None };
+        assert_eq!(legacy_off.proxy_mode(), ProxyMode::System);
+        // 未知 mode 字符串按旧字段迁移
+        let bogus = NetworkSettings { mode: Some("bogus".into()), proxy_url: String::new(), proxy_enabled: true, effective_proxy_url: None };
+        assert_eq!(bogus.proxy_mode(), ProxyMode::Manual);
     }
 
     #[test]

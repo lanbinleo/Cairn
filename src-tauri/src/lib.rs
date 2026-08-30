@@ -1165,12 +1165,19 @@ fn save_ai_settings(app: AppHandle, settings: ai::AiSettings) -> Result<ai::AiSe
 /// 出站代理设置（0.3.2）：作用于 Rust 侧全部出站请求（AI + GitHub 检查）。
 #[tauri::command]
 fn get_network_settings(app: AppHandle) -> Result<ai::NetworkSettings, String> {
-    Ok(ai::network_settings(&app))
+    let mut settings = ai::network_settings(&app);
+    settings.effective_proxy_url = ai::effective_proxy_url();
+    Ok(settings)
 }
 
 #[tauri::command]
 fn save_network_settings(app: AppHandle, settings: ai::NetworkSettings) -> Result<ai::NetworkSettings, String> {
     ai::save_network_settings(&app, settings)
+}
+
+#[tauri::command]
+fn set_default_ai_provider(app: AppHandle, id: String) -> Result<Vec<ai::AiProvider>, String> {
+    ai::set_default(&app, id)
 }
 
 /// AI 秘书代拟 Case 标题：读 Case 的全部 Card 原文，返回一个短标题草稿（不落库，由前端确认写入）。
@@ -1573,6 +1580,7 @@ pub fn run() {
             list_ai_providers,
             save_ai_provider,
             delete_ai_provider,
+            set_default_ai_provider,
             fetch_ai_models,
             analyze_case_card,
             suggest_case_executions,
