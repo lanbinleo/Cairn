@@ -100,6 +100,7 @@ interface CairnStore {
   updateAiTaskProgress: (taskId: string, progress: { phase: 'thinking' | 'writing'; thinkingMs: number; outputChars: number; outputTokens?: number }) => void
   /** 点开任务中心后清零未读徽标 */
   markAiTasksRead: () => void
+  dismissAiTask: (id: string) => void
   prefillTradePlanFromBoundCase: (tradeId: string) => boolean
   createCaseBinding: (caseId: string, tradeId: string, source?: CaseTradeBinding['source']) => Promise<CaseTradeBinding>
   deleteCaseBinding: (id: string) => Promise<void>
@@ -243,6 +244,10 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
   /** 点开任务中心后清零未读徽标 */
   const markAiTasksRead = useCallback((): void => {
     setAiTaskList((prev) => (prev.some((item) => item.unread) ? prev.map((item) => ({ ...item, unread: false })) : prev))
+  }, [])
+  /** 失败任务确认后移出列表：用户看过原因了，不再顶着失败状态反复提醒 */
+  const dismissAiTask = useCallback((id: string): void => {
+    setAiTaskList((prev) => prev.filter((item) => item.id !== id))
   }, [])
 
   /* AI 总结用状态镜像：关单自动总结在 setState 同一刻触发，闭包里的 state 还是旧值，
@@ -1234,6 +1239,7 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
       appendAiTaskStream,
       updateAiTaskProgress,
       markAiTasksRead,
+      dismissAiTask,
       prefillTradePlanFromBoundCase,
       createCaseBinding,
       deleteCaseBinding,
@@ -1264,7 +1270,7 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
       updateCaseTag,
       deleteCaseTag,
     }),
-    [accounts, periods, trades, tagDefs, cases, caseCards, caseBindings, caseTagDefs, importBatches, attachments, chartImports, chartCandles, symbols, notes, aiTasks, aiTaskList, beginAiTask, completeAiTask, appendAiTaskStream, updateAiTaskProgress, markAiTasksRead, updateAccount, updatePeriod, updateTrade, updateNote, createAccount, createPeriod, createSymbol, createNote, createImageAttachment, deleteAttachment, createCase, updateCase, deleteCase, createCaseCard, moveCaseCard, updateCaseCardText, updateCaseCardBarRef, updateCaseCardAnalysis, analyzeCaseCard, prefillTradePlanFromBoundCase, createCaseBinding, deleteCaseBinding, createTrades, createImportBatch, createChartImport, deleteChartImport, rollbackImportBatch, deleteAccount, deletePeriod, deleteTrade, deleteSymbol, deleteNote, restoreState, exportBackup, setTradeStatus, createTag, updateTag, deleteTag, createCaseTag, updateCaseTag, deleteCaseTag],
+    [accounts, periods, trades, tagDefs, cases, caseCards, caseBindings, caseTagDefs, importBatches, attachments, chartImports, chartCandles, symbols, notes, aiTasks, aiTaskList, beginAiTask, completeAiTask, appendAiTaskStream, updateAiTaskProgress, markAiTasksRead, dismissAiTask, updateAccount, updatePeriod, updateTrade, updateNote, createAccount, createPeriod, createSymbol, createNote, createImageAttachment, deleteAttachment, createCase, updateCase, deleteCase, createCaseCard, moveCaseCard, updateCaseCardText, updateCaseCardBarRef, updateCaseCardAnalysis, analyzeCaseCard, prefillTradePlanFromBoundCase, createCaseBinding, deleteCaseBinding, createTrades, createImportBatch, createChartImport, deleteChartImport, rollbackImportBatch, deleteAccount, deletePeriod, deleteTrade, deleteSymbol, deleteNote, restoreState, exportBackup, setTradeStatus, createTag, updateTag, deleteTag, createCaseTag, updateCaseTag, deleteCaseTag],
   )
 
   return <StoreContext.Provider value={value}>{children}</StoreContext.Provider>
