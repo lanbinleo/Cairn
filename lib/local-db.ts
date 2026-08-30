@@ -239,6 +239,12 @@ export async function deleteAiProvider(id: string): Promise<AiProvider[]> {
   return invoke<AiProvider[]>('delete_ai_provider', { id })
 }
 
+/** 把默认 Provider 切换到指定 id（设置页点击 Provider 卡片即选中） */
+export async function setDefaultAiProvider(id: string): Promise<AiProvider[]> {
+  if (!isTauriRuntime()) return offlineProviders
+  return invoke<AiProvider[]>('set_default_ai_provider', { id })
+}
+
 export async function fetchAiModels(baseUrl: string, apiKey: string): Promise<string[]> {
   return invoke<string[]>('fetch_ai_models', { baseUrl, apiKey })
 }
@@ -308,16 +314,24 @@ export async function saveAiSettings(settings: AiSettings): Promise<AiSettings> 
   return invoke<AiSettings>('save_ai_settings', { settings })
 }
 
-/* ---------- 出站网络设置（0.3.2） ---------- */
+/* ---------- 出站网络设置（0.3.3：三档模式） ---------- */
+
+export type ProxyMode = 'system' | 'manual' | 'off'
 
 export interface NetworkSettings {
-  proxyEnabled: boolean
-  /** 默认 http://127.0.0.1:7890；作用于 Rust 侧全部出站请求（AI + GitHub 检查） */
+  /** "system"（默认，跟随操作系统代理）| "manual"（手动地址）| "off"（强制直连）；
+   * null/缺省 = 0.3.2 旧文件（proxyEnabled 迁移）。 */
+  mode?: ProxyMode | null
+  /** 手动模式的代理地址；默认 http://127.0.0.1:7890 */
   proxyUrl: string
+  /** 0.3.2 旧字段，只读迁移用 */
+  proxyEnabled?: boolean
+  /** 当前实际生效的代理地址（manual 配置值或 system 探测到的系统代理）；直连为缺省 */
+  effectiveProxyUrl?: string
 }
 
 export async function getNetworkSettings(): Promise<NetworkSettings> {
-  if (!isTauriRuntime()) return { proxyEnabled: false, proxyUrl: 'http://127.0.0.1:7890' }
+  if (!isTauriRuntime()) return { mode: 'system', proxyUrl: 'http://127.0.0.1:7890' }
   return invoke<NetworkSettings>('get_network_settings')
 }
 

@@ -22,7 +22,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import { Switch } from '@/components/ui/switch'
 import { fetchAiModels, saveAiProvider, type AiModelConfig, type AiProvider, type AiThinkingLevel } from '@/lib/local-db'
 import { cn } from '@/lib/utils'
 
@@ -68,13 +67,24 @@ export const THINKING_LEVEL_LABELS: Record<AiThinkingLevel, string> = {
 const PRESET_THINKING_LEVELS: Record<string, AiThinkingLevel[]> = {
   openrouter: ['low', 'medium', 'high', 'off'],
   openai: ['low', 'medium', 'high'],
-  zhipu: ['on', 'off'],
+  zhipu: ['on', 'low', 'high', 'off'],
   qwen: ['on', 'off', 'low', 'medium', 'high'],
   siliconflow: ['on', 'off'],
 }
 
 export function thinkingLevelsForPreset(presetId?: string): AiThinkingLevel[] {
   return (presetId && PRESET_THINKING_LEVELS[presetId]) || []
+}
+
+/** GLM-5.3 系列官方明确「始终思考，不能关闭」（发 disabled 会 400）——不提供「关闭思考」 */
+function isAlwaysThinkingModel(presetId?: string, modelId?: string): boolean {
+  return presetId === 'zhipu' && /^glm-5\.3/i.test(modelId ?? '')
+}
+
+/** 单个模型可用的思考等级：preset 等级减去该模型不支持的档位 */
+function thinkingLevelsForModel(presetId?: string, modelId?: string): AiThinkingLevel[] {
+  const levels = thinkingLevelsForPreset(presetId)
+  return isAlwaysThinkingModel(presetId, modelId) ? levels.filter((level) => level !== 'off') : levels
 }
 
 export function AiProviderBadge({ presetId, className }: { presetId?: string; className?: string }) {
@@ -109,7 +119,6 @@ export function AiProviderDialog({
   const [baseUrl, setBaseUrl] = useState('')
   const [apiKey, setApiKey] = useState('')
   const [defaultModel, setDefaultModel] = useState('')
-  const [isDefault, setIsDefault] = useState(false)
   const [thinking, setThinking] = useState<AiThinkingLevel>('auto')
   const [concurrencyText, setConcurrencyText] = useState('10')
   const [modelConfigs, setModelConfigs] = useState<AiModelConfig[]>([])
@@ -126,7 +135,6 @@ export function AiProviderDialog({
     setBaseUrl(provider?.baseUrl ?? '')
     setApiKey(provider?.apiKey ?? '')
     setDefaultModel(provider?.defaultModel ?? '')
-    setIsDefault(provider?.isDefault ?? false)
     setThinking(provider?.thinking ?? 'auto')
     setConcurrencyText(String(provider?.concurrency ?? 10))
     setModelConfigs(
@@ -213,7 +221,8 @@ export function AiProviderDialog({
         presetId: presetId === 'custom' ? undefined : presetId,
         defaultModel: defaultModel || modelConfigs[0].id,
         models: modelConfigs,
-        isDefault,
+        // 默认 Provider 在设置页点击列表切换；保存只维护本 Provider 自身（后端保留原默认标记）
+        isDefault: provider?.isDefault ?? false,
         thinking: effectiveThinking === 'auto' ? undefined : effectiveThinking,
         concurrency: Number.isInteger(concurrency) && concurrency > 0 ? Math.min(concurrency, 32) : undefined,
         createdAt: provider?.createdAt ?? 0,
@@ -286,7 +295,9 @@ export function AiProviderDialog({
           <Field>
             <FieldLabel>模型列表（★ 为默认模型）</FieldLabel>
             <div className="flex flex-col gap-2">
-              {modelConfigs.map((model) => (
+              {modelConfigs.map((model) => {
+                const modelLevels = thinkingLevelsForModel(presetId, model.id)
+                return (
                 <div key={model.id} className="flex items-center gap-2 rounded-lg border px-2 py-1.5">
                   <button
                     type="button"
@@ -297,13 +308,13 @@ export function AiProviderDialog({
                     <Star className={cn('size-4', defaultModel === model.id && 'fill-current text-amber-500')} />
                   </button>
                   <span className="min-w-0 flex-1 truncate font-mono text-xs">{model.id}</span>
-                  {availableLevels.length > 0 && (
+                  {modelLevels.length > 0 && (
                     <Select
                       items={[
                         { value: 'inherit', label: '跟随 Provider' },
-                        ...availableLevels.map((level) => ({ value: level, label: THINKING_LEVEL_LABELS[level] })),
+                        ...modelLevels.map((level) => ({ value: level, label: THINKING_LEVEL_LABELS[level] })),
                       ]}
-                      value={model.thinking ?? 'inherit'}
+                      value={model.thinking && modelLevels.includes(model.thinking) ? model.thinking : 'inherit'}
                       onValueChange={(value) =>
                         setModelConfigs((current) =>
                           current.map((item) =>
@@ -323,7 +334,7 @@ export function AiProviderDialog({
                       <SelectContent>
                         <SelectGroup>
                           <SelectItem value="inherit">跟随 Provider</SelectItem>
-                          {availableLevels.map((level) => (
+                          {modelLevels.map((level) => (
                             <SelectItem key={level} value={level}>
                               {THINKING_LEVEL_LABELS[level]}
                             </SelectItem>
@@ -341,7 +352,11 @@ export function AiProviderDialog({
                     <X className="size-4" />
                   </button>
                 </div>
-              ))}
+                )
+              })}
+              {presetId === 'zhipu' && modelConfigs.some((model) => isAlwaysThinkingModel(presetId, model.id)) && (
+                <p className="text-xs text-muted-foreground">GLM-5.3 系列始终思考（官方不支持关闭），已配置「关闭」的会按最低档 low 发送。</p>
+              )}
               <div className="flex items-center gap-2">
                 <Input
                   aria-label="模型名"
@@ -448,14 +463,6 @@ export function AiProviderDialog({
             />
             <FieldDescription>「全部识别」批量与后台自动识别同时进行的请求数（默认 10）；限流（429）时调低。</FieldDescription>
           </Field>
-
-          <div className="flex items-center justify-between rounded-lg border p-3">
-            <div className="flex flex-col gap-0.5">
-              <span className="text-sm font-medium">设为默认 Provider</span>
-              <span className="text-xs text-muted-foreground">AI 功能默认使用此 Provider 和模型</span>
-            </div>
-            <Switch checked={isDefault} onCheckedChange={(checked) => setIsDefault(checked === true)} />
-          </div>
         </FieldGroup>
 
         {saveError && <p className="text-xs text-destructive">{saveError}</p>}
