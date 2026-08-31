@@ -9,6 +9,7 @@ import { RelativeTime } from '@/components/relative-time'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
@@ -55,7 +56,7 @@ interface CaseCardTimelineProps {
  * 排列按展示阶段分组、组内按创建顺序。
  */
 export function CaseCardTimeline({ cards, showMoveToCase = true, showBatchAnalyze = true, targetCardId }: CaseCardTimelineProps) {
-  const { cases, analyzeCaseCard, resplitCaseCard, updateCaseCardText, updateCaseCardBarRef, deleteCaseCard, updateCaseCardAnalysis, moveCaseCard, beginAiTask, completeAiTask } = useCairn()
+  const { cases, analyzeCaseCard, previewCaseCardResplit, applyCaseCardResplit, updateCaseCardText, updateCaseCardBarRef, deleteCaseCard, updateCaseCardAnalysis, moveCaseCard, beginAiTask, completeAiTask } = useCairn()
   const confirm = useConfirm()
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set())
   const [editingCardId, setEditingCardId] = useState<string | null>(null)
@@ -67,6 +68,9 @@ export function CaseCardTimeline({ cards, showMoveToCase = true, showBatchAnalyz
   const [organizingCardIds, setOrganizingCardIds] = useState<Set<string>>(new Set())
   const [analyzingCardIds, setAnalyzingCardIds] = useState<Set<string>>(new Set())
   const [resplittingCardIds, setResplittingCardIds] = useState<Set<string>>(new Set())
+  /** 重拆预览会话（0.3.6 两步式）：AI 分段返回后打开对话框，确认才替换原卡 */
+  const [resplitDraft, setResplitDraft] = useState<{ card: CaseCard; segments: { text: string; barRef: number | null }[] } | null>(null)
+  const [resplitApplying, setResplitApplying] = useState(false)
   const [analysisErrors, setAnalysisErrors] = useState<Record<string, string>>({})
   const [batchAnalyzing, setBatchAnalyzing] = useState(false)
   const highlightRef = useRef<HTMLDivElement | null>(null)
@@ -176,19 +180,14 @@ export function CaseCardTimeline({ cards, showMoveToCase = true, showBatchAnalyz
       : { ok: false, error: `${failures.length}/${cards.length} 张失败：${failures[0]}` })
   }
 
-  /** AI 重拆一张已有卡（三个点菜单）：原卡替换为多张新卡；失败原因就地显示（任务中心也有）。 */
+  /** AI 重拆一张已有卡（三个点菜单，0.3.6 起两步式）：先跑 AI 出预览对话框
+   *  （可改文字/BAR、并入上一张），确认才替换原卡；失败原因就地显示（任务中心也有）。 */
   async function runResplit(card: CaseCard) {
     if (resplittingCardIds.has(card.id)) return
-    const ok = await confirm({
-      title: '将这张卡拆成多张？',
-      description: '原卡会被替换（可从备份恢复），AI 识别会重新跑。',
-      confirmText: '开始重拆',
-    })
-    if (!ok) return
     setResplittingCardIds((prev) => new Set(prev).add(card.id))
     try {
-      const created = await resplitCaseCard(card.id)
-      toast.success(`已拆成 ${created} 张卡`)
+      const segments = await previewCaseCardResplit(card.id)
+      setResplitDraft({ card, segments: segments.map((segment) => ({ text: segment.text, barRef: segment.barRef })) })
     } catch (error) {
       setAnalysisErrors((prev) => ({ ...prev, [card.id]: error instanceof Error ? error.message : String(error) }))
     } finally {
@@ -197,6 +196,43 @@ export function CaseCardTimeline({ cards, showMoveToCase = true, showBatchAnalyz
         next.delete(card.id)
         return next
       })
+    }
+  }
+
+  function updateResplitSegment(index: number, patch: { text?: string; barRef?: number | null }) {
+    setResplitDraft((prev) => {
+      if (!prev) return prev
+      const segments = prev.segments.map((segment, i) => (i === index ? { ...segment, ...patch } : segment))
+      return { ...prev, segments }
+    })
+  }
+
+  function mergeResplitSegment(index: number) {
+    setResplitDraft((prev) => {
+      if (!prev || index <= 0) return prev
+      const segments = [...prev.segments]
+      segments[index - 1] = { ...segments[index - 1], text: segments[index - 1].text + segments[index].text }
+      segments.splice(index, 1)
+      return { ...prev, segments }
+    })
+  }
+
+  async function confirmResplit() {
+    if (!resplitDraft || resplitApplying) return
+    const segments = resplitDraft.segments.map((segment) => ({ text: segment.text.trim(), barRef: segment.barRef }))
+    if (segments.some((segment) => !segment.text)) {
+      toast.error('有一张卡是空的')
+      return
+    }
+    setResplitApplying(true)
+    try {
+      const count = await applyCaseCardResplit(resplitDraft.card.id, resplitDraft.card.rawText, segments)
+      setResplitDraft(null)
+      toast.success(`已拆成 ${count} 张卡`)
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : String(error))
+    } finally {
+      setResplitApplying(false)
     }
   }
 
@@ -501,6 +537,57 @@ export function CaseCardTimeline({ cards, showMoveToCase = true, showBatchAnalyz
           )
         })}
       </CardContent>
+      <Dialog open={resplitDraft != null} onOpenChange={(open) => { if (!open && !resplitApplying) setResplitDraft(null) }}>
+        <DialogContent className="sm:max-w-xl">
+          <DialogHeader>
+            <DialogTitle>重拆预览 · {resplitDraft?.segments.length ?? 0} 张卡</DialogTitle>
+            <DialogDescription>
+              确认后原卡会被替换（可从备份恢复），AI 识别会重新跑。可改文字与 BAR，或把一段并入上一张；只剩 1 张时不可替换。
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex max-h-[52vh] flex-col gap-3 overflow-y-auto">
+            {resplitDraft?.segments.map((segment, index) => (
+              <div key={index} className="flex flex-col gap-2 rounded-lg border p-3">
+                <Textarea
+                  rows={3}
+                  value={segment.text}
+                  onChange={(event) => updateResplitSegment(index, { text: event.target.value })}
+                />
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-muted-foreground">#{index + 1}</span>
+                  <Input
+                    className="h-8 w-24"
+                    type="number"
+                    min="1"
+                    step="1"
+                    max={MAX_BAR_NUMBER}
+                    placeholder="BAR"
+                    value={segment.barRef ?? ''}
+                    onChange={(event) => {
+                      const raw = event.target.value
+                      updateResplitSegment(index, { barRef: raw === '' ? null : Number(raw) })
+                    }}
+                  />
+                  <Button variant="ghost" size="sm" className="h-8 text-muted-foreground" disabled={index === 0} onClick={() => mergeResplitSegment(index)}>
+                    并入上一张
+                  </Button>
+                  <span className="ml-auto text-xs text-muted-foreground">{segment.text.trim().replace(/\s/g, '').length} 字</span>
+                </div>
+              </div>
+            ))}
+          </div>
+          <DialogFooter>
+            <Button variant="ghost" disabled={resplitApplying} onClick={() => setResplitDraft(null)}>取消</Button>
+            <Button
+              variant="destructive"
+              disabled={(resplitDraft?.segments.length ?? 0) < 2 || resplitApplying || (resplitDraft?.segments.some((segment) => !segment.text.trim()) ?? false)}
+              onClick={() => void confirmResplit()}
+            >
+              {resplitApplying ? '替换中…' : `替换为 ${resplitDraft?.segments.length ?? 0} 张`}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </Card>
   )
 }

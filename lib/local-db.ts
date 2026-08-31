@@ -263,12 +263,30 @@ export async function analyzeCaseCard(cardId: string, instruction?: string): Pro
   return invoke<CaseCard>('analyze_case_card', { cardId, instruction: instruction ?? null })
 }
 
-/** AI 重拆一张已有 Card（0.3.4）：原卡软删除，返回新拆出的卡；拆不动时原卡不动并报错。 */
-export async function resplitCaseCard(cardId: string): Promise<{ caseId: string; cards: CaseCard[] }> {
+export interface CaseCardResplitSegment {
+  text: string
+  barRef: number | null
+}
+
+/** AI 重拆预览（0.3.6 两步式）：跑拆卡 AI 返回分段，不落库、原卡不动。 */
+export async function previewCaseCardResplit(cardId: string): Promise<{ caseId: string; segments: CaseCardResplitSegment[] }> {
   if (!isTauriRuntime()) {
     throw new Error('AI 重拆需要桌面版运行')
   }
-  return invoke<{ caseId: string; cards: CaseCard[] }>('resplit_case_card', { cardId })
+  return invoke<{ caseId: string; segments: CaseCardResplitSegment[] }>('preview_case_card_resplit', { cardId })
+}
+
+/** AI 重拆应用：确认后的分段替换原卡（软删）。originalText 是预览时的原文——
+ *  应用前比对原卡，期间被编辑/删除则中止。 */
+export async function applyCaseCardResplit(
+  cardId: string,
+  originalText: string,
+  segments: CaseCardResplitSegment[],
+): Promise<{ caseId: string; cards: CaseCard[] }> {
+  if (!isTauriRuntime()) {
+    throw new Error('AI 重拆需要桌面版运行')
+  }
+  return invoke<{ caseId: string; cards: CaseCard[] }>('apply_case_card_resplit', { cardId, originalText, segments })
 }
 
 /** AI 秘书代拟 Case 标题，返回草稿（不落库）。 */

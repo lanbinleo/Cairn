@@ -7,7 +7,7 @@
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import { listen } from '@tauri-apps/api/event'
-import { loadLocalState, saveLocalRecord, saveLocalRecords, deleteLocalRecord, restoreLocalState, exportLocalBackup, saveAttachmentFile, isTauriRuntime, analyzeCaseCard as analyzeCaseCardRemote, resplitCaseCard as resplitCaseCardRemote, draftCaseTitle as draftCaseTitleRemote, suggestCaseExecutions as suggestCaseExecutionsRemote, summarizeCase as summarizeCaseRemote, getAiSettings } from './local-db'
+import { loadLocalState, saveLocalRecord, saveLocalRecords, deleteLocalRecord, restoreLocalState, exportLocalBackup, saveAttachmentFile, isTauriRuntime, analyzeCaseCard as analyzeCaseCardRemote, previewCaseCardResplit as previewCaseCardResplitRemote, applyCaseCardResplit as applyCaseCardResplitRemote, draftCaseTitle as draftCaseTitleRemote, suggestCaseExecutions as suggestCaseExecutionsRemote, summarizeCase as summarizeCaseRemote, getAiSettings, type CaseCardResplitSegment } from './local-db'
 import { buildCaseSummaryContext } from './case-summary'
 import { deriveAutoCloseCases } from './case-auto-close'
 import type { CairnStateSnapshot } from './seed'
@@ -76,7 +76,12 @@ interface CairnStore {
   updateCaseCardAnalysis: (cardId: string, updater: (prev: CaseCardAnalysis) => CaseCardAnalysis) => CaseCard | undefined
   analyzeCaseCard: (cardId: string, instruction?: string, options?: { registerTask?: boolean }) => Promise<CaseCard | undefined>
   /** AI 重拆一张已有卡（三个点菜单）：原卡替换为多张新卡；拆不动时抛错、原卡不动。 */
-  resplitCaseCard: (cardId: string) => Promise<number>
+  /** AI 重拆预览（0.3.6 两步式）：跑 AI 返回分段不落库；用户在预览对话框确认后
+   *  走 applyCaseCardResplit 替换。失败抛给调用方就地显示，任务中心记录全过程。 */
+  previewCaseCardResplit: (cardId: string) => Promise<CaseCardResplitSegment[]>
+  /** 重拆应用：原卡软删、新卡落库。吸收返回的新卡让 UI 立即更新（data-changed
+   *  事件随后兜底），并把 Case 上指向原卡的建议清掉（证据悬空，与 Rust 同规则）。 */
+  applyCaseCardResplit: (cardId: string, originalText: string, segments: CaseCardResplitSegment[]) => Promise<number>
   /** 重跑 AI 持仓管理补录建议（绑定 Trade 后自动触发，也可手动）。只吸收建议字段。
    *  instruction：标签建议的可教重试（补充要求 + 标签现状一起发给 AI）。 */
   refreshCaseExecutionSuggestions: (caseId: string, instruction?: string) => Promise<void>
@@ -530,19 +535,33 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
    *  吸收返回的新卡让 UI 立即更新（data-changed 事件随后兜底），并把 Case 上
    *  指向原卡的建议清掉（证据悬空，与 Rust persist_resplit 同规则）。失败抛给
    *  调用方 toast，任务中心记录全过程。 */
-  const resplitCaseCard = useCallback(async (cardId: string): Promise<number> => {
+  const previewCaseCardResplit = useCallback(async (cardId: string): Promise<CaseCardResplitSegment[]> => {
     const card = caseCards.find((item) => item.id === cardId)
     if (!card) throw new Error('这张卡不存在')
+    const taskId = beginAiTask({ kind: 'split', label: 'AI 重拆预览', targetType: 'card', targetId: cardId })
+    try {
+      const result = await previewCaseCardResplitRemote(cardId)
+      completeAiTask(taskId, { ok: true })
+      return result.segments
+    } catch (cause) {
+      completeAiTask(taskId, { ok: false, error: cause instanceof Error ? cause.message : String(cause) })
+      throw cause
+    }
+  }, [caseCards, beginAiTask, completeAiTask])
+
+  const applyCaseCardResplit = useCallback(async (cardId: string, originalText: string, segments: CaseCardResplitSegment[]): Promise<number> => {
+    const card = caseCards.find((item) => item.id === cardId)
     const taskId = beginAiTask({ kind: 'split', label: 'AI 重拆此卡', targetType: 'card', targetId: cardId })
     try {
-      const result = await resplitCaseCardRemote(cardId)
+      const result = await applyCaseCardResplitRemote(cardId, originalText, segments)
       setCaseCards((prev) => {
         const without = prev.filter((item) => item.id !== cardId)
         const incoming = result.cards.filter((item) => !without.some((existing) => existing.id === item.id))
         return [...without, ...incoming].sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id))
       })
+      const caseId = card?.caseId ?? result.caseId
       setCases((prev) => prev.map((caseRecord) => {
-        if (caseRecord.id !== card.caseId) return caseRecord
+        if (caseRecord.id !== caseId) return caseRecord
         let next = { ...caseRecord }
         if (next.aiExecutionSuggestions) {
           const suggestions = next.aiExecutionSuggestions.suggestions.filter((item) => item.cardId !== cardId)
@@ -1305,7 +1324,8 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
       deleteCaseCard,
       updateCaseCardAnalysis,
       analyzeCaseCard,
-      resplitCaseCard,
+      previewCaseCardResplit,
+      applyCaseCardResplit,
       refreshCaseExecutionSuggestions,
       setCaseExecutionSuggestionStatus,
       setCaseTagSuggestionStatus,
@@ -1348,7 +1368,7 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
       updateCaseTag,
       deleteCaseTag,
     }),
-    [accounts, periods, trades, tagDefs, cases, caseCards, caseBindings, caseTagDefs, importBatches, attachments, chartImports, chartCandles, symbols, notes, aiTasks, aiTaskList, beginAiTask, completeAiTask, appendAiTaskStream, updateAiTaskProgress, markAiTasksRead, dismissAiTask, updateAccount, updatePeriod, updateTrade, updateNote, createAccount, createPeriod, createSymbol, createNote, createImageAttachment, deleteAttachment, createCase, updateCase, deleteCase, createCaseCard, moveCaseCard, updateCaseCardText, updateCaseCardBarRef, updateCaseCardAnalysis, analyzeCaseCard, resplitCaseCard, prefillTradePlanFromBoundCase, createCaseBinding, deleteCaseBinding, createTrades, createImportBatch, createChartImport, deleteChartImport, rollbackImportBatch, deleteAccount, deletePeriod, deleteTrade, deleteSymbol, deleteNote, restoreState, exportBackup, setTradeStatus, createTag, updateTag, deleteTag, createCaseTag, updateCaseTag, deleteCaseTag],
+    [accounts, periods, trades, tagDefs, cases, caseCards, caseBindings, caseTagDefs, importBatches, attachments, chartImports, chartCandles, symbols, notes, aiTasks, aiTaskList, beginAiTask, completeAiTask, appendAiTaskStream, updateAiTaskProgress, markAiTasksRead, dismissAiTask, updateAccount, updatePeriod, updateTrade, updateNote, createAccount, createPeriod, createSymbol, createNote, createImageAttachment, deleteAttachment, createCase, updateCase, deleteCase, createCaseCard, moveCaseCard, updateCaseCardText, updateCaseCardBarRef, updateCaseCardAnalysis, analyzeCaseCard, previewCaseCardResplit, applyCaseCardResplit, prefillTradePlanFromBoundCase, createCaseBinding, deleteCaseBinding, createTrades, createImportBatch, createChartImport, deleteChartImport, rollbackImportBatch, deleteAccount, deletePeriod, deleteTrade, deleteSymbol, deleteNote, restoreState, exportBackup, setTradeStatus, createTag, updateTag, deleteTag, createCaseTag, updateCaseTag, deleteCaseTag],
   )
 
   return <StoreContext.Provider value={value}>{children}</StoreContext.Provider>

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Cairn 记一笔
 // @namespace    cairn
-// @version      0.3.2
+// @version      0.3.3
 // @description  TradingView 悬浮记录浮窗：口述或打字记录交易思考，实时写入本地 Cairn（127.0.0.1 本地 API）
 // @author       Cairn
 // @match        https://*.tradingview.com/*
@@ -483,6 +483,34 @@
   #cairn-cw-wrap #cw-split-toggle:has(input:checked) { color: var(--bar-num); }
   #cairn-cw-wrap #cw-split-check { accent-color: var(--bar-num); margin: 0; width: 13px; height: 13px; cursor: pointer; }
   #cairn-cw-wrap #cw-split-check:disabled { cursor: default; }
+  #cairn-cw-wrap #cw-preview-toggle { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: var(--text-dim); cursor: pointer; }
+  #cairn-cw-wrap #cw-preview-toggle:has(input:checked) { color: var(--bar-num); }
+  #cairn-cw-wrap #cw-preview-check { accent-color: var(--bar-num); margin: 0; width: 13px; height: 13px; cursor: pointer; }
+  #cairn-cw-wrap #cw-preview-check:disabled { opacity: 0.35; cursor: default; }
+
+  /* 拆分预览模态框：全屏遮罩 + 居中面板，z 高于浮窗本体 */
+  #cairn-cw-wrap #cw-split-modal { display: none; position: fixed; inset: 0; z-index: 60; align-items: center; justify-content: center; padding: 24px; background: rgba(0, 0, 0, 0.45); }
+  #cairn-cw-wrap #cw-split-modal.show { display: flex; }
+  #cairn-cw-wrap #cw-sm-panel { display: flex; flex-direction: column; width: min(460px, 90vw); max-height: 78vh; background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow-panel); }
+  #cairn-cw-wrap #cw-sm-head { display: flex; align-items: center; justify-content: space-between; padding: 10px 14px; border-bottom: 1px solid var(--border); font-weight: 600; }
+  #cairn-cw-wrap #cw-sm-close { background: none; border: none; color: var(--text-dim); font-size: 14px; cursor: pointer; padding: 2px 6px; }
+  #cairn-cw-wrap #cw-sm-close:hover { color: var(--text); }
+  #cairn-cw-wrap #cw-sm-list { overflow-y: auto; padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; }
+  #cairn-cw-wrap .cw-sm-seg { border: 1px solid var(--border); border-radius: 8px; padding: 8px; background: var(--panel-2); display: flex; flex-direction: column; gap: 6px; }
+  #cairn-cw-wrap .cw-sm-seg textarea { width: 100%; min-height: 56px; max-height: 180px; resize: vertical; background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; font: inherit; font-size: 13px; line-height: 1.5; }
+  #cairn-cw-wrap .cw-sm-seg textarea:focus { outline: none; border-color: var(--accent); }
+  #cairn-cw-wrap .cw-sm-row { display: flex; align-items: center; gap: 6px; }
+  #cairn-cw-wrap .cw-sm-idx { font-size: 11px; color: var(--text-dim); min-width: 30px; }
+  #cairn-cw-wrap .cw-sm-bar { width: 76px; background: var(--bg); color: var(--bar-num); border: 1px solid var(--border); border-radius: 6px; padding: 3px 6px; font-size: 12px; }
+  #cairn-cw-wrap .cw-sm-merge { background: none; border: 1px solid var(--border); color: var(--text-dim); border-radius: 6px; padding: 3px 8px; font-size: 12px; cursor: pointer; }
+  #cairn-cw-wrap .cw-sm-merge:hover:not(:disabled) { color: var(--text); }
+  #cairn-cw-wrap .cw-sm-merge:disabled { opacity: 0.35; cursor: default; }
+  #cairn-cw-wrap .cw-sm-count { margin-left: auto; font-size: 11px; color: var(--text-dim); }
+  #cairn-cw-wrap #cw-sm-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 14px; border-top: 1px solid var(--border); }
+  #cairn-cw-wrap #cw-sm-cover { font-size: 12px; color: var(--text-dim); }
+  #cairn-cw-wrap #cw-sm-cover.warn { color: var(--warn); }
+  #cairn-cw-wrap #cw-sm-confirm { background: var(--accent); color: #fff; border: none; border-radius: 8px; padding: 7px 14px; font-size: 13px; font-weight: 600; cursor: pointer; }
+  #cairn-cw-wrap #cw-sm-confirm:disabled { opacity: 0.5; cursor: default; }
   #cairn-cw-wrap #cw-submit-btn {
     margin-left: auto;
     background: var(--accent); color: #fff; border: none;
@@ -724,6 +752,10 @@
             <input type="checkbox" id="cw-split-check">
             <span>拆卡</span>
           </label>
+          <label id="cw-preview-toggle" title="先出预览：改分段/改 BAR、并入上一张，确认后才创建（不勾则立即拆分落卡）">
+            <input type="checkbox" id="cw-preview-check" disabled>
+            <span>预览</span>
+          </label>
           <button id="cw-submit-btn">提交 ⌘↵</button>
         </div>
 
@@ -746,6 +778,21 @@
       <span class="fb-dot"></span>
       <span class="fb-icon">✎</span>
       <span class="fb-label">记一笔</span>
+    </div>
+  </div>
+
+  /* 拆分预览模态框（0.3.3 手动模式）：挂在 #cairn-cw-wrap 内，键盘隔离自动覆盖 */
+  <div id="cw-split-modal">
+    <div id="cw-sm-panel">
+      <div id="cw-sm-head">
+        <span id="cw-sm-title">拆分预览</span>
+        <button id="cw-sm-close" title="取消，不创建任何卡（原文留在输入框）">✕</button>
+      </div>
+      <div id="cw-sm-list"></div>
+      <div id="cw-sm-foot">
+        <span id="cw-sm-cover"></span>
+        <button id="cw-sm-confirm">确认创建</button>
+      </div>
     </div>
   </div>
 
@@ -1251,6 +1298,163 @@
     return id;
   }
 
+  // 批量/手动拆卡落卡后的共用收尾：前插列表、fresh 高亮、清输入、entry 完整性提示
+  function finishBatchCreate(cards, payload) {
+    state.lastBatchRequest = null;
+    state.cards = [...cards].reverse().concat(state.cards);
+    renderCards();
+    const first = $('card-list').firstElementChild;
+    if (first) first.classList.add('fresh');
+    $('card-input').value = '';
+    $('bar-input').value = '';
+    // 降级为单卡（AI 不可用/覆盖率不过）时与单卡路径行为一致：entry 正则提示 + AI 轮询
+    if (cards.length === 1) {
+      const hints = checkCompleteness(payload.phase, payload.rawText);
+      if (hints.length > 0) {
+        $('ct-body').textContent = '还没提到：' + hints.join('、');
+        $('completeness-tip').classList.add('show');
+        if (payload.phase === 'entry') void pollMissingFields(cards[0].id);
+      } else {
+        $('completeness-tip').classList.remove('show');
+      }
+    } else {
+      $('completeness-tip').classList.remove('show');
+    }
+    showToast(cards.length > 1 ? '✓ 已拆成 ' + cards.length + ' 张卡' : '✓ 已保存');
+    $('card-input').focus();
+  }
+
+  // 手动拆卡落库（预览确认后）：无 AI 调用，30s 超时足够
+  async function createBatchCards(rid, payload, segments) {
+    const body = { phase: payload.phase, segments, clientRequestId: rid };
+    if (payload.entryDecision) body.entryDecision = payload.entryDecision;
+    let res = await api('POST', '/cases/' + encodeURIComponent(state.caseId) + '/cards/batch-create', body, 30000);
+    if (res.status === 404 || res.status === 405) {
+      showToast('手动拆卡需要 Cairn 0.3.6+，请先更新应用', 'err');
+      return null;
+    }
+    if (res.status === 401) {
+      state.connected = false;
+      showToast('Token 无效', 'err');
+      showSettings(true);
+      return null;
+    }
+    const cards = res.json && Array.isArray(res.json.cards) ? res.json.cards : null;
+    if (res.status !== 200 || !cards) {
+      showToast((res.json && res.json.error) || '创建失败', 'err');
+      return null;
+    }
+    return cards;
+  }
+
+  /* ================= 拆分预览模态框（手动拆卡） ================= */
+
+  // 预览会话：分段可在确认前改文字/改 BAR/并入上一张；确认才落卡，取消什么都不创建。
+  // 原文始终留在输入框，直到确认成功才清空。
+  function openSplitModal(draft) {
+    state.splitDraft = draft;
+    renderSplitModal();
+    $('split-modal').classList.add('show');
+  }
+
+  function closeSplitModal() {
+    state.splitDraft = null;
+    $('split-modal').classList.remove('show');
+  }
+
+  function renderSplitModal() {
+    const d = state.splitDraft;
+    if (!d) return;
+    $('sm-title').textContent = '拆分预览 · ' + d.segments.length + ' 张卡';
+    const list = $('sm-list');
+    list.innerHTML = '';
+    d.segments.forEach((seg, i) => {
+      const box = document.createElement('div');
+      box.className = 'cw-sm-seg';
+      const ta = document.createElement('textarea');
+      ta.value = seg.text;
+      const row = document.createElement('div');
+      row.className = 'cw-sm-row';
+      const idx = document.createElement('span');
+      idx.className = 'cw-sm-idx';
+      idx.textContent = '#' + (i + 1);
+      const bar = document.createElement('input');
+      bar.className = 'cw-sm-bar';
+      bar.inputMode = 'numeric';
+      bar.placeholder = 'BAR №';
+      bar.value = seg.bar == null ? '' : String(seg.bar);
+      bar.addEventListener('input', () => { seg.bar = bar.value; });
+      const merge = document.createElement('button');
+      merge.className = 'cw-sm-merge';
+      merge.textContent = '并入上一张';
+      merge.disabled = i === 0;
+      merge.addEventListener('click', () => {
+        d.segments[i - 1].text += seg.text;
+        d.segments.splice(i, 1);
+        renderSplitModal();
+      });
+      const count = document.createElement('span');
+      count.className = 'cw-sm-count';
+      count.textContent = seg.text.replace(/\s/g, '').length + ' 字';
+      ta.addEventListener('input', () => {
+        seg.text = ta.value;
+        count.textContent = seg.text.replace(/\s/g, '').length + ' 字';
+        updateCoverHint();
+      });
+      row.append(idx, bar, merge, count);
+      box.append(ta, row);
+      list.appendChild(box);
+    });
+    updateCoverHint();
+  }
+
+  // 覆盖率提示：手动模式不强制逐字覆盖，但把「会丢多少字」摆在明面上
+  function updateCoverHint() {
+    const d = state.splitDraft;
+    if (!d) return;
+    const covered = d.segments.reduce((sum, s) => sum + s.text.replace(/\s/g, '').length, 0);
+    const total = d.rawText.replace(/\s/g, '').length;
+    const missing = Math.max(0, total - covered);
+    const el = $('sm-cover');
+    el.textContent = missing > 0 ? '未覆盖 ' + missing + ' 字（确认后这部分不落卡）' : '原文全覆盖 ✓';
+    el.classList.toggle('warn', missing > 0);
+  }
+
+  async function confirmSplitModal() {
+    const d = state.splitDraft;
+    if (!d || state.busy) return;
+    const segments = [];
+    for (const seg of d.segments) {
+      const text = (seg.text || '').trim();
+      if (!text) { showToast('有一张卡是空的', 'err'); return; }
+      let bar = null;
+      const raw = String(seg.bar == null ? '' : seg.bar).trim();
+      if (raw !== '') {
+        const n = parseInt(raw, 10);
+        if (!Number.isInteger(n) || n < 1 || n > 1440) { showToast('BAR 序号需在 1–1440 之间', 'err'); return; }
+        bar = n;
+      }
+      segments.push({ text, barRef: bar });
+    }
+    const btn = $('sm-confirm');
+    state.busy = true;
+    btn.disabled = true;
+    btn.textContent = '创建中…';
+    try {
+      const cards = await createBatchCards(d.rid, d, segments);
+      if (cards) {
+        closeSplitModal();
+        finishBatchCreate(cards, { phase: d.phase, rawText: d.rawText, entryDecision: d.entryDecision });
+      }
+    } catch {
+      showToast('无法连接 Cairn', 'err');
+    } finally {
+      state.busy = false;
+      btn.disabled = false;
+      btn.textContent = '确认创建';
+    }
+  }
+
   /* ================= 提交 Card ================= */
 
   async function submitCard() {
@@ -1264,6 +1468,7 @@
     }
 
     const splitMode = $('split-check').checked;
+    const previewMode = splitMode && $('preview-check').checked;
     const payload = { phase: state.phase, rawText: text };
     if (!splitMode) {
       const manualBar = parseInt($('bar-input').value, 10);
@@ -1271,20 +1476,56 @@
     }
     if (state.phase === 'entry') payload.entryDecision = state.entryDecision;
 
-    // 批量语音拆卡（显式勾选）：直接拆分落库（不做预览，流畅优先）；拆错了用 ✎/✕ 修正或删除
+    // 批量语音拆卡（显式勾选）：直接拆分落库（流畅优先）；勾了「预览」则先出
+    // 模态框给用户过目，确认才创建（保护体验，0.3.3）。拆错了用 ✎/✕ 修正或删除。
     const useBatch = splitMode;
 
     const btn = $('submit-btn');
     state.busy = true;
     btn.disabled = true;
-    btn.textContent = useBatch ? '拆分中…' : '保存中…';
+    btn.textContent = useBatch ? (previewMode ? '预览中…' : '拆分中…') : '保存中…';
     try {
+      if (useBatch && previewMode) {
+        // 预览模式：AI 拆分但不落库（失败不静默降级——用户在场，直接看到原因）
+        let res = await api('POST', '/cases/' + encodeURIComponent(state.caseId) + '/cards/split-preview', { phase: payload.phase, rawText: text }, 300000);
+        if (res.status === 404 || res.status === 405) {
+          showToast('拆卡预览需要 Cairn 0.3.6+，请先更新应用（或取消勾选预览直接拆）', 'err');
+          return;
+        }
+        if (res.status === 401) {
+          state.connected = false;
+          showToast('Token 无效', 'err');
+          showSettings(true);
+          return;
+        }
+        const segments = res.json && Array.isArray(res.json.segments) ? res.json.segments : null;
+        if (res.status !== 200 || !segments) {
+          showToast((res.json && res.json.error) || '拆分失败', 'err');
+          return;
+        }
+        const rid = batchRequestIdFor(text);
+        if (segments.length <= 1) {
+          // 单段没有预览意义：与直接拆卡行为一致，立即保存
+          const normalized = segments.map((s) => ({ text: String(s.text || '').trim(), barRef: s.barRef ?? null }));
+          const cards = await createBatchCards(rid, payload, normalized);
+          if (cards) finishBatchCreate(cards, payload);
+          return;
+        }
+        openSplitModal({
+          phase: payload.phase,
+          rawText: text,
+          entryDecision: payload.entryDecision,
+          rid,
+          segments: segments.map((s) => ({ text: String(s.text || ''), bar: s.barRef ?? null })),
+        });
+        return;
+      }
       if (useBatch) {
         const batchBody = { phase: payload.phase, rawText: text, clientRequestId: batchRequestIdFor(text) };
         if (payload.entryDecision) batchBody.entryDecision = payload.entryDecision;
-        // 后端超时上限 90s×2（网络类失败自动重试一次）——客户端超时必须更长，
+        // 后端超时上限 90s×2 网络 + 修正轮 90s ≈ 270s——客户端超时必须更长，
         // 否则超时重发会在服务端排队后命中幂等探针之前就产生新请求（同文本复用 id 兜底）。
-        let res = await api('POST', '/cases/' + encodeURIComponent(state.caseId) + '/cards/batch-split', batchBody, 200000);
+        let res = await api('POST', '/cases/' + encodeURIComponent(state.caseId) + '/cards/batch-split', batchBody, 300000);
         if (res.status === 404 || res.status === 405) {
           res = await api('POST', '/cases/' + encodeURIComponent(state.caseId) + '/cards', payload);
           res = { status: res.status, json: res.json && res.json.id ? { cards: [res.json] } : res.json };
@@ -1300,28 +1541,7 @@
           showToast((res.json && res.json.error) || '拆分失败', 'err');
           return;
         }
-        state.lastBatchRequest = null;
-        state.cards = [...cards].reverse().concat(state.cards);
-        renderCards();
-        const first = $('card-list').firstElementChild;
-        if (first) first.classList.add('fresh');
-        ta.value = '';
-        $('bar-input').value = '';
-        // 降级为单卡（AI 不可用/覆盖率不过）时与单卡路径行为一致：entry 正则提示 + AI 轮询
-        if (cards.length === 1) {
-          const hints = checkCompleteness(payload.phase, text);
-          if (hints.length > 0) {
-            $('ct-body').textContent = '还没提到：' + hints.join('、');
-            $('completeness-tip').classList.add('show');
-            if (payload.phase === 'entry') void pollMissingFields(cards[0].id);
-          } else {
-            $('completeness-tip').classList.remove('show');
-          }
-        } else {
-          $('completeness-tip').classList.remove('show');
-        }
-        showToast(cards.length > 1 ? '✓ 已拆成 ' + cards.length + ' 张卡' : '✓ 已保存');
-        ta.focus();
+        finishBatchCreate(cards, payload);
         return;
       }
 
@@ -1580,7 +1800,16 @@
       const bar = $('bar-input');
       bar.disabled = this.checked;
       bar.placeholder = this.checked ? '拆分用卡内锚点' : 'BAR №';
+      // 「预览」依赖「拆卡」：不拆卡时禁用并复位
+      const preview = $('preview-check');
+      preview.disabled = !this.checked;
+      if (!this.checked) preview.checked = false;
     });
+    $('sm-close').addEventListener('click', () => {
+      closeSplitModal();
+      showToast('已取消，原文还在输入框');
+    });
+    $('sm-confirm').addEventListener('click', confirmSplitModal);
     $('ct-close').addEventListener('click', () => $('completeness-tip').classList.remove('show'));
 
     $('cards-expand').addEventListener('click', function () {
@@ -1639,10 +1868,16 @@
       } else if (e.key === 'Enter' && inner && inner.id && inner.id.indexOf('cw-set-pct-') === 0) {
         e.preventDefault();
         saveRiskPercents();
-      } else if (e.key === 'Escape' && dock().classList.contains('open')) {
-        if (state.editingCardId) cancelEditCard();
-        else if ($('case-menu').classList.contains('show')) closeCaseMenu();
-        else collapseWidget();
+      } else if (e.key === 'Escape') {
+        // 拆分预览模态框最高优先：取消 = 什么都不创建
+        if ($('split-modal').classList.contains('show')) {
+          closeSplitModal();
+          showToast('已取消，原文还在输入框');
+        } else if (dock().classList.contains('open')) {
+          if (state.editingCardId) cancelEditCard();
+          else if ($('case-menu').classList.contains('show')) closeCaseMenu();
+          else collapseWidget();
+        }
       }
       e.stopPropagation();
     }
