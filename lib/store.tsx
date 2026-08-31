@@ -76,7 +76,7 @@ interface CairnStore {
   updateCaseCardAnalysis: (cardId: string, updater: (prev: CaseCardAnalysis) => CaseCardAnalysis) => CaseCard | undefined
   analyzeCaseCard: (cardId: string, instruction?: string, options?: { registerTask?: boolean }) => Promise<CaseCard | undefined>
   /** AI 重拆一张已有卡（三个点菜单）：原卡替换为多张新卡；拆不动时抛错、原卡不动。 */
-  resplitCaseCard: (cardId: string) => Promise<void>
+  resplitCaseCard: (cardId: string) => Promise<number>
   /** 重跑 AI 持仓管理补录建议（绑定 Trade 后自动触发，也可手动）。只吸收建议字段。 */
   refreshCaseExecutionSuggestions: (caseId: string) => Promise<void>
   /** 更新单条建议状态（accepted 带生成的 executionId / dismissed 带时间）。 */
@@ -529,7 +529,7 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
    *  吸收返回的新卡让 UI 立即更新（data-changed 事件随后兜底），并把 Case 上
    *  指向原卡的建议清掉（证据悬空，与 Rust persist_resplit 同规则）。失败抛给
    *  调用方 toast，任务中心记录全过程。 */
-  const resplitCaseCard = useCallback(async (cardId: string): Promise<void> => {
+  const resplitCaseCard = useCallback(async (cardId: string): Promise<number> => {
     const card = caseCards.find((item) => item.id === cardId)
     if (!card) throw new Error('这张卡不存在')
     const taskId = beginAiTask({ kind: 'split', label: 'AI 重拆此卡', targetType: 'card', targetId: cardId })
@@ -554,6 +554,7 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
         return next
       }))
       completeAiTask(taskId, { ok: true })
+      return result.cards.length
     } catch (cause) {
       completeAiTask(taskId, { ok: false, error: cause instanceof Error ? cause.message : String(cause) })
       throw cause

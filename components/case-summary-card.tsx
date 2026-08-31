@@ -4,11 +4,13 @@ import { useEffect, useMemo, useRef } from 'react'
 import { NotebookPen, RefreshCw, Sparkles } from 'lucide-react'
 
 import { AiRetryLink } from '@/components/ai-retry-button'
+import { useConfirm } from '@/components/confirm-dialog-provider'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { InfoHint } from '@/components/info-hint'
 import { RelativeTime } from '@/components/relative-time'
+import { toast } from '@/components/ui/sonner'
 import { parseSummaryMarkup, stripSummaryMarkup, type SummaryMarkupKind } from '@/lib/summary-markup'
 import { useCairn } from '@/lib/store'
 import type { CaseCard, Trade, TradeCase } from '@/lib/types'
@@ -91,6 +93,7 @@ export function CaseSummaryCard({
   trade?: Trade | null
 }) {
   const { summarizeCase, updateTrade, aiTasks, aiTaskList } = useCairn()
+  const confirm = useConfirm()
   // busy/error 是 store 级状态：AI 调用长达几十秒，切页回来仍能看到「生成中」或失败原因
   const busy = aiTasks.summarizingCaseIds.includes(caseRecord.id)
   const error = aiTasks.summaryErrorByCase[caseRecord.id] ?? ''
@@ -113,9 +116,16 @@ export function CaseSummaryCard({
     await summarizeCase(caseRecord.id, instruction)
   }
 
-  function fillNote() {
+  async function fillNote() {
     if (!trade) return
-    if (trade.note && !window.confirm('重新填入会整体替换当前复盘备注，继续？')) return
+    if (trade.note) {
+      const ok = await confirm({
+        title: '重新填入复盘备注？',
+        description: '会整体替换当前备注内容。',
+        confirmText: '重新填入',
+      })
+      if (!ok) return
+    }
     // 复盘备注是纯文本渲染：标注记号剥掉，只留文字
     const draft = [
       `【AI 总结草稿】${summary?.overview ?? ''}`,
@@ -124,6 +134,7 @@ export function CaseSummaryCard({
       summary && summary.highlights.length > 0 ? `\n要点：\n${summary.highlights.map((item) => `- ${item}`).join('\n')}` : '',
     ].join('\n').trim() + '\n'
     updateTrade(trade.id, { note: draft })
+    toast.success('已填入复盘备注')
   }
 
   if (!summary) {
@@ -165,7 +176,7 @@ export function CaseSummaryCard({
           </div>
           <div className="flex items-center gap-2">
             {trade && (
-              <Button size="sm" variant="outline" disabled={busy} onClick={fillNote}>
+              <Button size="sm" variant="outline" disabled={busy} onClick={() => void fillNote()}>
                 <NotebookPen data-icon="inline-start" />{trade.note ? '重新填入' : '填入复盘备注'}
               </Button>
             )}

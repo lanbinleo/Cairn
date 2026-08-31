@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Check, Plus, Tags, Trash2 } from 'lucide-react'
 
+import { useConfirm } from '@/components/confirm-dialog-provider'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -14,6 +15,7 @@ import {
 } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Separator } from '@/components/ui/separator'
+import { toast } from '@/components/ui/sonner'
 import { TAG_COLORS, tagColorNames, tagDotClasses } from '@/components/tag-badge'
 import { useCairn } from '@/lib/store'
 import { findTagByName, normalizeTagName, tagNamesEqual } from '@/lib/tags'
@@ -57,6 +59,7 @@ function ColorPicker({
 /** 单个标签行：改色、重命名、删除、显示使用次数 */
 function TagRow({ tag }: { tag: TagDef }) {
   const { trades, tagDefs, updateTag, deleteTag } = useCairn()
+  const confirm = useConfirm()
   const [name, setName] = useState(tag.name)
   const normalizedName = normalizeTagName(name)
   const duplicate = Boolean(normalizedName && findTagByName(tagDefs, normalizedName, tag.id))
@@ -74,11 +77,17 @@ function TagRow({ tag }: { tag: TagDef }) {
     if (!tagNamesEqual(normalizedName, tag.name)) updateTag(tag.id, { name: normalizedName })
   }
 
-  function handleDelete() {
-    const message = usage > 0
-      ? `删除标签「${tag.name}」？它会从 ${usage} 笔交易中移除。`
-      : `删除标签「${tag.name}」？`
-    if (window.confirm(message)) deleteTag(tag.id)
+  async function handleDelete() {
+    const ok = await confirm({
+      title: `删除标签「${tag.name}」？`,
+      description: usage > 0 ? `它会从 ${usage} 笔交易中移除。` : undefined,
+      confirmText: '删除',
+      destructive: true,
+    })
+    if (ok) {
+      deleteTag(tag.id)
+      toast.success('已删除标签')
+    }
   }
 
   return (
@@ -106,7 +115,7 @@ function TagRow({ tag }: { tag: TagDef }) {
         size="icon-sm"
         aria-label={`删除标签 ${tag.name}`}
         className="text-muted-foreground hover:text-destructive"
-        onClick={handleDelete}
+        onClick={() => void handleDelete()}
       >
         <Trash2 />
       </Button>

@@ -3,11 +3,13 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Check, Plus, Tags, Trash2 } from 'lucide-react'
 
+import { useConfirm } from '@/components/confirm-dialog-provider'
 import { TAG_COLORS, tagColorNames, tagDotClasses } from '@/components/tag-badge'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Separator } from '@/components/ui/separator'
+import { toast } from '@/components/ui/sonner'
 import { useCairn } from '@/lib/store'
 import { findTagByName, normalizeTagName, tagNamesEqual } from '@/lib/tags'
 import type { CaseTagDef, TagColor } from '@/lib/types'
@@ -36,6 +38,7 @@ function ColorPicker({ value, onChange, prefix }: { value: TagColor; onChange: (
 
 function CaseTagRow({ tag }: { tag: CaseTagDef }) {
   const { cases, caseTagDefs, updateCaseTag, deleteCaseTag } = useCairn()
+  const confirm = useConfirm()
   const [name, setName] = useState(tag.name)
   const normalizedName = normalizeTagName(name)
   const duplicate = Boolean(normalizedName && findTagByName(caseTagDefs, normalizedName, tag.id))
@@ -73,7 +76,17 @@ function CaseTagRow({ tag }: { tag: CaseTagDef }) {
         size="icon-sm"
         aria-label={`删除 Case 标签 ${tag.name}`}
         onClick={() => {
-          if (window.confirm(`删除 Case 标签「${tag.name}」？它会从 ${usage} 个 Case 中移除。`)) deleteCaseTag(tag.id)
+          void confirm({
+            title: `删除 Case 标签「${tag.name}」？`,
+            description: `它会从 ${usage} 个 Case 中移除。`,
+            confirmText: '删除',
+            destructive: true,
+          }).then((ok) => {
+            if (ok) {
+              deleteCaseTag(tag.id)
+              toast.success('已删除 Case 标签')
+            }
+          })
         }}
       >
         <Trash2 />

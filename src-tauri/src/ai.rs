@@ -1781,16 +1781,16 @@ pub fn parse_binding_matches(content: &str, candidate_count: usize) -> Result<Ve
 
 // ==================== 批量语音拆卡 ====================
 
-pub const SPLIT_PROMPT_VERSION: &str = "0.3.4-split-2";
+pub const SPLIT_PROMPT_VERSION: &str = "0.3.5-split-3";
 
 pub fn build_split_messages(phase: &str, raw_text: &str) -> Vec<ChatMessage> {
     let system = "你是交易日志的拆卡员。交易者用语音一口气讲了几根 K 线的观察，一口气提交了一大段原文。你把这一大段按 K 线锚点拆成多张卡片。
 
-拆分粒度——按「独立的心智事件」拆，宁细勿粗：
-- 每个独立的观察 / 判断 / 决定 / 情绪时刻都是一张卡：一根 K 线的观察、一次计划的修改、一个情绪波动，各自成卡。
-- 逐根 K 线的连续评述（「194 号收了上影线…」「195 号继续向下…」）按观察点分开，每根 K 线的评述是一张卡。
-- 围绕同一根 K 线或同一个想法连续说的几句话合成一张；只按句子硬切是错的。
-- 总结前面走势的小结式段落保持一张卡。
+拆分粒度——K 线锚定，宁合勿拆：
+- 只有交易者明确把内容推进到一根新的 K 线时才开新卡：显式报号，或「下一根 K 线收出了……」「再下一根走出了……」「立马跟着一根……」这类已发生的事实陈述。
+- 「如果下一根……我就……」「要是回到 120 我就……」这类假设/计划句式不是锚点：那是当前 K 线上的思考，留在上一张卡。
+- 当前 K 线上的评述、市场分析、计划、情绪，无论换了几个想法都留在当前这张卡——交易者没说换了 K 线，就当作还在原来那根；中间实际隔了几根也不拆开，缺号不补、不猜。
+- 第一个锚点之前的引子并进第一张卡；整段没有任何 K 线锚点就输出一张卡（barRef 为 null）。
 
 规则：
 - 只输出一个 JSON 对象，不要 markdown 代码块和解释：{\"cards\":[{\"barRef\":<正整数或null>,\"text\":\"<原文逐字连续片段>\"}]}
@@ -1798,8 +1798,7 @@ pub fn build_split_messages(phase: &str, raw_text: &str) -> Vec<ChatMessage> {
 - 锚点识别的写法：「120号K线」「120 号 K 线」「BAR 120」「bar #120」「第 42 根 K 线」「现在是 254」，以及整段开头的裸数字（「89，价格选择去上涨」）。
 - 「下一根 / 再下一根 / 下一根 K 线」= 上一个 barRef + 1；交易者再次显式报号后以新报的号为准。
 - 回顾更早 K 线的引用不是锚点，以陈述时刻的 K 线为准。
-- 完全没提到 K 线的段落 barRef 为 null。
-- 整段只在讲一根 K 线（或一件事）就输出一张卡，不要硬拆。";
+- 每张卡的 barRef 取它的锚点段；只有整段完全没有锚点时才输出 barRef 为 null 的单卡。";
     let user = format!("记录阶段：{}（{}）\n原文：\n{}", phase_label(phase), phase, raw_text);
     vec![ChatMessage::system(system), ChatMessage::user(user)]
 }
@@ -1812,8 +1811,10 @@ pub struct ParsedCardSplit {
 }
 
 /// 机械校验模型拆分：每段 text 必须是原文的子串且按序不重叠；barRef 合法（1-1440）
-/// 且出现时单调递增（违反则该段 barRef 置空）；段数 ≤20；各段合计需覆盖原文 ≥85%
-/// 的非空白字符——模型漏句时宁可整体 Err（调用方退化为完整单卡），绝不静默丢内容。
+/// 且出现时单调递增（违反则该段 barRef 置空）；段数 ≤20；无锚点的段并入前一张卡
+/// （首段无锚点则拼进下一个锚点段开头，全部无锚点保持单卡）；各段合计需覆盖原文
+/// ≥85% 的非空白字符——模型漏句时宁可整体 Err（调用方退化为完整单卡），绝不静默
+/// 丢内容。
 pub fn parse_card_splits(content: &str, raw_text: &str) -> Result<Vec<ParsedCardSplit>, String> {
     let json_text = extract_json_object(content);
     let parsed: Value =
@@ -1861,6 +1862,33 @@ pub fn parse_card_splits(content: &str, raw_text: &str) -> Result<Vec<ParsedCard
         }
         out.push(ParsedCardSplit { bar_ref, text: text.to_string() });
     }
+
+    // 无锚点段落并入前一张卡（0.3.5）：交易者没明确说换了 K 线，评述就属于上一根。
+    // 模型偶尔仍会把无锚点评述拆成独立卡，这里机械合并兜底；首段无锚点时作为引子
+    // 拼进下一个锚点段开头，全部无锚点则保持一张卡。逐字/顺序校验已在上面按段
+    // 完成，拼接只是把已校验的相邻片段连起来，不引入新文本。
+    let mut merged: Vec<ParsedCardSplit> = Vec::with_capacity(out.len());
+    let mut pending_prefix = String::new();
+    for split in out {
+        if split.bar_ref.is_none() {
+            if let Some(last) = merged.last_mut() {
+                last.text.push_str(&split.text);
+            } else {
+                pending_prefix.push_str(&split.text);
+            }
+            continue;
+        }
+        let mut split = split;
+        if !pending_prefix.is_empty() {
+            split.text = format!("{pending_prefix}{}", split.text);
+            pending_prefix.clear();
+        }
+        merged.push(split);
+    }
+    if !pending_prefix.is_empty() {
+        merged.push(ParsedCardSplit { bar_ref: None, text: pending_prefix });
+    }
+    let out = merged;
 
     // 覆盖率：漏句（哪怕只是开头/结尾）不达标即整体拒绝，退化为完整单卡
     let non_whitespace = |text: &str| text.chars().filter(|ch| !ch.is_whitespace()).count();
@@ -2306,11 +2334,29 @@ mod tests {
             {"barRef":null,"text":"整体我打算继续等。"}
         ]}"#;
         let splits = parse_card_splits(content, raw).unwrap();
-        assert_eq!(splits.len(), 4);
+        // 非递增 barRef（119<121）置空、null 段无锚点 → 都并入前一张卡（0.3.5）
+        assert_eq!(splits.len(), 2);
         assert_eq!(splits[0].bar_ref, Some(120));
+        assert_eq!(splits[0].text, "120号K线收了长上影，上沿又一次失败。");
         assert_eq!(splits[1].bar_ref, Some(121));
-        assert_eq!(splits[2].bar_ref, None, "非递增 barRef 置空");
-        assert_eq!(splits[3].bar_ref, None);
+        assert_eq!(
+            splits[1].text,
+            "下一根直接砸下来，跌破昨天低点。再下一根缩量回抽，空头没有跟随。整体我打算继续等。"
+        );
+
+        // 相等 barRef 同样算非递增 → 第二段并入前一张卡（同一根 K 线一张卡）
+        let raw_same = "120号K线收了长上影，上沿又一次失败。下一根直接砸下来，跌破昨天低点。";
+        let same_bar = r#"{"cards":[
+            {"barRef":120,"text":"120号K线收了长上影，上沿又一次失败。"},
+            {"barRef":120,"text":"下一根直接砸下来，跌破昨天低点。"}
+        ]}"#;
+        let merged = parse_card_splits(same_bar, raw_same).unwrap();
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].bar_ref, Some(120));
+        assert_eq!(
+            merged[0].text,
+            "120号K线收了长上影，上沿又一次失败。下一根直接砸下来，跌破昨天低点。"
+        );
 
         // 非逐字片段 → 整体 Err（调用方退化为单卡）
         let bad = r#"{"cards":[{"barRef":1,"text":"模型编的话"}]}"#;
@@ -2319,6 +2365,39 @@ mod tests {
         let reversed = r#"{"cards":[{"barRef":2,"text":"再下一根缩量回抽，空头没有跟随。"},{"barRef":1,"text":"120号K线收了长上影，上沿又一次失败。"}]}"#;
         assert!(parse_card_splits(reversed, raw).is_err());
         assert!(parse_card_splits("拆不了", raw).is_err());
+    }
+
+    #[test]
+    fn parse_card_splits_merges_unanchored_commentary_into_previous_card() {
+        // 交易者提到一根 K 线后追加市场分析（含假设句式），模型仍按「独立评述」拆出
+        // 无锚点段 → 机械合并回锚点卡；开头引子拼进第一张锚点卡。
+        let raw = "先说下整体结构，这里是个区间。120号K线收了长上影。如果下一根突破上沿我就放弃观察。下一根直接吞掉了上影。这根的量能不错，说明空头真的来了。";
+        let content = r#"{"cards":[
+            {"barRef":null,"text":"先说下整体结构，这里是个区间。"},
+            {"barRef":120,"text":"120号K线收了长上影。"},
+            {"barRef":null,"text":"如果下一根突破上沿我就放弃观察。"},
+            {"barRef":121,"text":"下一根直接吞掉了上影。"},
+            {"barRef":null,"text":"这根的量能不错，说明空头真的来了。"}
+        ]}"#;
+        let splits = parse_card_splits(content, raw).unwrap();
+        assert_eq!(splits.len(), 2);
+        assert_eq!(splits[0].bar_ref, Some(120));
+        assert_eq!(
+            splits[0].text,
+            "先说下整体结构，这里是个区间。120号K线收了长上影。如果下一根突破上沿我就放弃观察。"
+        );
+        assert_eq!(splits[1].bar_ref, Some(121));
+        assert_eq!(splits[1].text, "下一根直接吞掉了上影。这根的量能不错，说明空头真的来了。");
+
+        // 全部无锚点 → 维持一张卡（文本按原文顺序拼接）
+        let calm = r#"{"cards":[
+            {"barRef":null,"text":"先说下整体结构，"},
+            {"barRef":null,"text":"这里是个区间。"}
+        ]}"#;
+        let single = parse_card_splits(calm, "先说下整体结构，这里是个区间。").unwrap();
+        assert_eq!(single.len(), 1);
+        assert_eq!(single[0].bar_ref, None);
+        assert_eq!(single[0].text, "先说下整体结构，这里是个区间。");
     }
 
     #[test]
@@ -2333,14 +2412,16 @@ mod tests {
         let err = parse_card_splits(content, raw).unwrap_err();
         assert!(err.contains("coverage"), "coverage error, got: {err}");
 
-        // 全覆盖版本通过
+        // 全覆盖版本通过（结尾无锚点段并入 122 那张卡）
         let full = r#"{"cards":[
             {"barRef":120,"text":"120号K线收了长上影，上沿又一次失败。"},
             {"barRef":121,"text":"下一根直接砸下来，跌破昨天低点。"},
             {"barRef":122,"text":"再下一根缩量回抽，空头没有跟随。"},
             {"barRef":null,"text":"整体来看我打算继续等待，等一个更干净也更明确的入场位置再动手。"}
         ]}"#;
-        assert_eq!(parse_card_splits(full, raw).unwrap().len(), 4);
+        let splits = parse_card_splits(full, raw).unwrap();
+        assert_eq!(splits.len(), 3);
+        assert!(splits[2].text.ends_with("再动手。"));
     }
 
     #[test]

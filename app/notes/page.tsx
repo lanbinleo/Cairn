@@ -4,10 +4,12 @@ import { NotebookPen, Pencil, Trash2 } from 'lucide-react'
 import { PageHeader } from '@/components/page-header'
 import { NoteContent } from '@/components/note-content'
 import { CreateNoteDialog } from '@/components/create-note-dialog'
+import { useConfirm } from '@/components/confirm-dialog-provider'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from '@/components/ui/empty'
+import { toast } from '@/components/ui/sonner'
 import { useCairn } from '@/lib/store'
 import { uniqueTagNames } from '@/lib/tags'
 import { fmtUtcDate } from '@/lib/format'
@@ -17,6 +19,7 @@ export default function NotesPage() {
   const [searchParams] = useSearchParams()
   const noteParam = searchParams.get('note') ?? undefined
   const { notes, deleteNote } = useCairn()
+  const confirm = useConfirm()
   const sorted = [...notes].sort((a, b) => b.updatedAt - a.updatedAt)
   const active = sorted.find((n) => n.id === noteParam) ?? sorted[0]
 
@@ -84,7 +87,16 @@ export default function NotesPage() {
                       size="icon-sm"
                       aria-label={`删除笔记 ${active.title}`}
                       onClick={() => {
-                        if (window.confirm(`删除笔记「${active.title}」？`)) deleteNote(active.id)
+                        void confirm({
+                          title: `删除笔记「${active.title}」？`,
+                          confirmText: '删除',
+                          destructive: true,
+                        }).then((ok) => {
+                          if (ok) {
+                            deleteNote(active.id)
+                            toast.success('已删除笔记')
+                          }
+                        })
                       }}
                     >
                       <Trash2 />

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Cairn 记一笔
 // @namespace    cairn
-// @version      0.3.1
+// @version      0.3.2
 // @description  TradingView 悬浮记录浮窗：口述或打字记录交易思考，实时写入本地 Cairn（127.0.0.1 本地 API）
 // @author       Cairn
 // @match        https://*.tradingview.com/*
@@ -556,6 +556,11 @@
   }
   #cairn-cw-wrap .cw-card .mc-edit:hover { color: var(--text); }
   #cairn-cw-wrap .cw-card .mc-del:hover { color: var(--red); }
+  /* 两步删除：第一次点 ✕ 进入待确认态，按钮变红提示「确认删除」，4 秒后自动复位 */
+  #cairn-cw-wrap .cw-card .mc-del.arm {
+    background: rgba(242,54,69,.16); border-color: var(--red); color: var(--red);
+    font-weight: 600;
+  }
   #cairn-cw-wrap .cw-card.editing { display: flex; flex-direction: column; gap: 6px; }
   #cairn-cw-wrap .cw-card.editing .ec-text {
     width: 100%;
@@ -1098,7 +1103,13 @@
         el.querySelector('.mc-time').textContent = card.createdAt ? fmtTime(card.createdAt) : '';
         el.querySelector('.mc-text').textContent = card.rawText || '';
         el.querySelector('.mc-edit').addEventListener('click', () => startEditCard(card.id));
-        el.querySelector('.mc-del').addEventListener('click', () => deleteCard(card.id));
+        const delBtn = el.querySelector('.mc-del');
+        if (delArm.id === card.id) {
+          delBtn.classList.add('arm');
+          delBtn.textContent = '确认删除';
+          delBtn.title = '再点一次确认删除（可从备份恢复）';
+        }
+        delBtn.addEventListener('click', () => requestDeleteCard(card.id));
       }
       list.appendChild(el);
     }
@@ -1355,11 +1366,35 @@
   /* ================= 修改已登记卡片 ================= */
 
   // 卡片删除（软删，可从备份恢复）：清理误录/拆错的卡。
+  // 两步确认（0.3.2）：第一次点 ✕ 只进入待确认态（按钮变红「确认删除」，4 秒自动
+  // 复位），再点一次才真正删除——替换原生 confirm，不打断 TradingView 页面。
   // 契约：DELETE /cases/{caseId}/cards/{cardId}；0.3.0 起提供，旧后端 404/405 提示升级。
+  const DEL_ARM_MS = 4000;
+  const delArm = { id: '', timer: 0 };
+
+  function requestDeleteCard(id) {
+    const card = state.cards.find((c) => c.id === id);
+    if (!card) return;
+    if (delArm.id === id) {
+      clearTimeout(delArm.timer);
+      delArm.id = '';
+      // 立即复位按钮：请求在途/失败时也不停在「确认删除」态
+      renderCards();
+      void deleteCard(id);
+      return;
+    }
+    delArm.id = id;
+    clearTimeout(delArm.timer);
+    delArm.timer = setTimeout(() => {
+      delArm.id = '';
+      renderCards();
+    }, DEL_ARM_MS);
+    renderCards();
+  }
+
   async function deleteCard(id) {
     const card = state.cards.find((c) => c.id === id);
     if (!card || state.busy) return;
-    if (!window.confirm('删除这张卡片？原文与分析一起移除（可从备份恢复）。')) return;
     if (!state.connected) {
       const err = await connect({ silent: true });
       if (err) { showToast('无法连接 Cairn', 'err'); showSettings(true); return; }

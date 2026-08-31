@@ -16,7 +16,9 @@ import NewTradePage from '@/app/trades/new/page'
 import TradesPage from '@/app/trades/page'
 import TradeDetailPage from '@/app/trades/[tradeId]/page'
 import { AppSidebar } from '@/components/app-sidebar'
+import { ConfirmDialogProvider } from '@/components/confirm-dialog-provider'
 import { ThemeProvider } from '@/components/theme-provider'
+import { Toaster } from '@/components/ui/sonner'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { WindowTitlebar, shouldShowWindowTitlebar } from '@/components/window-titlebar'
 import { CairnProvider } from '@/lib/store'
@@ -80,13 +82,16 @@ export function App() {
     <ThemeProvider attribute="class" defaultTheme="light" enableSystem={false} disableTransitionOnChange>
       <CairnProvider>
         <TooltipProvider>
-          <WindowTitlebar />
-          <AppSidebar />
-          <main className={cn('min-h-svh pl-56', showTitlebar && 'pt-10')}>
-            <div className="mx-auto max-w-6xl px-8 py-8">
-              <AppRoutes />
-            </div>
-          </main>
+          <ConfirmDialogProvider>
+            <WindowTitlebar />
+            <AppSidebar />
+            <main className={cn('min-h-svh pl-56', showTitlebar && 'pt-10')}>
+              <div className="mx-auto max-w-6xl px-8 py-8">
+                <AppRoutes />
+              </div>
+            </main>
+            <Toaster />
+          </ConfirmDialogProvider>
         </TooltipProvider>
       </CairnProvider>
     </ThemeProvider>
