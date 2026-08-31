@@ -20,7 +20,9 @@ interface AlertDialogProps {
 }
 
 /** 确认弹窗：与普通 Dialog 的差别——点外部 / Esc 等同于取消，初始焦点落在取消键
- *  （安全默认），层级高于普通 Dialog（z-[60]），可以叠在已打开的编辑弹窗上。 */
+ *  （安全默认），层级高于普通 Dialog（z-[60]），可以叠在已打开的编辑弹窗上。
+ *  Popup 的 p-4 与页脚的 -mx-4/-mb-4 是一对（同 DialogContent 契约）：缺了 p-4，
+ *  页脚会向四周外溢 16px，露出弹窗下方的灰色横条。 */
 function AlertDialog({
   open,
   onOpenChange,
@@ -44,11 +46,11 @@ function AlertDialog({
           data-slot="alert-dialog-popup"
           initialFocus={cancelRef}
           className={cn(
-            "fixed top-1/2 left-1/2 z-[60] w-full max-w-[calc(100%-2rem)] -translate-x-1/2 -translate-y-1/2 rounded-xl bg-popover text-sm text-popover-foreground ring-1 ring-foreground/10 duration-100 outline-none sm:max-w-sm data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95",
+            "fixed top-1/2 left-1/2 z-[60] w-full max-w-[calc(100%-2rem)] -translate-x-1/2 -translate-y-1/2 rounded-xl bg-popover p-4 text-sm text-popover-foreground ring-1 ring-foreground/10 duration-100 outline-none sm:max-w-sm data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95",
             className
           )}
         >
-          <div className="flex flex-col gap-2 p-4 pb-3">
+          <div className="flex flex-col gap-2 pb-3">
             <DialogPrimitive.Title className="text-base leading-snug font-medium">
               {title}
             </DialogPrimitive.Title>
