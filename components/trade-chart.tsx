@@ -16,7 +16,7 @@ import {
 } from 'lightweight-charts'
 import { executionActionLabel, hasPositionFill, isEntryExecution, isManagementExecutionAction } from '@/lib/executions'
 import { aggregateDisplayExecutions, inferChartBarIntervalMs } from '@/lib/execution-display'
-import { fmtPrice } from '@/lib/format'
+import { fmtPrice, fmtQty } from '@/lib/format'
 import type { CaseCardPhase, ChartBar, Trade } from '@/lib/types'
 
 export type TradeChartOverlayStyle = 'zones' | 'lines' | 'both'
@@ -343,7 +343,7 @@ export function TradeChart({
           position: isBuy ? ('belowBar' as const) : ('aboveBar' as const),
           shape: isBuy ? ('arrowUp' as const) : ('arrowDown' as const),
           color: isBuy ? p.up : p.down,
-          text: `${label} ${e.quantity}@${fmtPrice(e.price, pricePrecision)}${countText}`,
+          text: `${label} ${e.quantity == null ? '—' : fmtQty(e.quantity)}@${fmtPrice(e.price, pricePrecision)}${countText}`,
         }
       })
 
@@ -387,7 +387,7 @@ export function TradeChart({
     for (const execution of displayExecutions) {
       addHoverItem(Number(toTs(execution.time)), {
         title: executionActionLabel[execution.action] ?? execution.action,
-        detail: `${execution.quantity ?? '—'} @ ${execution.price == null ? '—' : fmtPrice(execution.price, pricePrecision)}${execution.signal ? ` · ${execution.signal}` : ''}`,
+        detail: `${execution.quantity == null ? '—' : fmtQty(execution.quantity)} @ ${execution.price == null ? '—' : fmtPrice(execution.price, pricePrecision)}${execution.signal ? ` · ${execution.signal}` : ''}`,
         tone: 'trade',
       })
     }

@@ -30,7 +30,7 @@ import { executionActionLabel, hasPositionFill, isPositionExecutionAction, order
 import { aggregateDisplayExecutions } from '@/lib/execution-display'
 import { computeTradeMetrics } from '@/lib/metrics'
 import { savedProcessScoreTotal } from '@/lib/process-score'
-import { fmtPrice, fmtDuration, fmtUtcDateTime, fmtUtcDate, fmtMoney } from '@/lib/format'
+import { fmtPrice, fmtDuration, fmtQty, fmtUtcDateTime, fmtUtcDate, fmtMoney } from '@/lib/format'
 import { sortTagNamesByColor } from '@/lib/tags'
 import { resolveCaseCardTimesForTrade, timeToBarNumber } from '@/lib/bar-time'
 import { readFileAsDataUrl } from '@/lib/tradingview-import'
@@ -208,7 +208,7 @@ export default function TradeDetailPage() {
       return {
         kind: 'exec' as const,
         time: e.time,
-        title: isPositionAction ? `${label} ${e.quantity ?? '—'} @ ${priceText || '—'}` : `${label}${priceText ? ` -> ${priceText}` : ''}`,
+        title: isPositionAction ? `${label} ${e.quantity == null ? '—' : fmtQty(e.quantity)} @ ${priceText || '—'}` : `${label}${priceText ? ` -> ${priceText}` : ''}`,
         detail: `${orderTypeLabel[e.orderType] ?? e.orderType}${e.anchorPrice == null ? '' : ` · anchor ${fmtPrice(e.anchorPrice, symbol?.pricePrecision)}`}${e.signal ? ` · 信号 ${e.signal}` : ''}${aggregateText}`,
         tone: e.action === 'entry' || e.action === 'scale-in' || e.action.startsWith('target') ? 'entry' : 'exit',
         barNumber: timeToBarNumber(e.time, barMinutes),
@@ -709,7 +709,7 @@ export default function TradeDetailPage() {
                   <div className="rounded-lg border p-4"><p className="text-xs text-muted-foreground">持仓时长</p><p className="mt-1 font-mono text-lg font-semibold">{fmtDuration(m.durationMs)}</p></div>
                 </div>
                 <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-                  <div className="rounded-lg border p-4"><p className="text-xs text-muted-foreground">总仓位</p><p className="mt-1 font-mono text-lg font-semibold tabular-nums">{m.totalQuantity}</p></div>
+                  <div className="rounded-lg border p-4"><p className="text-xs text-muted-foreground">总仓位</p><p className="mt-1 font-mono text-lg font-semibold tabular-nums">{fmtQty(m.totalQuantity)}</p></div>
                   <div className="rounded-lg border p-4"><p className="text-xs text-muted-foreground">初始止损</p><p className="mt-1 font-mono text-lg font-semibold tabular-nums">{trade.initialStopLoss == null ? '—' : fmtPrice(trade.initialStopLoss, symbol?.pricePrecision)}</p></div>
                   <div className="rounded-lg border p-4"><p className="text-xs text-muted-foreground">初始止盈</p><p className="mt-1 font-mono text-lg font-semibold tabular-nums">{trade.initialTakeProfit == null ? '—' : fmtPrice(trade.initialTakeProfit, symbol?.pricePrecision)}</p></div>
                 </div>

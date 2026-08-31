@@ -220,6 +220,16 @@ mod tests {
     use super::*;
 
     #[test]
+    fn fmt_num_strips_float_noise() {
+        assert_eq!(fmt_num(2.4425999999999997), "2.4426");
+        assert_eq!(fmt_num(0.30000000000000004), "0.3");
+        assert_eq!(fmt_num(2.0), "2");
+        assert_eq!(fmt_num(1000.0), "1000");
+        assert_eq!(fmt_num(0.123456789), "0.123457");
+        assert_eq!(fmt_num(-1.5), "-1.5");
+    }
+
+    #[test]
     fn widget_script_version_parses_userscript_header() {
         let source = "// ==UserScript==\n// @name    Cairn\n// @version  0.2.4\n// ==/UserScript==\nbody;";
         assert_eq!(widget_script_version(source), "0.2.4");
@@ -530,6 +540,14 @@ fn format_utc_compact(epoch_ms: u64) -> String {
         .unwrap_or_else(|| "-".to_string())
 }
 
+/// 数量/价格进 AI 上下文前的格式化：最多 6 位小数并去掉尾零，
+/// 避免浮点累加噪声（2.4425999999999997）被模型原样复述。与前端 fmtQty 同语义。
+fn fmt_num(value: f64) -> String {
+    let s = format!("{value:.6}");
+    let s = s.trim_end_matches('0').trim_end_matches('.');
+    s.to_string()
+}
+
 fn truncate_chars(text: &str, limit: usize) -> String {
     text.chars().take(limit).collect()
 }
@@ -559,10 +577,10 @@ fn trade_action_lines(trade: &Value) -> Vec<(u64, String)> {
             let Some(action) = execution.get("action").and_then(Value::as_str) else { continue };
             let mut line = execution_action_label(action).to_string();
             if let Some(price) = execution.get("price").and_then(Value::as_f64) {
-                line.push_str(&format!(" {price}"));
+                line.push_str(&format!(" {}", fmt_num(price)));
             }
             if let Some(quantity) = execution.get("quantity").and_then(Value::as_f64) {
-                line.push_str(&format!(" ×{quantity}"));
+                line.push_str(&format!(" ×{}", fmt_num(quantity)));
             }
             lines.push((time, line));
         }
@@ -573,7 +591,7 @@ fn trade_action_lines(trade: &Value) -> Vec<(u64, String)> {
             let Some(event_type) = event.get("type").and_then(Value::as_str) else { continue };
             let mut line = trade_event_label(event_type).to_string();
             if let Some(price) = event.get("price").and_then(Value::as_f64) {
-                line.push_str(&format!(" {price}"));
+                line.push_str(&format!(" {}", fmt_num(price)));
             }
             lines.push((time, line));
         }
@@ -614,7 +632,7 @@ fn card_context(conn: &rusqlite::Connection, card: &Value) -> String {
                     }
                     summary.push_str(&format!("，{status}"));
                     if let Some(stop) = trade.get("initialStopLoss").and_then(Value::as_f64) {
-                        summary.push_str(&format!("，初始止损 {stop}"));
+                        summary.push_str(&format!("，初始止损 {}", fmt_num(stop)));
                     }
                     lines.push(summary);
                     for (time, line) in trade_action_lines(&trade).into_iter().take(24) {
@@ -808,13 +826,13 @@ fn suggestion_context(
                 .next()
         })
     {
-        out.push_str(&format!("，首笔入场 {entry}"));
+        out.push_str(&format!("，首笔入场 {}", fmt_num(entry)));
     }
     if let Some(stop) = trade.get("initialStopLoss").and_then(Value::as_f64) {
-        out.push_str(&format!("，初始止损 {stop}"));
+        out.push_str(&format!("，初始止损 {}", fmt_num(stop)));
     }
     if let Some(target) = trade.get("initialTakeProfit").and_then(Value::as_f64) {
-        out.push_str(&format!("，初始止盈 {target}"));
+        out.push_str(&format!("，初始止盈 {}", fmt_num(target)));
     }
     out.push_str("\n已落库动作（来自交易所导出与手动记录）：\n");
     let actions = trade_action_lines(trade);

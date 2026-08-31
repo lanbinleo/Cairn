@@ -45,6 +45,18 @@ export function fmtPrice(value: number, precision = 2): string {
   })
 }
 
+/** 数值（AI 上下文用）：最多 precision 位小数并去掉尾零——去掉浮点累加噪声
+ *  （2.4425999999999997 → 2.4426），无千分位逗号，与 Rust 侧 fmt_num 同语义。 */
+export function fmtNum(value: number, precision = 6): string {
+  const digits = Math.max(0, Math.min(precision, 20))
+  return String(Number(value.toFixed(digits)))
+}
+
+/** 数量（仓位/手数）：fmtNum 的默认 6 位——去掉浮点噪声的同时不损失合约数量精度。 */
+export function fmtQty(value: number): string {
+  return fmtNum(value)
+}
+
 export function fmtR(r: number | null): string {
   if (r == null) return '—'
   const prefix = r > 0 ? '+' : ''
