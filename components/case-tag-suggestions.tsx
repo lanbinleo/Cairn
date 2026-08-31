@@ -7,6 +7,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { InfoHint } from '@/components/info-hint'
+import { tagsWithAdditions } from '@/lib/tags'
 import { useCairn } from '@/lib/store'
 import type { CaseTagSuggestion, Trade, TradeCase } from '@/lib/types'
 
@@ -37,18 +38,25 @@ export function CaseTagSuggestions({
   const dismissed = suggestions.filter((item) => item.status === 'dismissed').length
 
   function apply(suggestion: CaseTagSuggestion) {
-    if (trade.tags.some((name) => name.toLowerCase() === suggestion.name.toLowerCase())) {
-      setCaseTagSuggestionStatus(caseRecord.id, suggestion.name, { status: 'accepted' })
-      return
-    }
     // 防御：词表理论上是现有标签，若定义被删则补建（颜色默认蓝，可在标签管理里改）
     if (!getTagDef(suggestion.name)) createTag(suggestion.name, 'blue')
-    updateTrade(trade.id, { tags: [...trade.tags, suggestion.name] })
+    updateTrade(trade.id, { tags: tagsWithAdditions(trade.tags, [suggestion.name]) })
     setCaseTagSuggestionStatus(caseRecord.id, suggestion.name, { status: 'accepted' })
   }
 
   function applyAll() {
-    for (const suggestion of pending) apply(suggestion)
+    // 一次 updateTrade 带上全部名字：patch.tags 是整体替换，逐条同步提交
+    // 会被旧闭包里的 trade.tags 互相覆盖，N 条只剩最后一条
+    const names = pending.map((suggestion) => suggestion.name)
+    for (const name of names) {
+      if (!getTagDef(name)) createTag(name, 'blue')
+    }
+    if (names.length > 0) {
+      updateTrade(trade.id, { tags: tagsWithAdditions(trade.tags, names) })
+    }
+    for (const suggestion of pending) {
+      setCaseTagSuggestionStatus(caseRecord.id, suggestion.name, { status: 'accepted' })
+    }
   }
 
   // 从未跑过检查（blob 不存在）或没有任何已处理痕迹且无待确认：不渲染（检查入口在补录建议面板上）

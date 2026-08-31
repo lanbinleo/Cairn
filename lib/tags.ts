@@ -34,6 +34,23 @@ export function uniqueTagNames(names: readonly string[]): string[] {
   return tags
 }
 
+/** 把一批标签名并进现有标签（忽略大小写去重、保序），返回下一份完整 tags 数组。
+ * updateTrade 的 patch.tags 是整体替换——同一轮里逐条追加会被旧闭包互相覆盖
+ * （只剩最后一条），必须一次算好整份数组再提交。 */
+export function tagsWithAdditions(current: readonly string[], additions: readonly string[]): string[] {
+  const seen = new Set(current.map(tagNameKey))
+  const next = [...current]
+  for (const name of additions) {
+    const normalized = normalizeTagName(name)
+    if (!normalized) continue
+    const key = tagNameKey(normalized)
+    if (seen.has(key)) continue
+    seen.add(key)
+    next.push(normalized)
+  }
+  return next
+}
+
 export function compareTagDefsByColor(a: TagDef, b: TagDef): number {
   const colorDiff = (tagColorRank.get(a.color) ?? TAG_COLOR_ORDER.length) - (tagColorRank.get(b.color) ?? TAG_COLOR_ORDER.length)
   if (colorDiff !== 0) return colorDiff

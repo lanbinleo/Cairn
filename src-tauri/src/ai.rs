@@ -874,9 +874,18 @@ pub fn refresh_proxy(app: &AppHandle) {
 }
 
 /// 探测操作系统代理（Windows 注册表 / macOS scutil / Linux 桌面设置）。
-/// 系统未配置或仅 PAC 自动配置时返回 None → 直连。
+/// 系统未配置、已关闭或仅 PAC 自动配置时返回 None → 直连。
 fn detect_system_proxy() -> Option<String> {
-    let proxy = sysproxy::Sysproxy::get_system_proxy().ok()?;
+    system_proxy_url(&sysproxy::Sysproxy::get_system_proxy().ok()?)
+}
+
+/// enable=false 必须直接忽略：sysproxy 在系统代理关闭时仍会返回注册表残留的
+/// host/port（Windows 关掉开关后 ProxyServer 旧值保留），跟着走会把全部出站
+/// 请求引到一个死代理上。
+fn system_proxy_url(proxy: &sysproxy::Sysproxy) -> Option<String> {
+    if !proxy.enable {
+        return None;
+    }
     let host = proxy.host.trim();
     if host.is_empty() || proxy.port == 0 {
         return None;
@@ -2017,6 +2026,28 @@ mod tests {
         // 未知 mode 字符串按旧字段迁移
         let bogus = NetworkSettings { mode: Some("bogus".into()), proxy_url: String::new(), proxy_enabled: true, effective_proxy_url: None };
         assert_eq!(bogus.proxy_mode(), ProxyMode::Manual);
+    }
+
+    #[test]
+    fn system_proxy_url_ignores_disabled_registry_residue() {
+        let proxy = |enable: bool| sysproxy::Sysproxy {
+            enable,
+            host: "127.0.0.1".into(),
+            port: 7890,
+            bypass: String::new(),
+        };
+        // Windows 关掉系统代理开关后注册表 ProxyServer 仍残留旧值——enable=false 必须视为无代理
+        assert_eq!(system_proxy_url(&proxy(false)), None);
+        assert_eq!(system_proxy_url(&proxy(true)).as_deref(), Some("http://127.0.0.1:7890"));
+        // 地址为空或端口 0 → 无代理
+        assert_eq!(
+            system_proxy_url(&sysproxy::Sysproxy { enable: true, host: "  ".into(), port: 7890, bypass: String::new() }),
+            None
+        );
+        assert_eq!(
+            system_proxy_url(&sysproxy::Sysproxy { enable: true, host: "127.0.0.1".into(), port: 0, bypass: String::new() }),
+            None
+        );
     }
 
     #[test]

@@ -36,3 +36,8 @@
 
 - 无数据迁移：新建议 blob（`aiTagSuggestions`）随下一次检查自动生成；总结标注在重新总结后出现。
 - 拆卡 prompt 版本升级（`0.3.4-split-2`），输入时拆卡与重拆共用；已有卡片不会被自动重拆。
+
+## 发布前 Code Review 修复
+
+- **「全部应用」丢标签**：AI 标签建议一次应用多条时，只有最后一条真正落到 Trade 上（`updateTrade` 的 tags 是整体替换，逐条同步提交互相覆盖）。已改为一次提交全部名字（`tagsWithAdditions`，带单测）。
+- **系统代理关闭后残留地址误判**（0.3.3 引入）：Windows 关掉系统代理开关后注册表仍保留旧 `ProxyServer` 值，「跟随系统代理」会探测到这个死代理，导致 AI / 更新检查全部超时。现在 `enable=false` 一律视为无代理（`system_proxy_url`，带单测）。
