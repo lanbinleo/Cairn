@@ -6,6 +6,8 @@ import { Database, Download, FileWarning, Trash2 } from 'lucide-react'
 import { CoverageTimeline, TimelineLegend, type TimelineRow } from '@/components/coverage-timeline'
 import { ImportDatasetDialog } from '@/components/import-dataset-dialog'
 import { PageHeader } from '@/components/page-header'
+import { useConfirm } from '@/components/confirm-dialog-provider'
+import { toast } from '@/components/ui/sonner'
 import { StatCard } from '@/components/stat-card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -75,6 +77,7 @@ function exportCanonicalCsv(label: string, candles: ChartCandle[], merged: TimeR
 
 export default function DataPage() {
   const { chartImports, chartCandles, trades, symbols, deleteChartImport } = useCairn()
+  const confirm = useConfirm()
   const [windowId, setWindowId] = useState(ALL)
   const [tfFilter, setTfFilter] = useState(ALL)
   const [selectedId, setSelectedId] = useState<string | null>(null)
@@ -341,10 +344,18 @@ export default function DataPage() {
                           variant="ghost"
                           size="icon-sm"
                           aria-label={`删除 ${dataset.archivedFile}`}
-                          onClick={(event) => {
+                          onClick={async (event) => {
                             event.stopPropagation()
+                            const ok = await confirm({
+                              title: `删除图表数据集「${dataset.archivedFile}」？`,
+                              description: '合并去重后的 K 线会一并删除，需要时可重新导入。',
+                              confirmText: '删除',
+                              destructive: true,
+                            })
+                            if (!ok) return
                             if (selectedId === dataset.id) setSelectedId(null)
                             deleteChartImport(dataset.id)
+                            toast.success('已删除数据集。')
                           }}
                         >
                           <Trash2 />

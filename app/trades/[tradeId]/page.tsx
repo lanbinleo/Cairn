@@ -37,6 +37,7 @@ import { readFileAsDataUrl } from '@/lib/tradingview-import'
 import { createTradeTransferPayload, stringifyTradeTransfer } from '@/lib/trade-transfer'
 import { CHART_TIMEFRAMES, chartTimeframeLabel, chartTimeframeMinutes } from '@/lib/chart-timeframes'
 import { logFrontendError } from '@/lib/frontend-log'
+import { toast } from '@/components/ui/sonner'
 import { caseCardDigest, casePhaseLabel } from '@/lib/cases'
 import type { CaseCardPhase, ChartTimeframe, Execution } from '@/lib/types'
 
@@ -148,8 +149,13 @@ export default function TradeDetailPage() {
     navigate(`/notes/${note.id}/edit`)
   }
 
-  function copyText(text: string) {
-    void navigator.clipboard?.writeText(text)
+  async function copyText(text: string) {
+    try {
+      await navigator.clipboard?.writeText(text)
+      toast.success('已复制')
+    } catch (error) {
+      toast.error(`复制失败：${String(error)}`)
+    }
   }
 
   function copyTradeJson(includeChartData: boolean) {

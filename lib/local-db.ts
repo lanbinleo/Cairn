@@ -1,7 +1,10 @@
 import { invoke } from '@tauri-apps/api/core'
 
+import { toast } from '@/components/ui/sonner'
+
 import type { CairnStateSnapshot } from './seed'
 import { seedState } from './seed'
+import { logFrontendError } from './frontend-log'
 import type { BindingMatch } from './binding-suggestions'
 import type { CaseCard, CaseSummary, TradeCase } from './types'
 
@@ -132,6 +135,33 @@ export async function saveLocalRecords<T extends { id: string }>(
 ): Promise<void> {
   if (!isTauriRuntime() || records.length === 0) return
   await invoke('save_records', { collection, records })
+}
+
+/* ---------- fire-and-forget 持久化（0.3.6） ----------
+ * store 里的 void save/delete 调用统一走 bg* 函数：UI 已经即时更新，
+ * 落库失败必须让用户知道（toast + 前端日志），否则就是「以为存了其实没存」。
+ * 需要自行处理错误的调用方请 await 对应的非 bg 函数。 */
+
+function notifyPersistFailure(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error)
+  toast.error(`本地保存失败：${message}。当前改动可能没有存上，重启后会回退。`)
+  void logFrontendError(`persist failed: ${message}`)
+}
+
+export function bgSaveRecord<T extends { id: string }>(collection: CollectionName, record: T): void {
+  saveLocalRecord(collection, record).catch(notifyPersistFailure)
+}
+
+export function bgSaveRecords<T extends { id: string }>(collection: CollectionName, records: T[]): void {
+  saveLocalRecords(collection, records).catch(notifyPersistFailure)
+}
+
+export function bgDeleteRecord(collection: CollectionName, id: string): void {
+  deleteLocalRecord(collection, id).catch(notifyPersistFailure)
+}
+
+export function bgReplaceCollection<T extends { id: string }>(collection: CollectionName, records: T[]): void {
+  replaceLocalCollection(collection, records).catch(notifyPersistFailure)
 }
 
 /* ---------- 本地 REST API 管理 ---------- */

@@ -787,7 +787,11 @@ export default function SettingsPage() {
                   disabled={!isTauriRuntime()}
                   onCheckedChange={(checked) => {
                     setAiAutoAnalyze(checked)
-                    void saveAiSettings({ autoAnalyze: checked, autoSuggest: aiAutoSuggest, autoSummary: aiAutoSummary }).catch(() => undefined)
+                    void saveAiSettings({ autoAnalyze: checked, autoSuggest: aiAutoSuggest, autoSummary: aiAutoSummary })
+                      .catch((error) => {
+                        setAiAutoAnalyze(!checked)
+                        toast.error(`自动识别开关保存失败：${String(error)}，已还原。`)
+                      })
                   }}
                 />
               </SettingRow>
@@ -797,7 +801,11 @@ export default function SettingsPage() {
                   disabled={!isTauriRuntime()}
                   onCheckedChange={(checked) => {
                     setAiAutoSuggest(checked)
-                    void saveAiSettings({ autoAnalyze: aiAutoAnalyze, autoSuggest: checked, autoSummary: aiAutoSummary }).catch(() => undefined)
+                    void saveAiSettings({ autoAnalyze: aiAutoAnalyze, autoSuggest: checked, autoSummary: aiAutoSummary })
+                      .catch((error) => {
+                        setAiAutoSuggest(!checked)
+                        toast.error(`自动建议开关保存失败：${String(error)}，已还原。`)
+                      })
                   }}
                 />
               </SettingRow>
@@ -807,7 +815,11 @@ export default function SettingsPage() {
                   disabled={!isTauriRuntime()}
                   onCheckedChange={(checked) => {
                     setAiAutoSummary(checked)
-                    void saveAiSettings({ autoAnalyze: aiAutoAnalyze, autoSuggest: aiAutoSuggest, autoSummary: checked }).catch(() => undefined)
+                    void saveAiSettings({ autoAnalyze: aiAutoAnalyze, autoSuggest: aiAutoSuggest, autoSummary: checked })
+                      .catch((error) => {
+                        setAiAutoSummary(!checked)
+                        toast.error(`自动总结开关保存失败：${String(error)}，已还原。`)
+                      })
                   }}
                 />
               </SettingRow>
