@@ -730,12 +730,20 @@ pub(crate) async fn run_card_analysis(
         messages.push(ai::ChatMessage::user(format!("补充整理要求：{extra}")));
     }
     ai::log_provider_event(app, format!("analyzing card {card_id} with {model}"));
-    let content = ai::chat_completion_with_retry(&provider, &model, &messages).await?;
+    // 非 JSON 输出时修正重试一轮（0.3.6）；内容质量类问题（quote 非逐字等）仍是
+    // 静默丢弃派生字段的设计，不触发重试
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_millis() as u64)
         .unwrap_or(0);
-    let analysis = ai::parse_analysis(&phase, &raw_text, &content, &model, &provider.id, now)?;
+    let parse = |content: &str| {
+        ai::parse_analysis(&phase, &raw_text, content, &model, &provider.id, now)
+    };
+    let analysis =
+        ai::chat_completion_validated(&provider, &model, &messages, parse, &|message: &str| {
+            ai::log_provider_event(app, message.to_string());
+        })
+        .await?;
 
     // 写回前重读现记录，只覆盖 aiAnalysis（barRef 也只在现记录缺失时回填）：
     // 分析耗时秒级到 30 秒，期间用户的 rawText 错字修正 / barRef 修正 /
@@ -1013,7 +1021,6 @@ pub(crate) async fn run_execution_suggestions(
         .map(|duration| duration.as_millis() as u64)
         .unwrap_or(0);
     ai::log_provider_event(app, format!("checking execution suggestions for case {case_id} with {model}"));
-    let content = ai::chat_completion_with_retry(&provider, &model, &messages).await?;
     let card_pairs: Vec<(String, String)> = cards
         .iter()
         .map(|card| {
@@ -1023,21 +1030,31 @@ pub(crate) async fn run_execution_suggestions(
             )
         })
         .collect();
-    let parsed = ai::parse_execution_suggestions(&content, &card_pairs)?;
-    let deduped = dedup_suggestions_against_trade(parsed, &trade);
-
-    // 标签建议：词表校验 + 证据逐字校验在 parse_trade_tags 内完成，这里再剔除
-    // Trade 已带的标签（重复建议没有意义）
+    // 标签建议词表：词表校验 + 证据逐字校验在 parse_trade_tags 内完成
     let vocabulary: Vec<String> = tag_defs
         .iter()
         .filter_map(|def| def.get("name").and_then(Value::as_str).map(str::to_string))
         .collect();
+    // 执行建议与标签建议共用一次调用的输出：非 JSON 时修正轮对两者同时生效（0.3.6）
+    let parse = |content: &str| -> Result<(Vec<ai::ParsedSuggestion>, Vec<ai::ParsedTradeTag>), String> {
+        let suggestions = ai::parse_execution_suggestions(content, &card_pairs)?;
+        let tags = ai::parse_trade_tags(content, &card_pairs, &vocabulary);
+        Ok((suggestions, tags))
+    };
+    let (parsed, parsed_tags_all) =
+        ai::chat_completion_validated(&provider, &model, &messages, parse, &|message: &str| {
+            ai::log_provider_event(app, message.to_string());
+        })
+        .await?;
+    let deduped = dedup_suggestions_against_trade(parsed, &trade);
+
+    // 标签建议这里再剔除 Trade 已带的标签（重复建议没有意义）
     let existing_tags: Vec<String> = trade
         .get("tags")
         .and_then(Value::as_array)
         .map(|items| items.iter().filter_map(Value::as_str).map(str::to_string).collect())
         .unwrap_or_default();
-    let parsed_tags: Vec<ai::ParsedTradeTag> = ai::parse_trade_tags(&content, &card_pairs, &vocabulary)
+    let parsed_tags: Vec<ai::ParsedTradeTag> = parsed_tags_all
         .into_iter()
         .filter(|tag| {
             !existing_tags
@@ -1519,12 +1536,18 @@ pub(crate) async fn run_batch_split(
         match app.and_then(|app| ai::default_provider(app).ok().flatten()) {
             Some((provider, model)) => {
                 let messages = ai::build_split_messages(phase, raw_text);
-                match ai::chat_completion_with_retry(&provider, &model, &messages).await {
-                    Ok(content) => ai::parse_card_splits(&content, raw_text).unwrap_or_else(|_| single()),
+                // 校验失败先走修正轮（带上轮回复与错误），仍失败才降级单卡（0.3.6）；
+                // 降级原因现在也会进日志（此前校验失败是静默降级）
+                let parse = |content: &str| ai::parse_card_splits(content, raw_text);
+                let log = |message: &str| {
+                    if let Some(app) = app {
+                        ai::log_provider_event(app, message.to_string());
+                    }
+                };
+                match ai::chat_completion_validated(&provider, &model, &messages, parse, &log).await {
+                    Ok(splits) => splits,
                     Err(err) => {
-                        if let Some(app) = app {
-                            ai::log_provider_event(app, format!("batch split degraded to single card: {err}"));
-                        }
+                        log(&format!("batch split degraded to single card: {err}"));
                         single()
                     }
                 }
@@ -1631,11 +1654,16 @@ pub(crate) async fn run_card_resplit(
         ai::log_provider_event(app, format!("resplitting card {card_id} with {model}"));
     }
     let messages = ai::build_split_messages(&phase, &raw_text);
-    let content = ai::chat_completion_with_retry(&provider, &model, &messages)
-        .await
-        .map_err(|err| format!("这张卡拆不开：{err}"))?;
-    let splits = ai::parse_card_splits(&content, &raw_text)
-        .map_err(|_| "这张卡拆不开：AI 拆分未通过逐字/覆盖率校验，原卡未改动".to_string())?;
+    // 校验失败（非逐字/覆盖率不过）时自动带上第一轮回复与错误修正重试一轮（0.3.6），
+    // 仍失败才放弃——错误文案带具体校验原因，用户知道哪里出了问题。
+    let parse = |content: &str| ai::parse_card_splits(content, &raw_text);
+    let splits = ai::chat_completion_validated(&provider, &model, &messages, parse, &|message: &str| {
+        if let Some(app) = app {
+            ai::log_provider_event(app, message.to_string());
+        }
+    })
+    .await
+    .map_err(|err| format!("这张卡拆不开：{err}（原卡未改动）"))?;
     if splits.len() <= 1 {
         return Err("AI 认为这张卡是一段完整记录，拆不出多张".to_string());
     }

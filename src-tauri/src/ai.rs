@@ -420,6 +420,9 @@ impl ChatMessage {
     pub fn user(content: impl Into<String>) -> Self {
         Self { role: "user".into(), content: content.into() }
     }
+    pub fn assistant(content: impl Into<String>) -> Self {
+        Self { role: "assistant".into(), content: content.into() }
+    }
 }
 
 /// POST {base_url}/chat/completions，返回 choices[0].message.content。
@@ -525,6 +528,64 @@ fn is_retryable_error(message: &str) -> bool {
         || message.starts_with("read response failed")
         || message.starts_with("模型服务返回 5")
         || message.starts_with("provider returned empty content")
+}
+
+// ==================== 校验失败修正重试 ====================
+
+/// 把第一轮的请求与回复作为上下文、连同校验错误一起再发一轮让模型自我修正：
+/// base_messages + assistant(第一轮原样输出) + user(修正指令)。与用户手打
+/// instruction 的追加模式（run_card_analysis 的「补充整理要求」）同构——
+/// temperature=0 下原样重发没有意义，差异完全来自回放 + 错误信息。
+pub fn build_repair_messages(
+    base_messages: &[ChatMessage],
+    first_output: &str,
+    validation_error: &str,
+) -> Vec<ChatMessage> {
+    let mut messages = base_messages.to_vec();
+    messages.push(ChatMessage::assistant(first_output));
+    messages.push(ChatMessage::user(format!(
+        "你上一次的输出未通过程序的机械校验，错误信息：{validation_error}\n\
+请针对错误修正你的输出：严格遵守任务原有的格式要求（只输出 JSON 对象本身，不要 markdown 代码块和解释），\
+并确保修正后能通过上述校验。只输出修正后的完整结果。"
+    )));
+    messages
+}
+
+/// 「请求 → 机械校验」的完整闭环（0.3.6）：第一轮走 chat_completion_with_retry
+/// （网络类失败自动重试一次）；解析/校验失败时用 build_repair_messages 附带上轮
+/// 回复与错误再试一轮——修正轮直接 chat_completion，不再嵌套网络重试（调用方
+/// 超时预算按 3×90s 上限设计）。二轮仍失败返回合并错误。on_event 用于把
+/// 「触发修正轮 / 修正成功」写进日志（测试里传 &|_| {}）。
+pub async fn chat_completion_validated<T, F>(
+    provider: &AiProvider,
+    model: &str,
+    base_messages: &[ChatMessage],
+    parse: F,
+    on_event: &(dyn Fn(&str) + Send + Sync),
+) -> Result<T, String>
+where
+    F: Fn(&str) -> Result<T, String>,
+{
+    let first = chat_completion_with_retry(provider, model, base_messages).await?;
+    match parse(&first) {
+        Ok(value) => Ok(value),
+        Err(first_error) => {
+            on_event(&format!("validation failed, retrying with repair context: {first_error}"));
+            let repair_messages = build_repair_messages(base_messages, &first, &first_error);
+            match chat_completion(provider, model, &repair_messages).await {
+                Ok(second) => match parse(&second) {
+                    Ok(value) => {
+                        on_event("repair round passed validation");
+                        Ok(value)
+                    }
+                    Err(second_error) => Err(format!(
+                        "{first_error}；修正重试后仍未通过校验：{second_error}"
+                    )),
+                },
+                Err(network) => Err(format!("{first_error}；修正重试请求失败：{network}")),
+            }
+        }
+    }
 }
 
 // ==================== 流式 Chat Completion ====================
@@ -2093,6 +2154,24 @@ mod tests {
         assert!(!is_retryable_error("invalid response: expected value"));
         assert!(!is_retryable_error("response has no message content"));
         assert!(!is_retryable_error("model output is not JSON: trailing chars"));
+    }
+
+    #[test]
+    fn repair_messages_replay_first_output_and_error() {
+        let base = vec![ChatMessage::system("sys"), ChatMessage::user("原文")];
+        let messages = build_repair_messages(&base, "第一轮错误输出", "split coverage 12/100 chars below 85%");
+        assert_eq!(messages.len(), 4);
+        assert_eq!(messages[0].role, "system");
+        assert_eq!(messages[1].role, "user");
+        // 第二条是第一轮的 assistant 回放（原样，不加工）
+        assert_eq!(messages[2].role, "assistant");
+        assert_eq!(messages[2].content, "第一轮错误输出");
+        // 第三条带上校验错误与「只输出 JSON」的修正要求
+        assert_eq!(messages[3].role, "user");
+        assert!(messages[3].content.contains("split coverage 12/100 chars below 85%"));
+        assert!(messages[3].content.contains("机械校验"));
+        // base 不被修改（修正轮可以安全重复构建）
+        assert_eq!(base.len(), 2);
     }
 
     #[test]
