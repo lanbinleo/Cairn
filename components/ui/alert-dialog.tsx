@@ -38,10 +38,7 @@ function AlertDialog({
       <DialogPrimitive.Portal>
         <DialogPrimitive.Backdrop
           data-slot="alert-dialog-overlay"
-          className={cn(
-            "fixed inset-0 isolate z-[60] bg-black/10 duration-100 supports-backdrop-filter:backdrop-blur-xs data-open:animate-in data-open:fade-in-0 data-closed:animate-out data-closed:fade-out-0",
-            className
-          )}
+          className="fixed inset-0 isolate z-[60] bg-black/10 duration-100 supports-backdrop-filter:backdrop-blur-xs data-open:animate-in data-open:fade-in-0 data-closed:animate-out data-closed:fade-out-0"
         />
         <DialogPrimitive.Popup
           data-slot="alert-dialog-popup"
