@@ -1738,9 +1738,10 @@ pub(crate) async fn run_batch_split(
         if raw_text.trim().is_empty() {
             return Err("request body is missing valid rawText".to_string());
         }
-        if !client_request_id
-            .chars()
-            .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
+        if client_request_id.is_empty()
+            || !client_request_id
+                .chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
             || client_request_id.len() > 48
         {
             return Err("invalid clientRequestId: use 1-48 characters of letters, digits, '-' or '_'".to_string());
@@ -1827,9 +1828,10 @@ pub(crate) fn run_batch_create(
     client_request_id: &str,
     now: u64,
 ) -> Result<(Vec<Value>, bool), String> {
-    if !client_request_id
-        .chars()
-        .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
+    if client_request_id.is_empty()
+        || !client_request_id
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
         || client_request_id.len() > 48
     {
         return Err("invalid clientRequestId: use 1-48 characters of letters, digits, '-' or '_'".to_string());

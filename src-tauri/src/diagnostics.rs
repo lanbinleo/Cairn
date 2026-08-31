@@ -156,11 +156,27 @@ pub fn today() -> String {
     chrono::Local::now().format("%Y-%m-%d").to_string()
 }
 
+/// 日期参数必须是 YYYY-MM-DD（前端下拉的产物）——拒绝任何携带路径分隔符的
+/// 输入，避免 read/clear 拼路径时越出 logs 目录。
+fn valid_log_date(date: &str) -> bool {
+    let bytes = date.as_bytes();
+    bytes.len() == 10
+        && bytes[4] == b'-'
+        && bytes[7] == b'-'
+        && bytes
+            .iter()
+            .enumerate()
+            .all(|(index, byte)| index == 4 || index == 7 || byte.is_ascii_digit())
+}
+
 /// 读取指定日期（None = 当天）的日志，超过 512KB 只取尾部（从完整行开始）。
 pub fn read_log(app: &AppHandle, date: Option<&str>) -> Result<String, String> {
     let dir = logs_dir(app)?;
     let today = today();
     let date = date.unwrap_or(&today);
+    if !valid_log_date(date) {
+        return Err(format!("invalid date: {date} (expect YYYY-MM-DD)"));
+    }
     let path = dir.join(format!("cairn-{date}.log"));
     if !path.exists() {
         return Ok(String::new());
@@ -184,6 +200,9 @@ pub fn clear_log(app: &AppHandle, date: Option<&str>) -> Result<(), String> {
     let dir = logs_dir(app)?;
     let today = today();
     let date = date.unwrap_or(&today);
+    if !valid_log_date(date) {
+        return Err(format!("invalid date: {date} (expect YYYY-MM-DD)"));
+    }
     let path = dir.join(format!("cairn-{date}.log"));
     if path.exists() {
         fs::write(&path, b"").map_err(|err| err.to_string())?;
@@ -251,6 +270,16 @@ mod tests {
         let path = dir.join(format!("cairn-{}.log", today()));
         let content = fs::read_to_string(&path).unwrap();
         assert_eq!(content, "first\nsecond\n");
+    }
+
+    #[test]
+    fn log_date_validation_rejects_path_inputs() {
+        assert!(valid_log_date("2026-08-31"));
+        assert!(!valid_log_date("2026-8-31"));
+        assert!(!valid_log_date("../2026-08-31"));
+        assert!(!valid_log_date("2026-08-31/../../x"));
+        assert!(!valid_log_date(""));
+        assert!(!valid_log_date("2026-08-31.log"));
     }
 
     #[test]
