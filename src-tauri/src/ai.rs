@@ -334,7 +334,62 @@ pub async fn fetch_models(base_url: String, api_key: String) -> Result<Vec<Strin
 }
 
 pub fn log_provider_event(app: &AppHandle, message: String) {
-    diagnostics::app_log(app, format!("ai: {message}"));
+    let _ = app;
+    diagnostics::log(diagnostics::Level::Info, "ai", message);
+}
+
+// ==================== AI 请求日志（0.3.6） ====================
+// 目标：AI 行为可 debug——请求发去了哪、发了什么、回了什么、耗时与 token。
+// 只记请求体 JSON（不含任何 header），api_key 永不落盘；请求/响应体按字符截断。
+
+const AI_LOG_BODY_LIMIT: usize = 16 * 1024;
+
+fn log_ai_body(label: &str, text: &str) {
+    let truncated: String = text.chars().take(AI_LOG_BODY_LIMIT).collect();
+    let suffix = if text.chars().count() > AI_LOG_BODY_LIMIT { " …（已截断）" } else { "" };
+    diagnostics::log(diagnostics::Level::Info, "ai", format!("{label}: {truncated}{suffix}"));
+}
+
+fn log_ai_request(provider: &AiProvider, model: &str, messages: &[ChatMessage], body: &Value, stream: bool) {
+    let host = reqwest::Url::parse(&provider.base_url)
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_string))
+        .unwrap_or_else(|| provider.base_url.clone());
+    let chars: usize = messages.iter().map(|message| message.content.chars().count()).sum();
+    diagnostics::log(
+        diagnostics::Level::Info,
+        "ai",
+        format!(
+            "request → {host} · provider「{}」model {model} · {} 条消息 / {chars} 字符{}",
+            provider.name,
+            messages.len(),
+            if stream { " · stream" } else { "" },
+        ),
+    );
+    log_ai_body("request body", &serde_json::to_string(body).unwrap_or_default());
+}
+
+fn log_ai_error(elapsed: std::time::Duration, message: &str) {
+    diagnostics::log(
+        diagnostics::Level::Error,
+        "ai",
+        format!("request failed · {}ms: {message}", elapsed.as_millis()),
+    );
+}
+
+fn log_ai_response(elapsed: std::time::Duration, content: &str, extra: &str, response_body: Option<&str>) {
+    diagnostics::log(
+        diagnostics::Level::Info,
+        "ai",
+        format!(
+            "response ok · {}ms · {} 字符{extra}",
+            elapsed.as_millis(),
+            content.chars().count(),
+        ),
+    );
+    if let Some(body) = response_body {
+        log_ai_body("response body", body);
+    }
 }
 
 // ==================== 网络错误详情 ====================
@@ -433,6 +488,7 @@ pub async fn chat_completion(
     model: &str,
     messages: &[ChatMessage],
 ) -> Result<String, String> {
+    let started = std::time::Instant::now();
     let url = format!("{}/chat/completions", provider.base_url);
     let mut headers = reqwest::header::HeaderMap::new();
     headers.insert("Content-Type", "application/json".parse().unwrap());
@@ -447,23 +503,41 @@ pub async fn chat_completion(
         "stream": false,
     });
     apply_thinking_param(&mut body, provider, model);
+    log_ai_request(provider, model, messages, &body, false);
     let mut request = client.post(&url).json(&body);
     if !provider.api_key.is_empty() {
         request = request.bearer_auth(&provider.api_key);
     }
-    let response = request
-        .send()
-        .await
-        .map_err(|err| format!("request failed: {}", describe_request_error(&err)))?;
+    let response = request.send().await.map_err(|err| {
+        let message = format!("request failed: {}", describe_request_error(&err));
+        log_ai_error(started.elapsed(), &message);
+        message
+    })?;
     let status = response.status();
-    let body = response
-        .text()
-        .await
-        .map_err(|err| format!("read response failed: {}", describe_read_error(&err)))?;
+    let body = response.text().await.map_err(|err| {
+        let message = format!("read response failed: {}", describe_read_error(&err));
+        log_ai_error(started.elapsed(), &message);
+        message
+    })?;
     if !status.is_success() {
-        return Err(http_error_message(status, &body));
+        let message = http_error_message(status, &body);
+        log_ai_error(started.elapsed(), &message);
+        return Err(message);
     }
-    extract_message_content(&body)
+    let content = extract_message_content(&body).map_err(|message| {
+        log_ai_error(started.elapsed(), &message);
+        message
+    })?;
+    let usage = serde_json::from_str::<Value>(&body).ok().and_then(|parsed| {
+        let prompt = parsed.pointer("/usage/prompt_tokens").and_then(Value::as_u64);
+        let completion = parsed.pointer("/usage/completion_tokens").and_then(Value::as_u64);
+        (prompt.is_some() || completion.is_some()).then_some((prompt, completion))
+    });
+    let usage_line = usage
+        .map(|(prompt, completion)| format!(" · tokens prompt {:?} / completion {:?}", prompt, completion))
+        .unwrap_or_default();
+    log_ai_response(started.elapsed(), &content, &usage_line, Some(&body));
+    Ok(content)
 }
 
 /// 从非流式响应体提取 choices[0].message.content（chat_completion 与流式降级路径共用）。
@@ -694,6 +768,7 @@ pub async fn chat_completion_stream(
     messages: &[ChatMessage],
     on_chunk: &(dyn Fn(&StreamChunk) + Send + Sync),
 ) -> Result<StreamOutcome, String> {
+    let started = std::time::Instant::now();
     let url = format!("{}/chat/completions", provider.base_url);
     let client = http_client()
         .connect_timeout(Duration::from_secs(15))
@@ -707,14 +782,16 @@ pub async fn chat_completion_stream(
         "stream": true,
     });
     apply_thinking_param(&mut body, provider, model);
+    log_ai_request(provider, model, messages, &body, true);
     let mut request = client.post(&url).json(&body);
     if !provider.api_key.is_empty() {
         request = request.bearer_auth(&provider.api_key);
     }
-    let mut response = request
-        .send()
-        .await
-        .map_err(|err| format!("request failed: {}", describe_request_error(&err)))?;
+    let mut response = request.send().await.map_err(|err| {
+        let message = format!("request failed: {}", describe_request_error(&err));
+        log_ai_error(started.elapsed(), &message);
+        message
+    })?;
 
     let is_event_stream = response
         .headers()
@@ -724,21 +801,28 @@ pub async fn chat_completion_stream(
     if !is_event_stream {
         // provider 不支持流式：当普通响应整段读，并整体作为一次正文增量吐给回调
         let status = response.status();
-        let body = response
-            .text()
-            .await
-            .map_err(|err| format!("read response failed: {}", describe_read_error(&err)))?;
+        let body = response.text().await.map_err(|err| {
+            let message = format!("read response failed: {}", describe_read_error(&err));
+            log_ai_error(started.elapsed(), &message);
+            message
+        })?;
         if !status.is_success() {
-            return Err(http_error_message(status, &body));
+            let message = http_error_message(status, &body);
+            log_ai_error(started.elapsed(), &message);
+            return Err(message);
         }
         let mut outcome = StreamOutcome {
-            content: extract_message_content(&body)?,
+            content: extract_message_content(&body).map_err(|message| {
+                log_ai_error(started.elapsed(), &message);
+                message
+            })?,
             ..Default::default()
         };
         if let Ok(parsed) = serde_json::from_str::<Value>(&body) {
             outcome.completion_tokens = parsed.pointer("/usage/completion_tokens").and_then(Value::as_u64);
             outcome.total_tokens = parsed.pointer("/usage/total_tokens").and_then(Value::as_u64);
         }
+        log_ai_response(started.elapsed(), &outcome.content, " · stream 降级整段读", Some(&body));
         on_chunk(&StreamChunk { kind: StreamChunkKind::Content, text: outcome.content.clone() });
         return Ok(outcome);
     }
@@ -746,7 +830,9 @@ pub async fn chat_completion_stream(
     let status = response.status();
     if !status.is_success() {
         let body = response.text().await.unwrap_or_default();
-        return Err(http_error_message(status, &body));
+        let message = http_error_message(status, &body);
+        log_ai_error(started.elapsed(), &message);
+        return Err(message);
     }
 
     let mut acc = SseAccumulator::new();
@@ -761,6 +847,10 @@ pub async fn chat_completion_stream(
                     let received = acc.content.chars().count();
                     format!("流式输出中断（已接收 {received} 字）：{}", describe_read_error(&err))
                 }
+            })
+            .map_err(|message| {
+                log_ai_error(started.elapsed(), &message);
+                message
             })?;
         let Some(chunk) = chunk else { break };
         for piece in acc.push_chunk(&chunk) {
@@ -768,14 +858,27 @@ pub async fn chat_completion_stream(
         }
     }
     if acc.content.trim().is_empty() {
-        return Err("provider returned empty content".to_string());
+        let message = "provider returned empty content".to_string();
+        log_ai_error(started.elapsed(), &message);
+        return Err(message);
     }
-    Ok(StreamOutcome {
+    let outcome = StreamOutcome {
         content: acc.content,
         reasoning_chars: acc.reasoning.chars().count(),
         completion_tokens: acc.completion_tokens,
         total_tokens: acc.total_tokens,
-    })
+    };
+    log_ai_response(
+        started.elapsed(),
+        &outcome.content,
+        &format!(
+            " · 思考 {} 字 · tokens completion {:?} / total {:?}",
+            outcome.reasoning_chars, outcome.completion_tokens, outcome.total_tokens
+        ),
+        None,
+    );
+    log_ai_body("response content", &outcome.content);
+    Ok(outcome)
 }
 
 /// 流式重试：网络类失败且**尚未收到任何内容**时整体重试一次；

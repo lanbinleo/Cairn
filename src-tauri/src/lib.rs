@@ -90,18 +90,57 @@ fn export_backup(app: AppHandle, db: State<'_, db::Db>) -> Result<String, String
 }
 
 #[tauri::command]
-fn frontend_log(app: AppHandle, message: String) {
-    diagnostics::app_log(&app, format!("frontend: {message}"));
+fn frontend_log(_app: AppHandle, level: Option<String>, message: String) {
+    let level = match level.as_deref() {
+        Some("warn") => diagnostics::Level::Warn,
+        Some("error") => diagnostics::Level::Error,
+        _ => diagnostics::Level::Info,
+    };
+    diagnostics::log(level, "frontend", message);
+}
+
+/// 日志读取结果：可用日期列表（新的在前）+ 当前选中日期 + 内容尾部（≤512KB）。
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LogBundle {
+    files: Vec<String>,
+    active: String,
+    content: String,
 }
 
 #[tauri::command]
-fn read_logs(app: AppHandle) -> Result<String, String> {
-    diagnostics::read_log(&app)
+fn read_logs(app: AppHandle, date: Option<String>) -> Result<LogBundle, String> {
+    let files = diagnostics::list_log_files(&app)?;
+    let active = date.unwrap_or_else(diagnostics::today);
+    let content = diagnostics::read_log(&app, Some(&active))?;
+    Ok(LogBundle { files, active, content })
 }
 
 #[tauri::command]
-fn get_log_path(app: AppHandle) -> Result<String, String> {
-    diagnostics::log_path(&app).map(|path| path.to_string_lossy().to_string())
+fn clear_logs(app: AppHandle, date: Option<String>) -> Result<LogBundle, String> {
+    diagnostics::clear_log(&app, date.as_deref())?;
+    read_logs(app, date)
+}
+
+#[tauri::command]
+fn get_logs_dir(app: AppHandle) -> Result<String, String> {
+    diagnostics::logs_dir(&app).map(|path| path.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+fn open_logs_dir(app: AppHandle) -> Result<(), String> {
+    let dir = diagnostics::logs_dir(&app)?;
+    let _ = fs::create_dir_all(&dir);
+    let program = match std::env::consts::OS {
+        "windows" => "explorer",
+        "macos" => "open",
+        _ => "xdg-open",
+    };
+    std::process::Command::new(program)
+        .arg(&dir)
+        .spawn()
+        .map(|_| ())
+        .map_err(|err| format!("打开日志目录失败：{err}"))
 }
 
 #[tauri::command]
@@ -1954,6 +1993,7 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
+            diagnostics::init(app.handle());
             diagnostics::app_log(app.handle(), "setup started");
             let db = db::init(app.handle()).map_err(|err| {
                 diagnostics::app_log(app.handle(), format!("db init failed: {err}"));
@@ -1993,7 +2033,9 @@ pub fn run() {
             export_backup,
             frontend_log,
             read_logs,
-            get_log_path,
+            clear_logs,
+            get_logs_dir,
+            open_logs_dir,
             get_api_status,
             get_widget_script,
             check_widget_script_update,

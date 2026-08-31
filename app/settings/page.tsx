@@ -6,7 +6,7 @@ import { check } from '@tauri-apps/plugin-updater'
 import { useTheme } from 'next-themes'
 import { Pencil, Plus, Star, Trash2 } from 'lucide-react'
 import type { ReactNode } from 'react'
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Check, Copy, RefreshCw } from 'lucide-react'
 
 import { PageHeader } from '@/components/page-header'
@@ -79,7 +79,12 @@ export default function SettingsPage() {
   const confirm = useConfirm()
   const [mounted, setMounted] = useState(false)
   const [logs, setLogs] = useState('')
-  const [logPath, setLogPath] = useState('')
+  const [logFiles, setLogFiles] = useState<string[]>([])
+  const [activeLogDate, setActiveLogDate] = useState('')
+  const [logLevel, setLogLevel] = useState<'all' | 'info' | 'warn' | 'error'>('all')
+  const [logKeyword, setLogKeyword] = useState('')
+  const [logAutoRefresh, setLogAutoRefresh] = useState(false)
+  const [logsDir, setLogsDir] = useState('')
   const [copiedLogs, setCopiedLogs] = useState(false)
   const [appVersion, setAppVersion] = useState('0.1.3')
   const [updateStatus, setUpdateStatus] = useState('尚未检查更新')
@@ -110,7 +115,8 @@ export default function SettingsPage() {
   useEffect(() => {
     if (!isTauriRuntime()) return
     void invoke<string>('get_app_version').then(setAppVersion).catch(() => undefined)
-    void invoke<string>('get_log_path').then(setLogPath).catch(() => undefined)
+    void invoke<string>('get_logs_dir').then(setLogsDir).catch(() => undefined)
+    void loadLogs()
     void getApiStatus()
       .then((status) => {
         setApiStatus(status)
@@ -233,20 +239,74 @@ export default function SettingsPage() {
     }
   }
 
-  async function loadLogs() {
+  async function loadLogs(date?: string) {
     if (!isTauriRuntime()) {
       setLogs('浏览器预览环境没有本地运行日志。')
       return
     }
-    const content = await invoke<string>('read_logs')
-    setLogs(content || '暂无日志。')
+    try {
+      const bundle = await invoke<{ files: string[]; active: string; content: string }>('read_logs', { date })
+      setLogFiles(bundle.files)
+      setActiveLogDate(bundle.active)
+      setLogs(bundle.content || '暂无日志。')
+    } catch (error) {
+      toast.error(`读取日志失败：${String(error)}`)
+    }
   }
 
+  // 自动刷新：排障时盯日志用，2s 拉一次当前选中的日期文件
+  useEffect(() => {
+    if (!logAutoRefresh) return
+    const timer = window.setInterval(() => void loadLogs(activeLogDate || undefined), 2000)
+    return () => window.clearInterval(timer)
+  }, [logAutoRefresh, activeLogDate])
+
   async function copyLogs() {
-    await navigator.clipboard?.writeText(logs)
+    await navigator.clipboard?.writeText(visibleLogs)
     setCopiedLogs(true)
     window.setTimeout(() => setCopiedLogs(false), 1200)
   }
+
+  async function clearLogs() {
+    const ok = await confirm({
+      title: '清空当前日志文件？',
+      description: `将清空 ${activeLogDate || '今天'} 的日志，已写入的其他日期不受影响。`,
+      confirmText: '清空',
+      destructive: true,
+    })
+    if (!ok) return
+    try {
+      const bundle = await invoke<{ files: string[]; active: string; content: string }>('clear_logs', { date: activeLogDate || undefined })
+      setLogFiles(bundle.files)
+      setActiveLogDate(bundle.active)
+      setLogs(bundle.content || '暂无日志。')
+      toast.success('已清空当前日志文件。')
+    } catch (error) {
+      toast.error(`清空失败：${String(error)}`)
+    }
+  }
+
+  async function openLogsDir() {
+    try {
+      await invoke('open_logs_dir')
+    } catch (error) {
+      toast.error(`打开目录失败：${String(error)}`)
+    }
+  }
+
+  // 级别 + 关键词过滤在读取端做（写文件全量保留）
+  const visibleLogs = useMemo(() => {
+    const keyword = logKeyword.trim().toLowerCase()
+    if (logLevel === 'all' && !keyword) return logs
+    return logs
+      .split('\n')
+      .filter((line) => {
+        if (logLevel !== 'all' && !line.includes(`[${logLevel}]`)) return false
+        if (keyword && !line.toLowerCase().includes(keyword)) return false
+        return true
+      })
+      .join('\n')
+  }, [logs, logLevel, logKeyword])
 
   async function checkForUpdate() {
     setCheckingUpdate(true)
@@ -869,22 +929,77 @@ export default function SettingsPage() {
           <Card>
             <CardHeader>
               <CardTitle>日志</CardTitle>
-              <CardDescription>查看本地运行日志，排查启动、导入、备份和前端错误</CardDescription>
+              <CardDescription>按日期分文件，保留 14 天；AI 请求与响应、启动、导入、备份和前端错误都会记录</CardDescription>
               <CardAction className="flex gap-2">
-                <Button variant="outline" size="sm" onClick={loadLogs}>
+                <Button variant="outline" size="sm" onClick={() => void loadLogs(activeLogDate || undefined)}>
                   <RefreshCw data-icon="inline-start" />
                   刷新
                 </Button>
-                <Button variant="outline" size="sm" disabled={!logs} onClick={copyLogs}>
+                <Button variant="outline" size="sm" disabled={!visibleLogs} onClick={copyLogs}>
                   {copiedLogs ? <Check data-icon="inline-start" /> : <Copy data-icon="inline-start" />}
                   {copiedLogs ? '已复制' : '复制'}
+                </Button>
+                <Button variant="outline" size="sm" disabled={!activeLogDate} onClick={() => void clearLogs()}>
+                  <Trash2 data-icon="inline-start" />
+                  清空
+                </Button>
+                <Button variant="outline" size="sm" onClick={() => void openLogsDir()}>
+                  打开目录
                 </Button>
               </CardAction>
             </CardHeader>
             <CardContent className="flex flex-col gap-3">
-              {logPath && <div className="truncate rounded-md bg-muted px-3 py-2 font-mono text-xs text-muted-foreground">{logPath}</div>}
+              <div className="flex flex-wrap items-center gap-2">
+                <Select
+                  items={logFiles.map((date) => ({ value: date, label: date }))}
+                  value={activeLogDate || undefined}
+                  onValueChange={(value) => {
+                    const date = value ?? ''
+                    setActiveLogDate(date)
+                    void loadLogs(date || undefined)
+                  }}
+                >
+                  <SelectTrigger className="h-8 w-40"><SelectValue placeholder="选择日期" /></SelectTrigger>
+                  <SelectContent>
+                    <SelectGroup>
+                      {logFiles.map((date) => <SelectItem key={date} value={date}>{date}</SelectItem>)}
+                    </SelectGroup>
+                  </SelectContent>
+                </Select>
+                <Select
+                  items={[
+                    { value: 'all', label: '全部级别' },
+                    { value: 'info', label: 'Info' },
+                    { value: 'warn', label: 'Warn' },
+                    { value: 'error', label: 'Error' },
+                  ]}
+                  value={logLevel}
+                  onValueChange={(value) => setLogLevel((value as 'all' | 'info' | 'warn' | 'error') ?? 'all')}
+                >
+                  <SelectTrigger className="h-8 w-32"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectGroup>
+                      <SelectItem value="all">全部级别</SelectItem>
+                      <SelectItem value="info">Info</SelectItem>
+                      <SelectItem value="warn">Warn</SelectItem>
+                      <SelectItem value="error">Error</SelectItem>
+                    </SelectGroup>
+                  </SelectContent>
+                </Select>
+                <Input
+                  className="h-8 w-48"
+                  placeholder="按关键词过滤"
+                  value={logKeyword}
+                  onChange={(event) => setLogKeyword(event.target.value)}
+                />
+                <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                  <Switch checked={logAutoRefresh} onCheckedChange={setLogAutoRefresh} />
+                  自动刷新
+                </label>
+              </div>
+              {logsDir && <div className="truncate rounded-md bg-muted px-3 py-2 font-mono text-xs text-muted-foreground">{logsDir}</div>}
               <pre className="max-h-[520px] overflow-auto rounded-lg bg-muted p-4 font-mono text-xs leading-relaxed text-muted-foreground">
-                {logs || '点击“刷新”查看日志。'}
+                {visibleLogs || '点击“刷新”查看日志。'}
               </pre>
             </CardContent>
           </Card>
