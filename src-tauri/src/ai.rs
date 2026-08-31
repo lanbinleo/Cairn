@@ -2344,6 +2344,20 @@ mod tests {
             "下一根直接砸下来，跌破昨天低点。再下一根缩量回抽，空头没有跟随。整体我打算继续等。"
         );
 
+        // 相等 barRef 同样算非递增 → 第二段并入前一张卡（同一根 K 线一张卡）
+        let raw_same = "120号K线收了长上影，上沿又一次失败。下一根直接砸下来，跌破昨天低点。";
+        let same_bar = r#"{"cards":[
+            {"barRef":120,"text":"120号K线收了长上影，上沿又一次失败。"},
+            {"barRef":120,"text":"下一根直接砸下来，跌破昨天低点。"}
+        ]}"#;
+        let merged = parse_card_splits(same_bar, raw_same).unwrap();
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].bar_ref, Some(120));
+        assert_eq!(
+            merged[0].text,
+            "120号K线收了长上影，上沿又一次失败。下一根直接砸下来，跌破昨天低点。"
+        );
+
         // 非逐字片段 → 整体 Err（调用方退化为单卡）
         let bad = r#"{"cards":[{"barRef":1,"text":"模型编的话"}]}"#;
         assert!(parse_card_splits(bad, raw).is_err());
