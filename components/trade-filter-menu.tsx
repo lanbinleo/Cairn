@@ -38,6 +38,7 @@ import { cn } from '@/lib/utils'
 
 const FLAG_ITEMS: Array<{ key: keyof TradeFilterConditions; label: string }> = [
   { key: 'flagUnscored', label: '未评分' },
+  { key: 'flagScored', label: '已评分' },
   { key: 'flagExitOffPlan', label: '出场未按计划' },
   { key: 'flagStopWidened', label: '止损有放宽' },
   { key: 'flagNoInitialStop', label: '缺初始止损' },
