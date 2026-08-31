@@ -7,7 +7,7 @@
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import { listen } from '@tauri-apps/api/event'
-import { loadLocalState, saveLocalRecord, saveLocalRecords, deleteLocalRecord, restoreLocalState, exportLocalBackup, saveAttachmentFile, isTauriRuntime, analyzeCaseCard as analyzeCaseCardRemote, draftCaseTitle as draftCaseTitleRemote, suggestCaseExecutions as suggestCaseExecutionsRemote, summarizeCase as summarizeCaseRemote, getAiSettings } from './local-db'
+import { loadLocalState, saveLocalRecord, saveLocalRecords, deleteLocalRecord, restoreLocalState, exportLocalBackup, saveAttachmentFile, isTauriRuntime, analyzeCaseCard as analyzeCaseCardRemote, resplitCaseCard as resplitCaseCardRemote, draftCaseTitle as draftCaseTitleRemote, suggestCaseExecutions as suggestCaseExecutionsRemote, summarizeCase as summarizeCaseRemote, getAiSettings } from './local-db'
 import { buildCaseSummaryContext } from './case-summary'
 import { deriveAutoCloseCases } from './case-auto-close'
 import type { CairnStateSnapshot } from './seed'
@@ -18,7 +18,7 @@ import { extractExplicitBarRef, isDefaultCaseTitle } from './cases'
 import { findTagByName, normalizeTagDefs, normalizeTagName, normalizeTradeTagNames, uniqueTagNames, tagNamesEqual } from './tags'
 import { firstPlausibleNumberIn } from './process-score'
 import { computeTradeMetrics } from './metrics'
-import type { Account, AiTask, AiTaskEventPayload, Attachment, CaseCard, CaseCardAnalysis, CaseExecutionSuggestion, CaseSummary, CaseTagDef, CaseTradeBinding, ChartCandle, ChartImport, ChartTimeframe, ImportBatch, Period, Trade, TradeCase, TagDef, TagColor } from './types'
+import type { Account, AiTask, AiTaskEventPayload, Attachment, CaseCard, CaseCardAnalysis, CaseExecutionSuggestion, CaseSummary, CaseTagDef, CaseTagSuggestion, CaseTradeBinding, ChartCandle, ChartImport, ChartTimeframe, ImportBatch, Period, Trade, TradeCase, TagDef, TagColor } from './types'
 
 /* ---------- Context ---------- */
 
@@ -75,6 +75,8 @@ interface CairnStore {
   deleteCaseCard: (cardId: string) => void
   updateCaseCardAnalysis: (cardId: string, updater: (prev: CaseCardAnalysis) => CaseCardAnalysis) => CaseCard | undefined
   analyzeCaseCard: (cardId: string, instruction?: string, options?: { registerTask?: boolean }) => Promise<CaseCard | undefined>
+  /** AI 重拆一张已有卡（三个点菜单）：原卡替换为多张新卡；拆不动时抛错、原卡不动。 */
+  resplitCaseCard: (cardId: string) => Promise<void>
   /** 重跑 AI 持仓管理补录建议（绑定 Trade 后自动触发，也可手动）。只吸收建议字段。 */
   refreshCaseExecutionSuggestions: (caseId: string) => Promise<void>
   /** 更新单条建议状态（accepted 带生成的 executionId / dismissed 带时间）。 */
@@ -82,6 +84,12 @@ interface CairnStore {
     caseId: string,
     suggestionId: string,
     patch: { status: CaseExecutionSuggestion['status']; acceptedExecutionId?: string },
+  ) => void
+  /** 更新单条标签建议状态（指纹 = 标签名）。 */
+  setCaseTagSuggestionStatus: (
+    caseId: string,
+    name: string,
+    patch: { status: CaseTagSuggestion['status'] },
   ) => void
   /** 生成/重跑整单 AI 总结（上下文前端组装；只吸收 aiSummary 字段）。失败不 reject，写入 aiTasks。 */
   summarizeCase: (caseId: string, instruction?: string) => Promise<void>
@@ -470,6 +478,10 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
           const suggestions = caseRecord.aiExecutionSuggestions.suggestions.filter((suggestion) => suggestion.cardId !== cardId)
           next = { ...next, aiExecutionSuggestions: { ...caseRecord.aiExecutionSuggestions, suggestions } }
         }
+        if (caseRecord.aiTagSuggestions) {
+          const suggestions = caseRecord.aiTagSuggestions.suggestions.filter((suggestion) => suggestion.cardId !== cardId)
+          next = { ...next, aiTagSuggestions: { ...caseRecord.aiTagSuggestions, suggestions } }
+        }
         void saveLocalRecord('cases', next)
         return next
       }),
@@ -513,7 +525,42 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
     }
   }, [beginAiTask, completeAiTask])
 
-  /** 重跑持仓管理补录建议：只吸收 aiExecutionSuggestions 字段——请求期间
+  /** AI 重拆一张已有卡（0.3.4）：Rust 侧已替换落库（原卡软删、新卡落位），这里
+   *  吸收返回的新卡让 UI 立即更新（data-changed 事件随后兜底），并把 Case 上
+   *  指向原卡的建议清掉（证据悬空，与 Rust persist_resplit 同规则）。失败抛给
+   *  调用方 toast，任务中心记录全过程。 */
+  const resplitCaseCard = useCallback(async (cardId: string): Promise<void> => {
+    const card = caseCards.find((item) => item.id === cardId)
+    if (!card) throw new Error('这张卡不存在')
+    const taskId = beginAiTask({ kind: 'split', label: 'AI 重拆此卡', targetType: 'card', targetId: cardId })
+    try {
+      const result = await resplitCaseCardRemote(cardId)
+      setCaseCards((prev) => {
+        const without = prev.filter((item) => item.id !== cardId)
+        const incoming = result.cards.filter((item) => !without.some((existing) => existing.id === item.id))
+        return [...without, ...incoming].sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id))
+      })
+      setCases((prev) => prev.map((caseRecord) => {
+        if (caseRecord.id !== card.caseId) return caseRecord
+        let next = { ...caseRecord }
+        if (next.aiExecutionSuggestions) {
+          const suggestions = next.aiExecutionSuggestions.suggestions.filter((item) => item.cardId !== cardId)
+          next = { ...next, aiExecutionSuggestions: { ...next.aiExecutionSuggestions, suggestions } }
+        }
+        if (next.aiTagSuggestions) {
+          const suggestions = next.aiTagSuggestions.suggestions.filter((item) => item.cardId !== cardId)
+          next = { ...next, aiTagSuggestions: { ...next.aiTagSuggestions, suggestions } }
+        }
+        return next
+      }))
+      completeAiTask(taskId, { ok: true })
+    } catch (cause) {
+      completeAiTask(taskId, { ok: false, error: cause instanceof Error ? cause.message : String(cause) })
+      throw cause
+    }
+  }, [caseCards, beginAiTask, completeAiTask])
+
+  /** 重跑持仓管理补录建议：只吸收 aiExecutionSuggestions / aiTagSuggestions 字段——请求期间
    *  本地的标题/状态/标签修改不被回滚（与 analyzeCaseCard 同一吸收模式）。
    *  失败不 reject，写入 aiTasks.checkErrorByCase，由面板就地显示。 */
   const refreshCaseExecutionSuggestions = useCallback(async (caseId: string): Promise<void> => {
@@ -531,7 +578,11 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
       const updated = await suggestCaseExecutionsRemote(caseId)
       setCases((prev) => prev.map((item) => {
         if (item.id !== updated.id) return item
-        return { ...item, aiExecutionSuggestions: updated.aiExecutionSuggestions }
+        return {
+          ...item,
+          aiExecutionSuggestions: updated.aiExecutionSuggestions,
+          aiTagSuggestions: updated.aiTagSuggestions,
+        }
       }))
       completeAiTask(taskId, { ok: true })
     } catch (cause) {
@@ -564,6 +615,29 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
         }
       })
       const next = { ...item, aiExecutionSuggestions: { ...item.aiExecutionSuggestions, suggestions } }
+      void saveLocalRecord('cases', next)
+      return next
+    }))
+  }, [])
+
+  /** 更新单条标签建议状态：指纹 = 标签名（accepted 时记录时间，应用到 Trade 的动作在组件里）。 */
+  const setCaseTagSuggestionStatus = useCallback((
+    caseId: string,
+    name: string,
+    patch: { status: CaseTagSuggestion['status'] },
+  ): void => {
+    setCases((prev) => prev.map((item) => {
+      if (item.id !== caseId || !item.aiTagSuggestions) return item
+      const suggestions = item.aiTagSuggestions.suggestions.map((suggestion) => {
+        if (suggestion.name !== name) return suggestion
+        return {
+          ...suggestion,
+          status: patch.status,
+          acceptedAt: patch.status === 'accepted' ? Date.now() : undefined,
+          dismissedAt: patch.status === 'dismissed' ? Date.now() : undefined,
+        }
+      })
+      const next = { ...item, aiTagSuggestions: { ...item.aiTagSuggestions, suggestions } }
       void saveLocalRecord('cases', next)
       return next
     }))
@@ -1229,8 +1303,10 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
       deleteCaseCard,
       updateCaseCardAnalysis,
       analyzeCaseCard,
+      resplitCaseCard,
       refreshCaseExecutionSuggestions,
       setCaseExecutionSuggestionStatus,
+      setCaseTagSuggestionStatus,
       summarizeCase,
       aiTasks,
       aiTaskList,
@@ -1270,7 +1346,7 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
       updateCaseTag,
       deleteCaseTag,
     }),
-    [accounts, periods, trades, tagDefs, cases, caseCards, caseBindings, caseTagDefs, importBatches, attachments, chartImports, chartCandles, symbols, notes, aiTasks, aiTaskList, beginAiTask, completeAiTask, appendAiTaskStream, updateAiTaskProgress, markAiTasksRead, dismissAiTask, updateAccount, updatePeriod, updateTrade, updateNote, createAccount, createPeriod, createSymbol, createNote, createImageAttachment, deleteAttachment, createCase, updateCase, deleteCase, createCaseCard, moveCaseCard, updateCaseCardText, updateCaseCardBarRef, updateCaseCardAnalysis, analyzeCaseCard, prefillTradePlanFromBoundCase, createCaseBinding, deleteCaseBinding, createTrades, createImportBatch, createChartImport, deleteChartImport, rollbackImportBatch, deleteAccount, deletePeriod, deleteTrade, deleteSymbol, deleteNote, restoreState, exportBackup, setTradeStatus, createTag, updateTag, deleteTag, createCaseTag, updateCaseTag, deleteCaseTag],
+    [accounts, periods, trades, tagDefs, cases, caseCards, caseBindings, caseTagDefs, importBatches, attachments, chartImports, chartCandles, symbols, notes, aiTasks, aiTaskList, beginAiTask, completeAiTask, appendAiTaskStream, updateAiTaskProgress, markAiTasksRead, dismissAiTask, updateAccount, updatePeriod, updateTrade, updateNote, createAccount, createPeriod, createSymbol, createNote, createImageAttachment, deleteAttachment, createCase, updateCase, deleteCase, createCaseCard, moveCaseCard, updateCaseCardText, updateCaseCardBarRef, updateCaseCardAnalysis, analyzeCaseCard, resplitCaseCard, prefillTradePlanFromBoundCase, createCaseBinding, deleteCaseBinding, createTrades, createImportBatch, createChartImport, deleteChartImport, rollbackImportBatch, deleteAccount, deletePeriod, deleteTrade, deleteSymbol, deleteNote, restoreState, exportBackup, setTradeStatus, createTag, updateTag, deleteTag, createCaseTag, updateCaseTag, deleteCaseTag],
   )
 
   return <StoreContext.Provider value={value}>{children}</StoreContext.Provider>

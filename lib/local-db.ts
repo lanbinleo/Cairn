@@ -263,6 +263,14 @@ export async function analyzeCaseCard(cardId: string, instruction?: string): Pro
   return invoke<CaseCard>('analyze_case_card', { cardId, instruction: instruction ?? null })
 }
 
+/** AI 重拆一张已有 Card（0.3.4）：原卡软删除，返回新拆出的卡；拆不动时原卡不动并报错。 */
+export async function resplitCaseCard(cardId: string): Promise<{ caseId: string; cards: CaseCard[] }> {
+  if (!isTauriRuntime()) {
+    throw new Error('AI 重拆需要桌面版运行')
+  }
+  return invoke<{ caseId: string; cards: CaseCard[] }>('resplit_case_card', { cardId })
+}
+
 /** AI 秘书代拟 Case 标题，返回草稿（不落库）。 */
 export async function draftCaseTitle(caseId: string): Promise<string> {
   if (!isTauriRuntime()) {

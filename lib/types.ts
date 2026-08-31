@@ -116,6 +116,30 @@ export interface CaseExecutionSuggestions {
   suggestions: CaseExecutionSuggestion[]
 }
 
+/** 一条 AI 交易标签建议（打到绑定的 Trade 上的候选）。词表命中 + 证据逐字校验在 Rust 侧完成。 */
+export interface CaseTagSuggestion {
+  id: string
+  name: string
+  /** 证据：来源卡片 + 逐字原话 */
+  cardId: string
+  quote: string
+  /** 简短理由（AI 生成，≤12 字） */
+  signal?: string
+  status: 'pending' | 'accepted' | 'dismissed'
+  acceptedAt?: number
+  dismissedAt?: number
+}
+
+/** Case 上的版本化标签建议派生数据（0.3.4）。指纹 = 标签名，重跑延续已处理状态。 */
+export interface CaseTagSuggestions {
+  schemaVersion: string
+  promptVersion: string
+  model: string
+  providerId: string
+  analyzedAt: number
+  suggestions: CaseTagSuggestion[]
+}
+
 /** AI 任务中心（0.3.1）的单条任务：GUI 发起的由前端注册，
  *  REST 后台任务（自动识别/补录建议/批量拆卡）经 cairn://ai-task 事件合并。
  *  「需重试」不算完成——只有内建重试后的最终结果才落到 succeeded/failed。 */
@@ -166,6 +190,8 @@ export interface TradeCase {
   updatedAt: number
   /** AI 持仓管理补录建议（绑定 Trade 后生成） */
   aiExecutionSuggestions?: CaseExecutionSuggestions
+  /** AI 交易标签建议（与补录建议同一轮生成，应用到 Trade 上由用户逐条确认） */
+  aiTagSuggestions?: CaseTagSuggestions
   /** AI 整单总结（Trade 关闭后自动或手动生成） */
   aiSummary?: CaseSummary
 }
