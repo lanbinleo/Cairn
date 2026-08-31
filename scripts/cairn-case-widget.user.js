@@ -1378,6 +1378,8 @@
     if (delArm.id === id) {
       clearTimeout(delArm.timer);
       delArm.id = '';
+      // 立即复位按钮：请求在途/失败时也不停在「确认删除」态
+      renderCards();
       void deleteCard(id);
       return;
     }
