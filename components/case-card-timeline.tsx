@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { ArrowRightLeft, ChevronDown, ChevronRight, MoreHorizontal, Pencil, Sparkles, Trash2 } from 'lucide-react'
+import { ArrowRightLeft, ChevronDown, ChevronRight, MoreHorizontal, Pencil, Split, Sparkles, Trash2 } from 'lucide-react'
 
 import { CaseCardAnalysisView, EditableHighlightedCaseCardText, HighlightedCaseCardText } from '@/components/case-card-analysis'
 import { RelativeTime } from '@/components/relative-time'
@@ -53,7 +53,7 @@ interface CaseCardTimelineProps {
  * 排列按展示阶段分组、组内按创建顺序。
  */
 export function CaseCardTimeline({ cards, showMoveToCase = true, showBatchAnalyze = true, targetCardId }: CaseCardTimelineProps) {
-  const { cases, analyzeCaseCard, updateCaseCardText, updateCaseCardBarRef, deleteCaseCard, updateCaseCardAnalysis, moveCaseCard, beginAiTask, completeAiTask } = useCairn()
+  const { cases, analyzeCaseCard, resplitCaseCard, updateCaseCardText, updateCaseCardBarRef, deleteCaseCard, updateCaseCardAnalysis, moveCaseCard, beginAiTask, completeAiTask } = useCairn()
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set())
   const [editingCardId, setEditingCardId] = useState<string | null>(null)
   const [editText, setEditText] = useState('')
@@ -63,6 +63,7 @@ export function CaseCardTimeline({ cards, showMoveToCase = true, showBatchAnalyz
   const [moveTargetId, setMoveTargetId] = useState('')
   const [organizingCardIds, setOrganizingCardIds] = useState<Set<string>>(new Set())
   const [analyzingCardIds, setAnalyzingCardIds] = useState<Set<string>>(new Set())
+  const [resplittingCardIds, setResplittingCardIds] = useState<Set<string>>(new Set())
   const [analysisErrors, setAnalysisErrors] = useState<Record<string, string>>({})
   const [batchAnalyzing, setBatchAnalyzing] = useState(false)
   const highlightRef = useRef<HTMLDivElement | null>(null)
@@ -165,6 +166,24 @@ export function CaseCardTimeline({ cards, showMoveToCase = true, showBatchAnalyz
     completeAiTask(taskId, failures.length === 0
       ? { ok: true }
       : { ok: false, error: `${failures.length}/${cards.length} 张失败：${failures[0]}` })
+  }
+
+  /** AI 重拆一张已有卡（三个点菜单）：原卡替换为多张新卡；失败原因就地显示（任务中心也有）。 */
+  async function runResplit(card: CaseCard) {
+    if (resplittingCardIds.has(card.id)) return
+    if (!window.confirm('将这张卡拆成多张？原卡会被替换（可从备份恢复），AI 识别会重新跑。')) return
+    setResplittingCardIds((prev) => new Set(prev).add(card.id))
+    try {
+      await resplitCaseCard(card.id)
+    } catch (error) {
+      setAnalysisErrors((prev) => ({ ...prev, [card.id]: error instanceof Error ? error.message : String(error) }))
+    } finally {
+      setResplittingCardIds((prev) => {
+        const next = new Set(prev)
+        next.delete(card.id)
+        return next
+      })
+    }
   }
 
   function saveBarEdit(cardId: string) {
@@ -303,6 +322,10 @@ export function CaseCardTimeline({ cards, showMoveToCase = true, showBatchAnalyz
                                     移动到其他 Case
                                   </DropdownMenuItem>
                                 )}
+                                <DropdownMenuItem onClick={() => void runResplit(card)}>
+                                  <Split />
+                                  {resplittingCardIds.has(card.id) ? '重拆中…' : 'AI 重拆此卡'}
+                                </DropdownMenuItem>
                                 <DropdownMenuItem
                                   variant="destructive"
                                   onClick={() => {

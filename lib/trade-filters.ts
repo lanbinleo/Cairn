@@ -14,6 +14,8 @@ export interface TradeFilterConditions {
   scoreMax?: number
   /** 只看未评分（勾选时排除已评分，忽略分数区间） */
   flagUnscored?: boolean
+  /** 只看已评分（与未评分互斥：同勾 = 空结果） */
+  flagScored?: boolean
   /** 出场未按计划（保存的 exitPerPlan = 0） */
   flagExitOffPlan?: boolean
   /** 止损存在放宽（保存的快照 stopOnlyTightened = false） */
@@ -32,6 +34,7 @@ export function isTradeFilterEmpty(conditions: TradeFilterConditions): boolean {
     conditions.scoreMin == null &&
     conditions.scoreMax == null &&
     !conditions.flagUnscored &&
+    !conditions.flagScored &&
     !conditions.flagExitOffPlan &&
     !conditions.flagStopWidened &&
     !conditions.flagNoInitialStop
@@ -47,6 +50,7 @@ export function tradeFilterChips(conditions: TradeFilterConditions): Array<{ key
   if (conditions.scoreMin != null) chips.push({ key: 'scoreMin', label: `过程分 ≥ ${conditions.scoreMin}` })
   if (conditions.scoreMax != null) chips.push({ key: 'scoreMax', label: `过程分 ≤ ${conditions.scoreMax}` })
   if (conditions.flagUnscored) chips.push({ key: 'flagUnscored', label: '未评分' })
+  if (conditions.flagScored) chips.push({ key: 'flagScored', label: '已评分' })
   if (conditions.flagExitOffPlan) chips.push({ key: 'flagExitOffPlan', label: '出场未按计划' })
   if (conditions.flagStopWidened) chips.push({ key: 'flagStopWidened', label: '止损有放宽' })
   if (conditions.flagNoInitialStop) chips.push({ key: 'flagNoInitialStop', label: '缺初始止损' })
@@ -66,7 +70,9 @@ export function matchesTradeFilter(trade: Trade, conditions: TradeFilterConditio
   const score = savedProcessScoreTotal(trade.processScore)
   if (conditions.flagUnscored) {
     if (score != null) return false
-  } else if (conditions.scoreMin != null || conditions.scoreMax != null) {
+  }
+  if (conditions.flagScored && score == null) return false
+  if (!conditions.flagUnscored && (conditions.scoreMin != null || conditions.scoreMax != null)) {
     if (score == null) return false
     if (conditions.scoreMin != null && score < conditions.scoreMin) return false
     if (conditions.scoreMax != null && score > conditions.scoreMax) return false

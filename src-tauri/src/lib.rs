@@ -354,6 +354,117 @@ mod tests {
         assert!(context.contains("首笔入场 90873.76"));
         assert!(context.contains("1. [过程] BAR152 我决定把止损移动到 90820.36"), "cardIndex/phase/bar/rawText");
     }
+
+    #[test]
+    fn tag_vocabulary_block_groups_by_color() {
+        let defs = vec![
+            json!({ "name": "左侧做单", "color": "red" }),
+            json!({ "name": "突破", "color": "yellow" }),
+            json!({ "name": "FOMO", "color": "blue" }),
+        ];
+        let block = tag_vocabulary_block(&defs);
+        assert!(block.contains("- 红（定调整笔交易：定性错误，或最高评级（如 A级交易））：左侧做单"));
+        assert!(block.contains("- 黄（市场结构）：突破"));
+        assert!(block.contains("FOMO"));
+        assert!(!block.contains("绿"), "空分组不出现");
+        assert_eq!(tag_vocabulary_block(&[]), "");
+    }
+
+    #[test]
+    fn card_resplit_never_touches_original_on_failure() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        db::migrate(&conn).unwrap();
+        db::save_record_in_tx(
+            &conn,
+            "cases",
+            "case-1",
+            json!({ "id": "case-1", "accountId": "acct-1", "periodId": "period-1", "title": "T", "status": "active", "provenance": "forward", "tagIds": [], "createdAt": 1, "updatedAt": 1 }),
+        )
+        .unwrap();
+        db::save_record_in_tx(
+            &conn,
+            "caseCards",
+            "card-short",
+            json!({ "id": "card-short", "caseId": "case-1", "phase": "intermediate", "rawText": "太短了", "createdAt": 10 }),
+        )
+        .unwrap();
+        let long_text = "190 号 K 线直接跌破了这个入场价，然后也是让我们成功的入场了。191 号 K 线开始向上反转，我觉得这更像是下跌趋势中的一个回调，还没有到要动仓位的时候。193 号 K 线继续向上涨，涨破了，并且收在了 EMA 20 的上方，我们看它会不会涨破前期重要高点。";
+        db::save_record_in_tx(
+            &conn,
+            "caseCards",
+            "card-long",
+            json!({ "id": "card-long", "caseId": "case-1", "phase": "intermediate", "rawText": long_text, "createdAt": 20 }),
+        )
+        .unwrap();
+        let db = db::Db::from_conn(conn);
+
+        // 未知卡 → 报错
+        assert!(futures::executor::block_on(run_card_resplit(None, &db, "card-404", 1000)).is_err());
+        // 短卡 → 报错，不走 AI
+        let err = futures::executor::block_on(run_card_resplit(None, &db, "card-short", 1000)).unwrap_err();
+        assert!(err.contains("不需要重拆"));
+        // 长卡但无 AI（单测无 AppHandle → 无默认 Provider）→ 报错且原卡不动（与批量拆卡的「退化单卡」相反）
+        let err = futures::executor::block_on(run_card_resplit(None, &db, "card-long", 1000)).unwrap_err();
+        assert!(err.contains("Provider"), "got: {err}");
+        let all = db::read_case_cards_for_case(&db.conn().unwrap(), "case-1").unwrap();
+        assert_eq!(all.len(), 2, "failure path must not touch any card");
+        assert_eq!(all[1]["rawText"], long_text);
+    }
+
+    #[test]
+    fn persist_resplit_replaces_original_and_prunes_suggestions() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        db::migrate(&conn).unwrap();
+        let original = json!({
+            "id": "card-orig", "caseId": "case-1", "phase": "intermediate",
+            "rawText": "一段足够长的原文，会由 AI 拆成多张卡。", "createdAt": 500,
+            "barRef": 120, "entryDecision": "planned",
+        });
+        db::save_record_in_tx(
+            &conn,
+            "cases",
+            "case-1",
+            json!({
+                "id": "case-1", "accountId": "acct-1", "periodId": "period-1", "title": "T",
+                "status": "active", "provenance": "forward", "tagIds": [], "createdAt": 1, "updatedAt": 1,
+                "aiExecutionSuggestions": { "suggestions": [
+                    { "id": "s1", "cardId": "card-orig", "quote": "q", "status": "pending" },
+                    { "id": "s2", "cardId": "card-other", "quote": "q", "status": "pending" },
+                ]},
+                "aiTagSuggestions": { "suggestions": [
+                    { "id": "tag-突破", "name": "突破", "cardId": "card-orig", "quote": "q", "status": "pending" },
+                ]},
+            }),
+        )
+        .unwrap();
+        db::save_record_in_tx(&conn, "caseCards", "card-orig", original.clone()).unwrap();
+
+        let splits = vec![
+            ai::ParsedCardSplit { bar_ref: None, text: "一段足够长的原文，".to_string() },
+            ai::ParsedCardSplit { bar_ref: Some(121), text: "会由 AI 拆成多张卡。".to_string() },
+        ];
+        let created = persist_resplit(&conn, &original, splits, "rs-test-1", 500).unwrap();
+        assert_eq!(created.len(), 2);
+        assert_eq!(created[0]["id"], "rs-test-1-0");
+        assert_eq!(created[0]["createdAt"], 500);
+        assert_eq!(created[1]["createdAt"], 501, "createdAt 逐张 +1ms 保持原位置");
+        assert_eq!(created[0]["entryDecision"], "planned", "entryDecision 仅首张继承");
+        assert!(created[1].get("entryDecision").is_none());
+        assert_eq!(created[0]["barRef"], 120, "首段无锚点时继承原卡 barRef");
+
+        // 原卡软删：活跃列表只剩两张新卡
+        let all = db::read_case_cards_for_case(&conn, "case-1").unwrap();
+        assert_eq!(all.len(), 2);
+        assert!(all.iter().all(|card| card["id"].as_str().unwrap().starts_with("rs-test-1")));
+
+        // 指向原卡的建议被剔除，指向其他卡的保留
+        let case_record = db::read_record_by_id(&conn, "cases", "case-1").unwrap().unwrap();
+        let exec = case_record["aiExecutionSuggestions"]["suggestions"].as_array().unwrap();
+        assert_eq!(exec.len(), 1);
+        assert_eq!(exec[0]["cardId"], "card-other");
+        let tags = case_record["aiTagSuggestions"]["suggestions"].as_array().unwrap();
+        assert_eq!(tags.len(), 0);
+    }
 }
 
 #[tauri::command]
@@ -814,15 +925,46 @@ fn suggestion_fingerprint(item: &ai::ParsedSuggestion) -> String {
     )
 }
 
+/// 标签词表（供 AI 标签建议）：按颜色分组 + 每组语义说明。颜色语义是用户标签
+/// 体系的约定（红=定调整笔交易……），分组数据来自 tagDefs；无标签时返回空串。
+fn tag_vocabulary_block(tag_defs: &[Value]) -> String {
+    const COLOR_GROUPS: [(&str, &str, &str); 7] = [
+        ("red", "红", "定调整笔交易：定性错误，或最高评级（如 A级交易）"),
+        ("orange", "橙", "顺势 / 周期位置"),
+        ("yellow", "黄", "市场结构"),
+        ("green", "绿", "仓位与执行"),
+        ("cyan", "青", "复盘状态"),
+        ("blue", "蓝", "情绪"),
+        ("purple", "紫", "特殊标注"),
+    ];
+    let mut block = String::from("标签词表（tradeTags 只能从中选择，不许造新标签名，按颜色分组）：\n");
+    let mut has_any = false;
+    for (color, label, meaning) in COLOR_GROUPS {
+        let names: Vec<&str> = tag_defs
+            .iter()
+            .filter(|def| def.get("color").and_then(Value::as_str) == Some(color))
+            .filter_map(|def| def.get("name").and_then(Value::as_str))
+            .collect();
+        if names.is_empty() {
+            continue;
+        }
+        has_any = true;
+        block.push_str(&format!("- {label}（{meaning}）：{}\n", names.join("、")));
+    }
+    if has_any { block } else { String::new() }
+}
+
 /// 持仓管理补录建议完整链路：读 Case/卡片/绑定 Trade → 组装上下文 → 一次 AI 调用 →
 /// 机械校验（quote 逐字、白名单、去重）→ 与上一轮的 accepted/dismissed 状态按指纹合并 →
 /// 写回 case.aiExecutionSuggestions（版本化派生数据）。建议永远只是候选，落地由用户确认。
+/// 0.3.4 起同一次调用还产出交易标签建议（case.aiTagSuggestions）：词表来自 tagDefs，
+/// 校验规则同款（词表命中 + quote 逐字），应用到 Trade 上的动作由用户逐条确认。
 pub(crate) async fn run_execution_suggestions(
     app: &AppHandle,
     db: &db::Db,
     case_id: &str,
 ) -> Result<Value, String> {
-    let (trade, cards, provider, model, context) = {
+    let (trade, cards, provider, model, context, tag_defs) = {
         let conn = db.conn()?;
         db::read_record_by_id(&conn, "cases", case_id)?
             .ok_or_else(|| format!("case not found: {case_id}"))?;
@@ -840,8 +982,10 @@ pub(crate) async fn run_execution_suggestions(
             .ok_or_else(|| format!("trade not found: {trade_id}"))?;
         let (provider, model) = ai::default_provider(app)?
             .ok_or_else(|| "还没有默认 AI Provider，请在 设置 → AI 中配置".to_string())?;
-        let context = suggestion_context(&conn, &trade, &cards);
-        (trade, cards, provider, model, context)
+        let mut context = suggestion_context(&conn, &trade, &cards);
+        let tag_defs = db::read_simple_collection(&conn, "tagDefs")?;
+        context.push_str(&tag_vocabulary_block(&tag_defs));
+        (trade, cards, provider, model, context, tag_defs)
     };
 
     let messages = ai::build_suggestion_messages(&context);
@@ -863,6 +1007,26 @@ pub(crate) async fn run_execution_suggestions(
         .collect();
     let parsed = ai::parse_execution_suggestions(&content, &card_pairs)?;
     let deduped = dedup_suggestions_against_trade(parsed, &trade);
+
+    // 标签建议：词表校验 + 证据逐字校验在 parse_trade_tags 内完成，这里再剔除
+    // Trade 已带的标签（重复建议没有意义）
+    let vocabulary: Vec<String> = tag_defs
+        .iter()
+        .filter_map(|def| def.get("name").and_then(Value::as_str).map(str::to_string))
+        .collect();
+    let existing_tags: Vec<String> = trade
+        .get("tags")
+        .and_then(Value::as_array)
+        .map(|items| items.iter().filter_map(Value::as_str).map(str::to_string).collect())
+        .unwrap_or_default();
+    let parsed_tags: Vec<ai::ParsedTradeTag> = ai::parse_trade_tags(&content, &card_pairs, &vocabulary)
+        .into_iter()
+        .filter(|tag| {
+            !existing_tags
+                .iter()
+                .any(|existing| existing.trim().eq_ignore_ascii_case(tag.name.trim()))
+        })
+        .collect();
 
     // 写回前重读 Case：只替换 aiExecutionSuggestions 字段，不回滚并发修改（标题等）
     let conn = db.conn()?;
@@ -936,6 +1100,53 @@ pub(crate) async fn run_execution_suggestions(
         "suggestions": suggestions,
     });
     current["aiExecutionSuggestions"] = blob;
+
+    // 标签建议与动作建议同一轮产出、同一 analyzedAt；指纹 = 标签名，重跑延续已处理状态
+    let previous_tags: Vec<Value> = current
+        .get("aiTagSuggestions")
+        .and_then(|value| value.get("suggestions"))
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let previous_tag_by_name: std::collections::HashMap<String, Value> = previous_tags
+        .into_iter()
+        .filter_map(|item| {
+            let name = item.get("name").and_then(Value::as_str)?.trim().to_lowercase();
+            Some((name, item))
+        })
+        .collect();
+    let mut tag_suggestions: Vec<Value> = Vec::new();
+    for tag in parsed_tags {
+        let old = previous_tag_by_name.get(&tag.name.trim().to_lowercase());
+        let mut suggestion = json!({
+            "id": format!("tag-{}", tag.name),
+            "name": tag.name,
+            "quote": tag.quote,
+            "cardId": tag.card_id,
+            "status": old
+                .and_then(|item| item.get("status"))
+                .cloned()
+                .unwrap_or_else(|| json!("pending")),
+        });
+        if let Some(signal) = tag.signal {
+            suggestion["signal"] = json!(signal);
+        }
+        if let Some(at) = old.and_then(|item| item.get("acceptedAt")).cloned() {
+            suggestion["acceptedAt"] = at;
+        }
+        if let Some(at) = old.and_then(|item| item.get("dismissedAt")).cloned() {
+            suggestion["dismissedAt"] = at;
+        }
+        tag_suggestions.push(suggestion);
+    }
+    current["aiTagSuggestions"] = json!({
+        "schemaVersion": ai::SUGGESTION_PROMPT_VERSION,
+        "promptVersion": ai::SUGGESTION_PROMPT_VERSION,
+        "model": model,
+        "providerId": provider.id,
+        "analyzedAt": now,
+        "suggestions": tag_suggestions,
+    });
     db::save_record_in_tx(&conn, "cases", case_id, current.clone())?;
     ai::log_provider_event(app, format!("case {case_id} execution suggestions updated"));
     Ok(current)
@@ -1356,6 +1567,171 @@ fn collect_batch_replay(
     Ok(Some(replayed))
 }
 
+/// AI 重拆已有卡片（0.3.4）：复盘时发现一张卡里挤了多个独立观察，用拆卡 AI 重新
+/// 拆分并替换原卡。与批量拆卡共用 prompt 与机械校验，但降级策略相反——AI 不可用、
+/// 校验不过或只拆出一段时原卡原样不动（返回错误）：重拆是破坏性替换，不允许
+/// 「退化成单卡」白白丢掉原卡的 aiAnalysis / rawTextHistory。
+/// 锁纪律与 run_batch_split 相同（短锁×3，AI 期间不持锁）。
+pub(crate) async fn run_card_resplit(
+    app: Option<&AppHandle>,
+    db: &db::Db,
+    card_id: &str,
+    now: u64,
+) -> Result<(String, Vec<Value>), String> {
+    // 阶段 1（短锁）：读原卡并校验
+    let original = {
+        let conn = db.conn()?;
+        db::read_record_by_id(&conn, "caseCards", card_id)?
+            .ok_or_else(|| format!("case card not found: {card_id}"))?
+    };
+    let case_id = original
+        .get("caseId")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "card is missing caseId".to_string())?
+        .to_string();
+    let phase = original
+        .get("phase")
+        .and_then(Value::as_str)
+        .unwrap_or("intermediate")
+        .to_string();
+    let raw_text = original
+        .get("rawText")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    if raw_text.chars().count() < 60 {
+        return Err("这张卡不足 60 字，不需要重拆".to_string());
+    }
+    let created_at = original.get("createdAt").and_then(Value::as_u64).unwrap_or(now);
+
+    // 阶段 2（无锁）：AI 拆分。任何失败都不动原卡。
+    let (provider, model) = app
+        .and_then(|app| ai::default_provider(app).ok().flatten())
+        .ok_or_else(|| "还没有默认 AI Provider，请在 设置 → AI 中配置".to_string())?;
+    if let Some(app) = app {
+        ai::log_provider_event(app, format!("resplitting card {card_id} with {model}"));
+    }
+    let messages = ai::build_split_messages(&phase, &raw_text);
+    let content = ai::chat_completion_with_retry(&provider, &model, &messages)
+        .await
+        .map_err(|err| format!("这张卡拆不开：{err}"))?;
+    let splits = ai::parse_card_splits(&content, &raw_text)
+        .map_err(|_| "这张卡拆不开：AI 拆分未通过逐字/覆盖率校验，原卡未改动".to_string())?;
+    if splits.len() <= 1 {
+        return Err("AI 认为这张卡是一段完整记录，拆不出多张".to_string());
+    }
+
+    // 阶段 3（短锁）：重读原卡确认未被并发改动，然后替换
+    let conn = db.conn()?;
+    let current = db::read_record_by_id(&conn, "caseCards", card_id)?
+        .ok_or_else(|| "这张卡已被删除，已取消重拆".to_string())?;
+    let current_text = current
+        .get("rawText")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim();
+    if current_text != raw_text {
+        return Err("这张卡刚被编辑过，已取消重拆；请重新发起".to_string());
+    }
+    let rid = format!("rs-{}", ai::next_task_id());
+    let created = persist_resplit(&conn, &current, splits, &rid, created_at)?;
+    if let Some(app) = app {
+        ai::log_provider_event(app, format!("card {card_id} resplit into {} cards", created.len()));
+    }
+    Ok((case_id, created))
+}
+
+/// 替换落库：软删原卡（附件随删，同删除语义）→ 建新卡（createdAt 逐张 +1ms 保持原
+/// 位置，entryDecision 仅首张继承）→ 剔除 Case 上指向原卡的动作/标签建议（证据卡
+/// 没了，与前端删卡同一规则）。
+fn persist_resplit(
+    conn: &rusqlite::Connection,
+    original: &Value,
+    mut splits: Vec<ai::ParsedCardSplit>,
+    rid: &str,
+    created_at: u64,
+) -> Result<Vec<Value>, String> {
+    let card_id = original.get("id").and_then(Value::as_str).unwrap_or_default();
+    let case_id = original.get("caseId").and_then(Value::as_str).unwrap_or_default();
+    let phase = original.get("phase").and_then(Value::as_str).unwrap_or("intermediate");
+    let entry_decision = original.get("entryDecision").and_then(Value::as_str);
+    db::soft_delete_case_card(conn, card_id)?;
+
+    // 首段无锚点时继承原卡 barRef：拆分不改变「这段话开始于哪根 K 线」
+    if splits[0].bar_ref.is_none() {
+        if let Some(bar) = original.get("barRef").and_then(Value::as_u64) {
+            splits[0].bar_ref = Some(bar as i64);
+        }
+    }
+
+    let mut created: Vec<Value> = Vec::new();
+    for (index, split) in splits.iter().enumerate() {
+        let id = format!("{rid}-{index}");
+        let mut data = json!({
+            "id": id,
+            "caseId": case_id,
+            "phase": phase,
+            "rawText": split.text,
+            "createdAt": created_at + index as u64,
+        });
+        if let Some(bar) = split.bar_ref {
+            data["barRef"] = json!(bar);
+        }
+        if index == 0 {
+            if let Some(decision) = entry_decision {
+                data["entryDecision"] = json!(decision);
+            }
+        }
+        db::save_record_in_tx(conn, "caseCards", &id, data.clone())?;
+        created.push(data);
+    }
+
+    if let Some(mut case_record) = db::read_record_by_id(conn, "cases", case_id)? {
+        let mut changed = false;
+        for key in ["aiExecutionSuggestions", "aiTagSuggestions"] {
+            let Some(suggestions) = case_record
+                .get(key)
+                .and_then(|value| value.get("suggestions"))
+                .and_then(Value::as_array)
+                .cloned()
+            else {
+                continue;
+            };
+            let filtered: Vec<Value> = suggestions
+                .into_iter()
+                .filter(|item| item.get("cardId").and_then(Value::as_str) != Some(card_id))
+                .collect();
+            if let Some(blob) = case_record.get_mut(key) {
+                blob["suggestions"] = json!(filtered);
+                changed = true;
+            }
+        }
+        if changed {
+            db::save_record_in_tx(conn, "cases", case_id, case_record)?;
+        }
+    }
+    Ok(created)
+}
+
+/// AI 重拆已有卡片（GUI）：成功后逐张 spawn 自动分析。任务注册在前端（GUI 任务模式），
+/// 结果卡由前端吸收合并，后续 data-changed 事件兜底。
+#[tauri::command]
+async fn resplit_case_card(
+    app: AppHandle,
+    db: tauri::State<'_, db::Db>,
+    card_id: String,
+) -> Result<Value, String> {
+    let now = now_ms();
+    let (case_id, cards) = run_card_resplit(Some(&app), &db, &card_id, now).await?;
+    for card in &cards {
+        if let Some(id) = card.get("id").and_then(Value::as_str) {
+            ai::spawn_auto_analysis(&app, id.to_string());
+        }
+    }
+    Ok(json!({ "caseId": case_id, "cards": cards }))
+}
+
 /// REST 批量拆卡入口（由 api server 循环分发；不进 handle_request 路由表——
 /// 它需要 AppHandle 走 AI，而 handle_request 保持无 GUI 依赖、测试二进制可链接）。
 /// 阻塞调用 AI（90s 超时上限；本地 API 单线程，拆分期间其他请求排队——浮窗是
@@ -1583,6 +1959,7 @@ pub fn run() {
             set_default_ai_provider,
             fetch_ai_models,
             analyze_case_card,
+            resplit_case_card,
             suggest_case_executions,
             ai_summarize_case,
             ai_suggest_bindings,

@@ -388,17 +388,7 @@ pub fn delete_record(db: &Db, collection: &str, id: &str) -> Result<(), String> 
         return Ok(());
     }
     if collection == "caseCards" {
-        conn.execute(
-            "UPDATE case_cards SET deleted_at = unixepoch() * 1000 WHERE id = ?1",
-            params![id],
-        )
-        .map_err(|err| err.to_string())?;
-        conn.execute(
-            "UPDATE attachments SET deleted_at = unixepoch() * 1000 WHERE owner_type = 'case-card' AND owner_id = ?1",
-            params![id],
-        )
-        .map_err(|err| err.to_string())?;
-        return Ok(());
+        return soft_delete_case_card(&conn, id);
     }
     if collection == "caseTagDefs" {
         conn.execute(
@@ -410,6 +400,21 @@ pub fn delete_record(db: &Db, collection: &str, id: &str) -> Result<(), String> 
     let table = table_for_collection(collection)?;
     conn.execute(
         &format!("UPDATE {table} SET deleted_at = unixepoch() * 1000 WHERE id = ?1"),
+        params![id],
+    )
+    .map_err(|err| err.to_string())?;
+    Ok(())
+}
+
+/// 软删除单张卡片（附件随删）。GUI 删除与 AI 重拆替换共用同一段语义。
+pub(crate) fn soft_delete_case_card(conn: &Connection, id: &str) -> Result<(), String> {
+    conn.execute(
+        "UPDATE case_cards SET deleted_at = unixepoch() * 1000 WHERE id = ?1",
+        params![id],
+    )
+    .map_err(|err| err.to_string())?;
+    conn.execute(
+        "UPDATE attachments SET deleted_at = unixepoch() * 1000 WHERE owner_type = 'case-card' AND owner_id = ?1",
         params![id],
     )
     .map_err(|err| err.to_string())?;

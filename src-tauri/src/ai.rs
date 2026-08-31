@@ -874,9 +874,18 @@ pub fn refresh_proxy(app: &AppHandle) {
 }
 
 /// 探测操作系统代理（Windows 注册表 / macOS scutil / Linux 桌面设置）。
-/// 系统未配置或仅 PAC 自动配置时返回 None → 直连。
+/// 系统未配置、已关闭或仅 PAC 自动配置时返回 None → 直连。
 fn detect_system_proxy() -> Option<String> {
-    let proxy = sysproxy::Sysproxy::get_system_proxy().ok()?;
+    system_proxy_url(&sysproxy::Sysproxy::get_system_proxy().ok()?)
+}
+
+/// enable=false 必须直接忽略：sysproxy 在系统代理关闭时仍会返回注册表残留的
+/// host/port（Windows 关掉开关后 ProxyServer 旧值保留），跟着走会把全部出站
+/// 请求引到一个死代理上。
+fn system_proxy_url(proxy: &sysproxy::Sysproxy) -> Option<String> {
+    if !proxy.enable {
+        return None;
+    }
     let host = proxy.host.trim();
     if host.is_empty() || proxy.port == 0 {
         return None;
@@ -1345,14 +1354,17 @@ pub fn parse_analysis(
 
 // ==================== 持仓管理动作补录建议 ====================
 
-pub const SUGGESTION_PROMPT_VERSION: &str = "0.3.0-suggest-1";
+pub const SUGGESTION_PROMPT_VERSION: &str = "0.3.4-suggest-2";
 
 /// 建议只覆盖管理类动作（编辑器规范集：stop / target-moved / order-edit）。
 /// 开仓、加仓、减仓、平仓以交易所导入的成交为准，AI 一律不碰。
+/// 0.3.4 起同一次调用还产出交易标签建议（tradeTags，打到绑定的 Trade 上）：
+/// 只能从用户消息里的标签词表中选，每条必须有逐字原话证据。
 
 pub fn build_suggestion_messages(context: &str) -> Vec<ChatMessage> {
-    let system = "你是交易日志的持仓管理核对员。交易者在一个 Case 里用口语记录了全过程，这个 Case 绑定了一笔 Trade（成交记录来自交易所导出）。你的任务：找出「交易者明确说过要做、但成交记录里没有对应落库」的持仓管理动作，作为补录建议。
+    let system = "你是交易日志的持仓管理核对员。交易者在一个 Case 里用口语记录了全过程，这个 Case 绑定了一笔 Trade（成交记录来自交易所导出）。你有两个任务：一是找出「交易者明确说过要做、但成交记录里没有对应落库」的持仓管理动作，作为补录建议；二是为这笔 Trade 建议标签。
 
+任务一：管理类动作补录
 只关注管理类动作：移动/设置止损、移动/设置止盈、修改挂单价格、撤销挂单。开仓、加仓、减仓、平仓一律不管（成交以交易所记录为准）。
 
 判定规则：
@@ -1362,9 +1374,15 @@ pub fn build_suggestion_messages(context: &str) -> Vec<ChatMessage> {
 - 已落库动作里已有同类且价格基本相同的动作、或与初始止损/止盈价相同的，不要建议（视为已覆盖）。
 - price 是明确的数字价格；只说了位置没说价格（如 挪到成本线下方）时 price 为 null，并在 anchorText 里写位置描述。信息不足的动作宁可不建议。
 
+任务二：交易标签建议（打到这笔 Trade 上）
+- 只能从用户消息里的「标签词表」中选择，不许造新标签名；词表按颜色分组，分组语义写在词表里。
+- 每条标签必须给出卡片原话 quote（逐字复制）作为证据，并给 cardIndex；cardIndex 缺失时也必须能从某张卡原文里逐字找到 quote。
+- 按证据强度从高到低排列，最多 15 条；证据不足的不要凑数。交易者已有标签不要重复建议。
+- 没有足够证据就输出空数组。
+
 只输出一个 JSON 对象，不要 markdown 代码块和解释：
-{\"suggestions\":[{\"cardIndex\":<卡片编号>,\"action\":\"stop|target|order-edit\",\"price\":<数字或null>,\"anchorText\":\"<位置描述或null>\",\"orderType\":\"stop-loss|take-profit|limit 或null\",\"signal\":\"<不超过12字的简短理由>\",\"quote\":\"<逐字原话>\"}]}
-没有可建议的就输出 {\"suggestions\":[]}。";
+{\"suggestions\":[{\"cardIndex\":<卡片编号>,\"action\":\"stop|target|order-edit\",\"price\":<数字或null>,\"anchorText\":\"<位置描述或null>\",\"orderType\":\"stop-loss|take-profit|limit 或null\",\"signal\":\"<不超过12字的简短理由>\",\"quote\":\"<逐字原话>\"}],\"tradeTags\":[{\"cardIndex\":<卡片编号>,\"name\":\"<词表中的标签名>\",\"quote\":\"<逐字原话>\",\"signal\":\"<不超过12字的理由>\"}]}
+没有可建议的就输出 {\"suggestions\":[],\"tradeTags\":[]}";
     vec![ChatMessage::system(system), ChatMessage::user(context.to_string())]
 }
 
@@ -1467,9 +1485,107 @@ pub fn parse_execution_suggestions(
     Ok(out)
 }
 
+// ==================== 交易标签建议 ====================
+
+/// 一条交易标签建议：name 必须命中用户标签词表，quote 逐字来自卡片原文。
+#[derive(Debug, Clone, PartialEq)]
+pub struct ParsedTradeTag {
+    pub name: String,
+    pub card_id: String,
+    pub quote: String,
+    pub signal: Option<String>,
+}
+
+/// 校验标签建议（不整体失败，逐条丢弃不可信项）：name 命中词表（忽略大小写与
+/// 空白差异）、quote 必须逐字来自某张卡原文（优先 cardIndex 指向的卡）、按 name
+/// 去重、最多 15 条。词表为空（用户还没建标签）时直接返回空。
+pub fn parse_trade_tags(
+    content: &str,
+    cards: &[(String, String)],
+    vocabulary: &[String],
+) -> Vec<ParsedTradeTag> {
+    if vocabulary.is_empty() {
+        return Vec::new();
+    }
+    let Ok(parsed) = serde_json::from_str::<Value>(extract_json_object(content)) else {
+        return Vec::new();
+    };
+    let Some(items) = parsed.get("tradeTags").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    let normalize = |text: &str| text.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase();
+    let vocab: Vec<(String, String)> = vocabulary
+        .iter()
+        .map(|name| (normalize(name), name.trim().to_string()))
+        .collect();
+    let mut out: Vec<ParsedTradeTag> = Vec::new();
+    for item in items {
+        let Some(raw_name) = item
+            .get("name")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+        else {
+            continue;
+        };
+        let Some(name) = vocab
+            .iter()
+            .find(|(key, _)| *key == normalize(raw_name))
+            .map(|(_, original)| original.clone())
+        else {
+            continue;
+        };
+        if out.iter().any(|tag| tag.name == name) {
+            continue;
+        }
+        let Some(quote) = item
+            .get("quote")
+            .and_then(Value::as_str)
+            .filter(|quote| !quote.trim().is_empty())
+        else {
+            continue;
+        };
+        // 证据定位：cardIndex 指向的卡优先（错位即丢），缺失时全文找第一张含该原话的卡
+        let card_id = match item.get("cardIndex").and_then(Value::as_i64) {
+            Some(index) if index >= 1 && (index as usize) <= cards.len() => {
+                let (card_id, raw_text) = &cards[(index - 1) as usize];
+                if raw_text.contains(quote) {
+                    card_id.clone()
+                } else {
+                    continue;
+                }
+            }
+            _ => cards
+                .iter()
+                .find(|(_, raw_text)| raw_text.contains(quote))
+                .map(|(card_id, _)| card_id.clone())
+                .unwrap_or_default(),
+        };
+        if card_id.is_empty() {
+            continue;
+        }
+        let signal = item
+            .get("signal")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+            .map(|text| text.chars().take(24).collect::<String>());
+        out.push(ParsedTradeTag {
+            name,
+            card_id,
+            quote: quote.to_string(),
+            signal,
+        });
+        if out.len() >= 15 {
+            break;
+        }
+    }
+    out
+}
+
 // ==================== 整单 AI 总结 ====================
 
-pub const SUMMARY_PROMPT_VERSION: &str = "0.3.0-summary-1";
+pub const SUMMARY_PROMPT_VERSION: &str = "0.3.4-summary-2";
 
 pub fn build_summary_messages(context: &str) -> Vec<ChatMessage> {
     let system = "你是交易日志的复盘整理员。交易者在一个 Case 里用口语记录了一笔交易从观察到离场的全过程，你把它整理成一份复盘总结。
@@ -1482,10 +1598,83 @@ pub fn build_summary_messages(context: &str) -> Vec<ChatMessage> {
 
 输出字段：
 - overview：一句话定性这笔交易（不超过 40 字），例如「BTC 区间突破追多，测距止盈 1:1 离场」。
-- narrative：2-4 段复盘叙述（用 \\n\\n 分段），按时间线串联：计划怎么形成 → 怎么入场 → 持仓中怎么管理 → 怎么离场，穿插交易者的关键判断与情绪。引用原话时用「」。
+- narrative：2-4 段复盘叙述（用 \\n\\n 分段），按时间线串联：计划怎么形成 → 怎么入场 → 持仓中怎么管理 → 怎么离场，穿插交易者的关键判断与情绪。引用原话时用「」。文中重点可以加受限标注：**关键事实**（加粗）、!!问题或偏差!!（红下划线）、==执行到位或亮点==（绿下划线）；标注要克制（全文合计不超过 15 处），不是每段都必须有；标注不许嵌套、不许跨段（不能包含换行）。
 - highlights：3-5 条要点字符串数组，每条一个独立事实或偏差（计划价 vs 实际价、说过但没落库的动作、情绪信号等）。
 - missing：资料中缺失或对不上的信息数组（如无止损记录、开平仓时间缺失），没有则空数组。";
     vec![ChatMessage::system(system), ChatMessage::user(context.to_string())]
+}
+
+/// 标注记号对：加粗 / 红（问题偏差）/ 绿（执行到位）。与前端 lib/summary-markup.ts 同语义。
+fn summary_marker_pair(kind: &str) -> (&'static str, &'static str) {
+    match kind {
+        "bold" => ("**", "**"),
+        "red" => ("!!", "!!"),
+        _ => ("==", "=="),
+    }
+}
+
+/// 总结 narrative 的受限标注清洗（0.3.4）：模型输出不可信，未配对、空内容、
+/// 跨行（含换行）、嵌套或超量（>20 处）的标注一律剥掉记号保留文字——永不丢内容。
+/// 算法：单遍扫描，进入标注态后遇到任何记号即结算当前段（同记号且合法→保留记号，
+/// 否则→只留文字），换开新段；文本结束仍在标注态→只留文字。
+pub fn sanitize_summary_markup(text: &str) -> String {
+    const MAX_MARKED: usize = 20;
+    let chars: Vec<char> = text.chars().collect();
+    let marker_at = |i: usize| -> Option<&'static str> {
+        if i + 1 >= chars.len() {
+            return None;
+        }
+        match (chars[i], chars[i + 1]) {
+            ('*', '*') => Some("bold"),
+            ('!', '!') => Some("red"),
+            ('=', '=') => Some("green"),
+            _ => None,
+        }
+    };
+    let mut out = String::new();
+    let mut marked = 0usize;
+    let mut open: Option<&'static str> = None;
+    let mut buf = String::new();
+    let mut i = 0usize;
+    while i < chars.len() {
+        if let Some(kind) = marker_at(i) {
+            match open {
+                None => {
+                    open = Some(kind);
+                    buf.clear();
+                }
+                Some(current) => {
+                    let keep = current == kind
+                        && !buf.trim().is_empty()
+                        && !buf.contains('\n')
+                        && marked < MAX_MARKED;
+                    if keep {
+                        let (left, right) = summary_marker_pair(kind);
+                        out.push_str(left);
+                        out.push_str(&buf);
+                        out.push_str(right);
+                        marked += 1;
+                    } else {
+                        out.push_str(&buf);
+                    }
+                    buf.clear();
+                    // 异记号换开：剥掉旧记号后以新记号重开一段，嵌套错误可预测地降级
+                    open = if current == kind { None } else { Some(kind) };
+                }
+            }
+            i += 2;
+        } else {
+            match open {
+                Some(_) => buf.push(chars[i]),
+                None => out.push(chars[i]),
+            }
+            i += 1;
+        }
+    }
+    if open.is_some() {
+        out.push_str(&buf);
+    }
+    out
 }
 
 pub fn parse_summary(content: &str) -> Result<Value, String> {
@@ -1506,6 +1695,7 @@ pub fn parse_summary(content: &str) -> Result<Value, String> {
         .map(str::trim)
         .filter(|text| !text.is_empty())
         .map(|text| text.chars().take(4000).collect::<String>())
+        .map(|text| sanitize_summary_markup(&text))
         .unwrap_or_default();
     let cap_list = |value: &Value, item_cap: usize, max_items: usize| -> Vec<String> {
         value
@@ -1591,10 +1781,16 @@ pub fn parse_binding_matches(content: &str, candidate_count: usize) -> Result<Ve
 
 // ==================== 批量语音拆卡 ====================
 
-pub const SPLIT_PROMPT_VERSION: &str = "0.3.0-split-1";
+pub const SPLIT_PROMPT_VERSION: &str = "0.3.4-split-2";
 
 pub fn build_split_messages(phase: &str, raw_text: &str) -> Vec<ChatMessage> {
     let system = "你是交易日志的拆卡员。交易者用语音一口气讲了几根 K 线的观察，一口气提交了一大段原文。你把这一大段按 K 线锚点拆成多张卡片。
+
+拆分粒度——按「独立的心智事件」拆，宁细勿粗：
+- 每个独立的观察 / 判断 / 决定 / 情绪时刻都是一张卡：一根 K 线的观察、一次计划的修改、一个情绪波动，各自成卡。
+- 逐根 K 线的连续评述（「194 号收了上影线…」「195 号继续向下…」）按观察点分开，每根 K 线的评述是一张卡。
+- 围绕同一根 K 线或同一个想法连续说的几句话合成一张；只按句子硬切是错的。
+- 总结前面走势的小结式段落保持一张卡。
 
 规则：
 - 只输出一个 JSON 对象，不要 markdown 代码块和解释：{\"cards\":[{\"barRef\":<正整数或null>,\"text\":\"<原文逐字连续片段>\"}]}
@@ -1830,6 +2026,28 @@ mod tests {
         // 未知 mode 字符串按旧字段迁移
         let bogus = NetworkSettings { mode: Some("bogus".into()), proxy_url: String::new(), proxy_enabled: true, effective_proxy_url: None };
         assert_eq!(bogus.proxy_mode(), ProxyMode::Manual);
+    }
+
+    #[test]
+    fn system_proxy_url_ignores_disabled_registry_residue() {
+        let proxy = |enable: bool| sysproxy::Sysproxy {
+            enable,
+            host: "127.0.0.1".into(),
+            port: 7890,
+            bypass: String::new(),
+        };
+        // Windows 关掉系统代理开关后注册表 ProxyServer 仍残留旧值——enable=false 必须视为无代理
+        assert_eq!(system_proxy_url(&proxy(false)), None);
+        assert_eq!(system_proxy_url(&proxy(true)).as_deref(), Some("http://127.0.0.1:7890"));
+        // 地址为空或端口 0 → 无代理
+        assert_eq!(
+            system_proxy_url(&sysproxy::Sysproxy { enable: true, host: "  ".into(), port: 7890, bypass: String::new() }),
+            None
+        );
+        assert_eq!(
+            system_proxy_url(&sysproxy::Sysproxy { enable: true, host: "127.0.0.1".into(), port: 0, bypass: String::new() }),
+            None
+        );
     }
 
     #[test]
@@ -2273,5 +2491,74 @@ mod tests {
         let analysis = parse_analysis("entry", text, &outcome.content, model, &provider.id, 0)
             .expect("parse analysis from streamed content");
         assert!(!analysis["labels"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn summary_markup_sanitizer_keeps_valid_and_strips_invalid() {
+        // 合法标注原样保留
+        assert_eq!(
+            sanitize_summary_markup("前置**关键**中置!!问题!!后置==亮点=="),
+            "前置**关键**中置!!问题!!后置==亮点=="
+        );
+        // 未闭合：剥记号留文字
+        assert_eq!(sanitize_summary_markup("说了**没关"), "说了没关");
+        // 空内容：剥记号
+        assert_eq!(sanitize_summary_markup("前****后"), "前后");
+        // 跨行：剥记号留文字
+        assert_eq!(sanitize_summary_markup("**第一段\n\n第二段**结尾"), "第一段\n\n第二段结尾");
+        // 嵌套：外层剥记号，内层完整则保留；内容顺序不乱
+        assert_eq!(sanitize_summary_markup("**外层==内层==收尾**"), "外层==内层==收尾");
+    }
+
+    #[test]
+    fn summary_markup_sanitizer_caps_marked_segments() {
+        let mut text = String::new();
+        for i in 0..25 {
+            text.push_str(&format!("**标注{i}**",));
+        }
+        let sanitized = sanitize_summary_markup(&text);
+        assert_eq!(sanitized.matches("**").count(), 40, "20 处保留（40 个记号），其余剥掉");
+        for i in 20..25 {
+            assert!(sanitized.contains(&format!("标注{i}")), "超量标注的文字保留");
+        }
+    }
+
+    #[test]
+    fn summary_parse_passes_markup_through_sanitizer() {
+        let content = r#"{"overview":"BTC 区间突破追多","narrative":"计划**止损 90364**；!!仓位过重!!；==按计划离场==；未闭合的 **记号","highlights":["要点"],"missing":[]}"#;
+        let summary = parse_summary(content).unwrap();
+        assert_eq!(summary["narrative"].as_str().unwrap(), "计划**止损 90364**；!!仓位过重!!；==按计划离场==；未闭合的 记号");
+    }
+
+    #[test]
+    fn parse_trade_tags_validates_vocabulary_and_quotes() {
+        let cards = vec![
+            ("card-1".to_string(), "这一段是震荡区间，我做的突破追多，仓位有点过重了".to_string()),
+            ("card-2".to_string(), "我决定把止损移动到 90820.36".to_string()),
+        ];
+        let vocabulary = vec!["突破".to_string(), "仓位过重".to_string(), "FOMO".to_string()];
+        let content = r#"{"suggestions":[],"tradeTags":[
+            {"cardIndex":1,"name":"突破","quote":"我做的突破追多","signal":"区间上沿突破"},
+            {"cardIndex":1,"name":"仓位过重","quote":"止损移动到 90820.36"},
+            {"cardIndex":1,"name":"不在词表","quote":"震荡区间"},
+            {"name":"FOMO","quote":"不存在的原话"},
+            {"cardIndex":1,"name":"突破","quote":"我做的突破追多"},
+            {"name":"仓位过重"},
+            {"name":"FOMO","quote":"仓位有点过重了"}
+        ]}"#;
+        let tags = parse_trade_tags(content, &cards, &vocabulary);
+        // 命中：突破（cardIndex 定位）；FOMO（无 cardIndex → 全文找第一张含原话的卡）。
+        // 丢弃：quote 与 cardIndex 错位（仓位过重@card-1）、不在词表、quote 无处可寻、
+        // 缺 quote、重名去重。
+        assert_eq!(tags.len(), 2);
+        assert_eq!(tags[0].name, "突破");
+        assert_eq!(tags[0].card_id, "card-1");
+        assert_eq!(tags[0].signal.as_deref(), Some("区间上沿突破"));
+        assert_eq!(tags[1].name, "FOMO");
+        assert_eq!(tags[1].card_id, "card-1");
+        // 空词表 → 直接空（用户还没建标签）
+        assert!(parse_trade_tags(content, &cards, &[]).is_empty());
+        // 输出里没有 tradeTags 字段 → 空，不报错
+        assert!(parse_trade_tags(r#"{"suggestions":[]}"#, &cards, &vocabulary).is_empty());
     }
 }

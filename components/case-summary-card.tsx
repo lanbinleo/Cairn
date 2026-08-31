@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useRef } from 'react'
+import { useEffect, useMemo, useRef } from 'react'
 import { NotebookPen, RefreshCw, Sparkles } from 'lucide-react'
 
 import { AiRetryLink } from '@/components/ai-retry-button'
@@ -9,6 +9,7 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { InfoHint } from '@/components/info-hint'
 import { RelativeTime } from '@/components/relative-time'
+import { parseSummaryMarkup, stripSummaryMarkup, type SummaryMarkupKind } from '@/lib/summary-markup'
 import { useCairn } from '@/lib/store'
 import type { CaseCard, Trade, TradeCase } from '@/lib/types'
 import { cn } from '@/lib/utils'
@@ -37,6 +38,39 @@ function SummaryStreamPreview({ text }: { text: string }) {
     >
       {text}
     </div>
+  )
+}
+
+/** 受限标注渲染（0.3.4）：加粗 = 关键事实；红/绿下划线 = 问题偏差 / 执行到位，
+ *  着色样式与卡片标签的下划线同款。历史总结（无标注）原样通过。 */
+function SummaryMarkedText({ kind, text }: { kind: SummaryMarkupKind; text: string }) {
+  if (kind === 'bold') return <strong className="font-semibold text-foreground">{text}</strong>
+  const color = kind === 'red' ? '#f87171' : '#4ade80'
+  return (
+    <span
+      style={{
+        textDecoration: 'underline',
+        textDecorationColor: color,
+        textDecorationThickness: '2px',
+        textUnderlineOffset: '3px',
+      }}
+    >
+      {text}
+    </span>
+  )
+}
+
+function SummaryRichText({ text }: { text: string }) {
+  const segments = useMemo(() => parseSummaryMarkup(text), [text])
+  if (segments.length === 1 && segments[0].kind === 'plain') return <>{text}</>
+  return (
+    <>
+      {segments.map((segment, index) =>
+        segment.kind === 'plain'
+          ? <span key={index}>{segment.text}</span>
+          : <SummaryMarkedText key={index} kind={segment.kind} text={segment.text} />,
+      )}
+    </>
   )
 }
 
@@ -82,10 +116,11 @@ export function CaseSummaryCard({
   function fillNote() {
     if (!trade) return
     if (trade.note && !window.confirm('重新填入会整体替换当前复盘备注，继续？')) return
+    // 复盘备注是纯文本渲染：标注记号剥掉，只留文字
     const draft = [
       `【AI 总结草稿】${summary?.overview ?? ''}`,
       '',
-      summary?.narrative ?? '',
+      stripSummaryMarkup(summary?.narrative ?? ''),
       summary && summary.highlights.length > 0 ? `\n要点：\n${summary.highlights.map((item) => `- ${item}`).join('\n')}` : '',
     ].join('\n').trim() + '\n'
     updateTrade(trade.id, { note: draft })
@@ -147,7 +182,7 @@ export function CaseSummaryCard({
         {busy && streamText && <SummaryStreamPreview text={streamText} />}
         {variant === 'compact' ? (
           <>
-            <p className="whitespace-pre-wrap text-sm leading-6">{firstParagraph}</p>
+            <p className="whitespace-pre-wrap text-sm leading-6"><SummaryRichText text={firstParagraph} /></p>
             {summary.highlights.length > 0 && (
               <div className="flex flex-wrap gap-1.5">
                 {summary.highlights.map((item, index) => <Badge key={index} variant="secondary" className="max-w-full font-normal">{item}</Badge>)}
@@ -156,7 +191,7 @@ export function CaseSummaryCard({
           </>
         ) : (
           <>
-            <p className="whitespace-pre-wrap text-sm leading-6">{summary.narrative}</p>
+            <p className="whitespace-pre-wrap text-sm leading-6"><SummaryRichText text={summary.narrative} /></p>
             {summary.highlights.length > 0 && (
               <div className="flex flex-col gap-1.5">
                 {summary.highlights.map((item, index) => (

@@ -1,6 +1,6 @@
 [package]
 name = "cairn"
-version = "0.3.3"
+version = "0.3.4"
 description = "CAIRN trading journal desktop app"
 authors = ["CAIRN"]
 license = ""

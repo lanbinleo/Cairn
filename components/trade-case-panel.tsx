@@ -7,6 +7,7 @@ import { ArrowRight, Link2, Plus, Unlink } from 'lucide-react'
 import { CaseCardTimeline } from '@/components/case-card-timeline'
 import { CaseExecutionSuggestions } from '@/components/case-execution-suggestions'
 import { CaseSummaryCard } from '@/components/case-summary-card'
+import { CaseTagSuggestions } from '@/components/case-tag-suggestions'
 import { BindingSuggestForTrade } from '@/components/binding-suggestions'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -251,6 +252,12 @@ export function TradeCasePanel({
         cardTimes={cardTimes ?? new Map()}
         onJumpCard={(cardId) => onJumpCard?.(cardId)}
         onEditPrefill={(_suggestion, draft) => onSuggestEditPrefill?.(draft)}
+      />
+
+      <CaseTagSuggestions
+        trade={trade}
+        caseRecord={caseRecord}
+        onJumpCard={(cardId) => onJumpCard?.(cardId)}
       />
 
       <CaseCardTimeline cards={cards} showMoveToCase={false} targetCardId={targetCardId} />

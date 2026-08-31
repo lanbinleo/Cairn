@@ -29,6 +29,7 @@ import { useCairn } from '@/lib/store'
 import { executionActionLabel, hasPositionFill, isPositionExecutionAction, orderTypeLabel } from '@/lib/executions'
 import { aggregateDisplayExecutions } from '@/lib/execution-display'
 import { computeTradeMetrics } from '@/lib/metrics'
+import { savedProcessScoreTotal } from '@/lib/process-score'
 import { fmtPrice, fmtDuration, fmtUtcDateTime, fmtUtcDate, fmtMoney } from '@/lib/format'
 import { sortTagNamesByColor } from '@/lib/tags'
 import { resolveCaseCardTimesForTrade, timeToBarNumber } from '@/lib/bar-time'
@@ -563,6 +564,25 @@ export default function TradeDetailPage() {
                 <span className="text-sm text-muted-foreground">R 倍数</span>
                 <RText value={m.rMultiple} className="text-sm font-medium" />
               </div>
+              {(() => {
+                const score = savedProcessScoreTotal(trade.processScore)
+                return (
+                  <div className="flex items-baseline justify-between">
+                    <span className="text-sm text-muted-foreground">过程分</span>
+                    {score != null ? (
+                      <span className="font-mono text-sm font-medium tabular-nums" title="过程分只看决策时点的信息，与盈亏无关；明细在评估 tab。">{score} / 10</span>
+                    ) : (
+                      <button
+                        type="button"
+                        className="text-xs text-muted-foreground underline decoration-dotted underline-offset-2 transition-colors hover:text-foreground"
+                        onClick={() => setActiveTab('trade')}
+                      >
+                        未评分，去评分
+                      </button>
+                    )}
+                  </div>
+                )
+              })()}
               {trade.initialStopLoss == null && (
                 <p className="rounded-md bg-muted px-3 py-2 text-xs text-muted-foreground text-pretty">
                   未设置初始止损，无法计算 R。可点击「编辑」补录。
