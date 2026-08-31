@@ -278,8 +278,13 @@ pub fn start_server(app: AppHandle) {
             // 批量拆卡在取 DB 锁之前拦截：它内部跨 AI 调用（最长 ~3 分钟），
             // 若在此处持有 MutexGuard 会卡死所有 GUI Tauri 命令的数据库访问。
             // run_batch_split 自己按「短锁校验 → 无锁 AI → 短锁落库」分阶段持锁。
+            // split-preview 同理（AI 跨调用）；batch-create 无 AI 但内部自管短锁。
             let outcome = if method == "POST" && url.starts_with("/api/v1/cases/") && url.ends_with("/cards/batch-split") {
                 Some(crate::batch_split_endpoint(&app, &db, &url, auth.as_deref(), &token, &body, now_ms()))
+            } else if method == "POST" && url.starts_with("/api/v1/cases/") && url.ends_with("/cards/split-preview") {
+                Some(crate::split_preview_endpoint(&app, &db, &url, auth.as_deref(), &token, &body, now_ms()))
+            } else if method == "POST" && url.starts_with("/api/v1/cases/") && url.ends_with("/cards/batch-create") {
+                Some(crate::batch_create_endpoint(&app, &db, &url, auth.as_deref(), &token, &body, now_ms()))
             } else {
                 None
             };
