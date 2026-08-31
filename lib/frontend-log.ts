@@ -20,7 +20,7 @@ export async function logFrontendMessage(message: string, level: 'info' | 'error
     return
   }
   try {
-    await invoke('frontend_log', { message })
+    await invoke('frontend_log', { message, level })
   } catch (err) {
     console.error('failed to write frontend log', err, message)
   }

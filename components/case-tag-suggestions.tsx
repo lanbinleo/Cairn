@@ -2,6 +2,7 @@
 
 import { Check, ListChecks, Sparkles, X } from 'lucide-react'
 
+import { AiRetryLink } from '@/components/ai-retry-button'
 import { TagBadge } from '@/components/tag-badge'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -27,7 +28,8 @@ export function CaseTagSuggestions({
   /** 点击证据跳到对应卡片（案例 Tab 内定位） */
   onJumpCard: (cardId: string) => void
 }) {
-  const { getTagDef, createTag, updateTrade, setCaseTagSuggestionStatus } = useCairn()
+  const { getTagDef, createTag, updateTrade, setCaseTagSuggestionStatus, refreshCaseExecutionSuggestions, aiTasks } = useCairn()
+  const busy = aiTasks.checkingCaseIds.includes(caseRecord.id)
   const blob = caseRecord.aiTagSuggestions
   const suggestions = blob?.suggestions ?? []
   // 展示层去重：Trade 已带的标签不再出现在待确认列表
@@ -64,13 +66,17 @@ export function CaseTagSuggestions({
     return null
   }
 
-  // 全部处理完：折叠成一小条
+  // 全部处理完：折叠成一小条（保留可教重试入口——「再多给一些标签」的典型场景）
   if (pending.length === 0) {
     return (
       <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl bg-card px-4 py-2 ring-1 ring-foreground/10">
         <p className="text-sm text-muted-foreground">
           AI 标签建议：都已处理{accepted + dismissed > 0 ? `（${accepted} 已应用 · ${dismissed} 已忽略）` : ''}。
         </p>
+        <AiRetryLink
+          busy={busy}
+          onRetry={(instruction) => void refreshCaseExecutionSuggestions(caseRecord.id, instruction)}
+        />
       </div>
     )
   }
@@ -82,18 +88,24 @@ export function CaseTagSuggestions({
           <div className="flex flex-col gap-1.5">
             <CardTitle className="flex items-center gap-2 text-base">
               <Sparkles className="size-4 text-amber-500" />AI 标签建议
-              <InfoHint>根据卡片原话从你的标签词表里挑的候选（每条都有原话证据）；应用到这笔 Trade 由你确认，重跑入口在上方「重新检查」。</InfoHint>
+              <InfoHint>根据卡片原话从你的标签词表里挑的候选（每条都有原话证据）；应用到这笔 Trade 由你确认。想让它再想想（更多/不同的标签），点「带着要求重试」。</InfoHint>
               <Badge variant="secondary">{pending.length} 条待确认</Badge>
             </CardTitle>
             {accepted + dismissed > 0 && (
               <CardDescription>已处理 {accepted + dismissed} 条（{accepted} 已应用 · {dismissed} 已忽略）。</CardDescription>
             )}
           </div>
-          {pending.length > 1 && (
-            <Button variant="outline" size="sm" onClick={applyAll}>
-              <ListChecks data-icon="inline-start" />全部应用
-            </Button>
-          )}
+          <div className="flex items-center gap-2">
+            {pending.length > 1 && (
+              <Button variant="outline" size="sm" onClick={applyAll}>
+                <ListChecks data-icon="inline-start" />全部应用
+              </Button>
+            )}
+            <AiRetryLink
+              busy={busy}
+              onRetry={(instruction) => void refreshCaseExecutionSuggestions(caseRecord.id, instruction)}
+            />
+          </div>
         </div>
       </CardHeader>
       <CardContent className="flex flex-col gap-2">

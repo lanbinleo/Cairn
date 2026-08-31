@@ -334,7 +334,62 @@ pub async fn fetch_models(base_url: String, api_key: String) -> Result<Vec<Strin
 }
 
 pub fn log_provider_event(app: &AppHandle, message: String) {
-    diagnostics::app_log(app, format!("ai: {message}"));
+    let _ = app;
+    diagnostics::log(diagnostics::Level::Info, "ai", message);
+}
+
+// ==================== AI 请求日志（0.3.6） ====================
+// 目标：AI 行为可 debug——请求发去了哪、发了什么、回了什么、耗时与 token。
+// 只记请求体 JSON（不含任何 header），api_key 永不落盘；请求/响应体按字符截断。
+
+const AI_LOG_BODY_LIMIT: usize = 16 * 1024;
+
+fn log_ai_body(label: &str, text: &str) {
+    let truncated: String = text.chars().take(AI_LOG_BODY_LIMIT).collect();
+    let suffix = if text.chars().count() > AI_LOG_BODY_LIMIT { " …（已截断）" } else { "" };
+    diagnostics::log(diagnostics::Level::Info, "ai", format!("{label}: {truncated}{suffix}"));
+}
+
+fn log_ai_request(provider: &AiProvider, model: &str, messages: &[ChatMessage], body: &Value, stream: bool) {
+    let host = reqwest::Url::parse(&provider.base_url)
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_string))
+        .unwrap_or_else(|| provider.base_url.clone());
+    let chars: usize = messages.iter().map(|message| message.content.chars().count()).sum();
+    diagnostics::log(
+        diagnostics::Level::Info,
+        "ai",
+        format!(
+            "request → {host} · provider「{}」model {model} · {} 条消息 / {chars} 字符{}",
+            provider.name,
+            messages.len(),
+            if stream { " · stream" } else { "" },
+        ),
+    );
+    log_ai_body("request body", &serde_json::to_string(body).unwrap_or_default());
+}
+
+fn log_ai_error(elapsed: std::time::Duration, message: &str) {
+    diagnostics::log(
+        diagnostics::Level::Error,
+        "ai",
+        format!("request failed · {}ms: {message}", elapsed.as_millis()),
+    );
+}
+
+fn log_ai_response(elapsed: std::time::Duration, content: &str, extra: &str, response_body: Option<&str>) {
+    diagnostics::log(
+        diagnostics::Level::Info,
+        "ai",
+        format!(
+            "response ok · {}ms · {} 字符{extra}",
+            elapsed.as_millis(),
+            content.chars().count(),
+        ),
+    );
+    if let Some(body) = response_body {
+        log_ai_body("response body", body);
+    }
 }
 
 // ==================== 网络错误详情 ====================
@@ -420,6 +475,9 @@ impl ChatMessage {
     pub fn user(content: impl Into<String>) -> Self {
         Self { role: "user".into(), content: content.into() }
     }
+    pub fn assistant(content: impl Into<String>) -> Self {
+        Self { role: "assistant".into(), content: content.into() }
+    }
 }
 
 /// POST {base_url}/chat/completions，返回 choices[0].message.content。
@@ -430,6 +488,7 @@ pub async fn chat_completion(
     model: &str,
     messages: &[ChatMessage],
 ) -> Result<String, String> {
+    let started = std::time::Instant::now();
     let url = format!("{}/chat/completions", provider.base_url);
     let mut headers = reqwest::header::HeaderMap::new();
     headers.insert("Content-Type", "application/json".parse().unwrap());
@@ -444,23 +503,41 @@ pub async fn chat_completion(
         "stream": false,
     });
     apply_thinking_param(&mut body, provider, model);
+    log_ai_request(provider, model, messages, &body, false);
     let mut request = client.post(&url).json(&body);
     if !provider.api_key.is_empty() {
         request = request.bearer_auth(&provider.api_key);
     }
-    let response = request
-        .send()
-        .await
-        .map_err(|err| format!("request failed: {}", describe_request_error(&err)))?;
+    let response = request.send().await.map_err(|err| {
+        let message = format!("request failed: {}", describe_request_error(&err));
+        log_ai_error(started.elapsed(), &message);
+        message
+    })?;
     let status = response.status();
-    let body = response
-        .text()
-        .await
-        .map_err(|err| format!("read response failed: {}", describe_read_error(&err)))?;
+    let body = response.text().await.map_err(|err| {
+        let message = format!("read response failed: {}", describe_read_error(&err));
+        log_ai_error(started.elapsed(), &message);
+        message
+    })?;
     if !status.is_success() {
-        return Err(http_error_message(status, &body));
+        let message = http_error_message(status, &body);
+        log_ai_error(started.elapsed(), &message);
+        return Err(message);
     }
-    extract_message_content(&body)
+    let content = extract_message_content(&body).map_err(|message| {
+        log_ai_error(started.elapsed(), &message);
+        message
+    })?;
+    let usage = serde_json::from_str::<Value>(&body).ok().and_then(|parsed| {
+        let prompt = parsed.pointer("/usage/prompt_tokens").and_then(Value::as_u64);
+        let completion = parsed.pointer("/usage/completion_tokens").and_then(Value::as_u64);
+        (prompt.is_some() || completion.is_some()).then_some((prompt, completion))
+    });
+    let usage_line = usage
+        .map(|(prompt, completion)| format!(" · tokens prompt {:?} / completion {:?}", prompt, completion))
+        .unwrap_or_default();
+    log_ai_response(started.elapsed(), &content, &usage_line, Some(&body));
+    Ok(content)
 }
 
 /// 从非流式响应体提取 choices[0].message.content（chat_completion 与流式降级路径共用）。
@@ -525,6 +602,64 @@ fn is_retryable_error(message: &str) -> bool {
         || message.starts_with("read response failed")
         || message.starts_with("模型服务返回 5")
         || message.starts_with("provider returned empty content")
+}
+
+// ==================== 校验失败修正重试 ====================
+
+/// 把第一轮的请求与回复作为上下文、连同校验错误一起再发一轮让模型自我修正：
+/// base_messages + assistant(第一轮原样输出) + user(修正指令)。与用户手打
+/// instruction 的追加模式（run_card_analysis 的「补充整理要求」）同构——
+/// temperature=0 下原样重发没有意义，差异完全来自回放 + 错误信息。
+pub fn build_repair_messages(
+    base_messages: &[ChatMessage],
+    first_output: &str,
+    validation_error: &str,
+) -> Vec<ChatMessage> {
+    let mut messages = base_messages.to_vec();
+    messages.push(ChatMessage::assistant(first_output));
+    messages.push(ChatMessage::user(format!(
+        "你上一次的输出未通过程序的机械校验，错误信息：{validation_error}\n\
+请针对错误修正你的输出：严格遵守任务原有的格式要求（只输出 JSON 对象本身，不要 markdown 代码块和解释），\
+并确保修正后能通过上述校验。只输出修正后的完整结果。"
+    )));
+    messages
+}
+
+/// 「请求 → 机械校验」的完整闭环（0.3.6）：第一轮走 chat_completion_with_retry
+/// （网络类失败自动重试一次）；解析/校验失败时用 build_repair_messages 附带上轮
+/// 回复与错误再试一轮——修正轮直接 chat_completion，不再嵌套网络重试（调用方
+/// 超时预算按 3×90s 上限设计）。二轮仍失败返回合并错误。on_event 用于把
+/// 「触发修正轮 / 修正成功」写进日志（测试里传 &|_| {}）。
+pub async fn chat_completion_validated<T, F>(
+    provider: &AiProvider,
+    model: &str,
+    base_messages: &[ChatMessage],
+    parse: F,
+    on_event: &(dyn Fn(&str) + Send + Sync),
+) -> Result<T, String>
+where
+    F: Fn(&str) -> Result<T, String>,
+{
+    let first = chat_completion_with_retry(provider, model, base_messages).await?;
+    match parse(&first) {
+        Ok(value) => Ok(value),
+        Err(first_error) => {
+            on_event(&format!("validation failed, retrying with repair context: {first_error}"));
+            let repair_messages = build_repair_messages(base_messages, &first, &first_error);
+            match chat_completion(provider, model, &repair_messages).await {
+                Ok(second) => match parse(&second) {
+                    Ok(value) => {
+                        on_event("repair round passed validation");
+                        Ok(value)
+                    }
+                    Err(second_error) => Err(format!(
+                        "{first_error}；修正重试后仍未通过校验：{second_error}"
+                    )),
+                },
+                Err(network) => Err(format!("{first_error}；修正重试请求失败：{network}")),
+            }
+        }
+    }
 }
 
 // ==================== 流式 Chat Completion ====================
@@ -633,6 +768,7 @@ pub async fn chat_completion_stream(
     messages: &[ChatMessage],
     on_chunk: &(dyn Fn(&StreamChunk) + Send + Sync),
 ) -> Result<StreamOutcome, String> {
+    let started = std::time::Instant::now();
     let url = format!("{}/chat/completions", provider.base_url);
     let client = http_client()
         .connect_timeout(Duration::from_secs(15))
@@ -646,14 +782,16 @@ pub async fn chat_completion_stream(
         "stream": true,
     });
     apply_thinking_param(&mut body, provider, model);
+    log_ai_request(provider, model, messages, &body, true);
     let mut request = client.post(&url).json(&body);
     if !provider.api_key.is_empty() {
         request = request.bearer_auth(&provider.api_key);
     }
-    let mut response = request
-        .send()
-        .await
-        .map_err(|err| format!("request failed: {}", describe_request_error(&err)))?;
+    let mut response = request.send().await.map_err(|err| {
+        let message = format!("request failed: {}", describe_request_error(&err));
+        log_ai_error(started.elapsed(), &message);
+        message
+    })?;
 
     let is_event_stream = response
         .headers()
@@ -663,21 +801,28 @@ pub async fn chat_completion_stream(
     if !is_event_stream {
         // provider 不支持流式：当普通响应整段读，并整体作为一次正文增量吐给回调
         let status = response.status();
-        let body = response
-            .text()
-            .await
-            .map_err(|err| format!("read response failed: {}", describe_read_error(&err)))?;
+        let body = response.text().await.map_err(|err| {
+            let message = format!("read response failed: {}", describe_read_error(&err));
+            log_ai_error(started.elapsed(), &message);
+            message
+        })?;
         if !status.is_success() {
-            return Err(http_error_message(status, &body));
+            let message = http_error_message(status, &body);
+            log_ai_error(started.elapsed(), &message);
+            return Err(message);
         }
         let mut outcome = StreamOutcome {
-            content: extract_message_content(&body)?,
+            content: extract_message_content(&body).map_err(|message| {
+                log_ai_error(started.elapsed(), &message);
+                message
+            })?,
             ..Default::default()
         };
         if let Ok(parsed) = serde_json::from_str::<Value>(&body) {
             outcome.completion_tokens = parsed.pointer("/usage/completion_tokens").and_then(Value::as_u64);
             outcome.total_tokens = parsed.pointer("/usage/total_tokens").and_then(Value::as_u64);
         }
+        log_ai_response(started.elapsed(), &outcome.content, " · stream 降级整段读", Some(&body));
         on_chunk(&StreamChunk { kind: StreamChunkKind::Content, text: outcome.content.clone() });
         return Ok(outcome);
     }
@@ -685,7 +830,9 @@ pub async fn chat_completion_stream(
     let status = response.status();
     if !status.is_success() {
         let body = response.text().await.unwrap_or_default();
-        return Err(http_error_message(status, &body));
+        let message = http_error_message(status, &body);
+        log_ai_error(started.elapsed(), &message);
+        return Err(message);
     }
 
     let mut acc = SseAccumulator::new();
@@ -700,6 +847,10 @@ pub async fn chat_completion_stream(
                     let received = acc.content.chars().count();
                     format!("流式输出中断（已接收 {received} 字）：{}", describe_read_error(&err))
                 }
+            })
+            .map_err(|message| {
+                log_ai_error(started.elapsed(), &message);
+                message
             })?;
         let Some(chunk) = chunk else { break };
         for piece in acc.push_chunk(&chunk) {
@@ -707,14 +858,27 @@ pub async fn chat_completion_stream(
         }
     }
     if acc.content.trim().is_empty() {
-        return Err("provider returned empty content".to_string());
+        let message = "provider returned empty content".to_string();
+        log_ai_error(started.elapsed(), &message);
+        return Err(message);
     }
-    Ok(StreamOutcome {
+    let outcome = StreamOutcome {
         content: acc.content,
         reasoning_chars: acc.reasoning.chars().count(),
         completion_tokens: acc.completion_tokens,
         total_tokens: acc.total_tokens,
-    })
+    };
+    log_ai_response(
+        started.elapsed(),
+        &outcome.content,
+        &format!(
+            " · 思考 {} 字 · tokens completion {:?} / total {:?}",
+            outcome.reasoning_chars, outcome.completion_tokens, outcome.total_tokens
+        ),
+        None,
+    );
+    log_ai_body("response content", &outcome.content);
+    Ok(outcome)
 }
 
 /// 流式重试：网络类失败且**尚未收到任何内容**时整体重试一次；
@@ -1071,7 +1235,7 @@ pub fn spawn_auto_suggestions(app: &AppHandle, case_id: String) {
         let task_id = next_task_id();
         emit_task_event(&app, &task_id, "suggestions", "start", "补录建议", Some("case"), Some(&case_id), None);
         let result =
-            tauri::async_runtime::block_on(crate::run_execution_suggestions(&app, &db, &case_id));
+            tauri::async_runtime::block_on(crate::run_execution_suggestions(&app, &db, &case_id, None));
         match result {
             Ok(case) => {
                 emit_task_event(&app, &task_id, "suggestions", "succeeded", "补录建议", Some("case"), Some(&case_id), None);
@@ -1354,7 +1518,7 @@ pub fn parse_analysis(
 
 // ==================== 持仓管理动作补录建议 ====================
 
-pub const SUGGESTION_PROMPT_VERSION: &str = "0.3.4-suggest-2";
+pub const SUGGESTION_PROMPT_VERSION: &str = "0.3.6-suggest-3";
 
 /// 建议只覆盖管理类动作（编辑器规范集：stop / target-moved / order-edit）。
 /// 开仓、加仓、减仓、平仓以交易所导入的成交为准，AI 一律不碰。
@@ -1498,13 +1662,18 @@ pub struct ParsedTradeTag {
 
 /// 校验标签建议（不整体失败，逐条丢弃不可信项）：name 命中词表（忽略大小写与
 /// 空白差异）、quote 必须逐字来自某张卡原文（优先 cardIndex 指向的卡）、按 name
-/// 去重、最多 15 条。词表为空（用户还没建标签）时直接返回空。
+/// 去重、最多 15 条。词表为空且没有 instruction 时直接返回空。
+/// instruction（用户可教重试，0.3.6）：name 逐字出现在用户输入的要求文本里也放行
+/// ——用户亲手写下这个名字就是授权创建，应用侧有 defensive createTag 兜底；
+/// 无 instruction 的常规跑维持严格词表，模型造的名字一律丢弃。
 pub fn parse_trade_tags(
     content: &str,
     cards: &[(String, String)],
     vocabulary: &[String],
+    instruction: Option<&str>,
 ) -> Vec<ParsedTradeTag> {
-    if vocabulary.is_empty() {
+    let instruction = instruction.map(str::trim).filter(|text| !text.is_empty());
+    if vocabulary.is_empty() && instruction.is_none() {
         return Vec::new();
     }
     let Ok(parsed) = serde_json::from_str::<Value>(extract_json_object(content)) else {
@@ -1528,12 +1697,21 @@ pub fn parse_trade_tags(
         else {
             continue;
         };
-        let Some(name) = vocab
+        let name = match vocab
             .iter()
             .find(|(key, _)| *key == normalize(raw_name))
             .map(|(_, original)| original.clone())
-        else {
-            continue;
+        {
+            Some(canonical) => canonical,
+            // 词表外名字：只有用户 instruction 里逐字写过才放行（用户教的新标签）
+            None => match instruction
+                .as_deref()
+                .map(|text| text.to_lowercase().contains(&normalize(raw_name)))
+                .unwrap_or(false)
+            {
+                true => raw_name.to_string(),
+                false => continue,
+            },
         };
         if out.iter().any(|tag| tag.name == name) {
             continue;
@@ -2096,6 +2274,24 @@ mod tests {
     }
 
     #[test]
+    fn repair_messages_replay_first_output_and_error() {
+        let base = vec![ChatMessage::system("sys"), ChatMessage::user("原文")];
+        let messages = build_repair_messages(&base, "第一轮错误输出", "split coverage 12/100 chars below 85%");
+        assert_eq!(messages.len(), 4);
+        assert_eq!(messages[0].role, "system");
+        assert_eq!(messages[1].role, "user");
+        // 第二条是第一轮的 assistant 回放（原样，不加工）
+        assert_eq!(messages[2].role, "assistant");
+        assert_eq!(messages[2].content, "第一轮错误输出");
+        // 第三条带上校验错误与「只输出 JSON」的修正要求
+        assert_eq!(messages[3].role, "user");
+        assert!(messages[3].content.contains("split coverage 12/100 chars below 85%"));
+        assert!(messages[3].content.contains("机械校验"));
+        // base 不被修改（修正轮可以安全重复构建）
+        assert_eq!(base.len(), 2);
+    }
+
+    #[test]
     fn source_chain_joins_up_to_three_levels() {
         use std::fmt;
 
@@ -2627,7 +2823,7 @@ mod tests {
             {"name":"仓位过重"},
             {"name":"FOMO","quote":"仓位有点过重了"}
         ]}"#;
-        let tags = parse_trade_tags(content, &cards, &vocabulary);
+        let tags = parse_trade_tags(content, &cards, &vocabulary, None);
         // 命中：突破（cardIndex 定位）；FOMO（无 cardIndex → 全文找第一张含原话的卡）。
         // 丢弃：quote 与 cardIndex 错位（仓位过重@card-1）、不在词表、quote 无处可寻、
         // 缺 quote、重名去重。
@@ -2637,9 +2833,32 @@ mod tests {
         assert_eq!(tags[0].signal.as_deref(), Some("区间上沿突破"));
         assert_eq!(tags[1].name, "FOMO");
         assert_eq!(tags[1].card_id, "card-1");
-        // 空词表 → 直接空（用户还没建标签）
-        assert!(parse_trade_tags(content, &cards, &[]).is_empty());
+        // 空词表且无 instruction → 直接空（用户还没建标签）
+        assert!(parse_trade_tags(content, &cards, &[], None).is_empty());
         // 输出里没有 tradeTags 字段 → 空，不报错
-        assert!(parse_trade_tags(r#"{"suggestions":[]}"#, &cards, &vocabulary).is_empty());
+        assert!(parse_trade_tags(r#"{"suggestions":[]}"#, &cards, &vocabulary, None).is_empty());
+    }
+
+    #[test]
+    fn parse_trade_tags_instruction_allows_new_names() {
+        let cards = vec![("card-1".to_string(), "追高了，情绪一上头就进去了".to_string())];
+        let content = r#"{"suggestions":[],"tradeTags":[
+            {"cardIndex":1,"name":"追高","quote":"追高了"},
+            {"cardIndex":1,"name":"情绪上头","quote":"情绪一上头就进去了"},
+            {"cardIndex":1,"name":"完全没提过","quote":"追高了"}
+        ]}"#;
+        // 无 instruction：词表外名字一律丢弃
+        assert!(parse_trade_tags(content, &cards, &[], None).is_empty());
+        // instruction 里逐字写过的名字放行（用户教的新标签），没写过的仍丢弃
+        let tags = parse_trade_tags(
+            content,
+            &cards,
+            &[],
+            Some("加一个「追高」标签和一个「情绪上头」标签"),
+        );
+        assert_eq!(tags.len(), 2);
+        assert_eq!(tags[0].name, "追高");
+        assert_eq!(tags[1].name, "情绪上头");
+        assert!(!tags.iter().any(|tag| tag.name == "完全没提过"));
     }
 }

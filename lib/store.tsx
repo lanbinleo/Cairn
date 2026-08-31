@@ -7,7 +7,7 @@
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import { listen } from '@tauri-apps/api/event'
-import { loadLocalState, saveLocalRecord, saveLocalRecords, deleteLocalRecord, restoreLocalState, exportLocalBackup, saveAttachmentFile, isTauriRuntime, analyzeCaseCard as analyzeCaseCardRemote, resplitCaseCard as resplitCaseCardRemote, draftCaseTitle as draftCaseTitleRemote, suggestCaseExecutions as suggestCaseExecutionsRemote, summarizeCase as summarizeCaseRemote, getAiSettings } from './local-db'
+import { loadLocalState, saveLocalRecord, deleteLocalRecord, restoreLocalState, exportLocalBackup, saveAttachmentFile, isTauriRuntime, bgSaveRecord, bgSaveRecords, bgDeleteRecord, analyzeCaseCard as analyzeCaseCardRemote, previewCaseCardResplit as previewCaseCardResplitRemote, applyCaseCardResplit as applyCaseCardResplitRemote, draftCaseTitle as draftCaseTitleRemote, suggestCaseExecutions as suggestCaseExecutionsRemote, summarizeCase as summarizeCaseRemote, getAiSettings, type CaseCardResplitSegment } from './local-db'
 import { buildCaseSummaryContext } from './case-summary'
 import { deriveAutoCloseCases } from './case-auto-close'
 import type { CairnStateSnapshot } from './seed'
@@ -76,9 +76,15 @@ interface CairnStore {
   updateCaseCardAnalysis: (cardId: string, updater: (prev: CaseCardAnalysis) => CaseCardAnalysis) => CaseCard | undefined
   analyzeCaseCard: (cardId: string, instruction?: string, options?: { registerTask?: boolean }) => Promise<CaseCard | undefined>
   /** AI 重拆一张已有卡（三个点菜单）：原卡替换为多张新卡；拆不动时抛错、原卡不动。 */
-  resplitCaseCard: (cardId: string) => Promise<number>
-  /** 重跑 AI 持仓管理补录建议（绑定 Trade 后自动触发，也可手动）。只吸收建议字段。 */
-  refreshCaseExecutionSuggestions: (caseId: string) => Promise<void>
+  /** AI 重拆预览（0.3.6 两步式）：跑 AI 返回分段不落库；用户在预览对话框确认后
+   *  走 applyCaseCardResplit 替换。失败抛给调用方就地显示，任务中心记录全过程。 */
+  previewCaseCardResplit: (cardId: string) => Promise<CaseCardResplitSegment[]>
+  /** 重拆应用：原卡软删、新卡落库。吸收返回的新卡让 UI 立即更新（data-changed
+   *  事件随后兜底），并把 Case 上指向原卡的建议清掉（证据悬空，与 Rust 同规则）。 */
+  applyCaseCardResplit: (cardId: string, originalText: string, segments: CaseCardResplitSegment[]) => Promise<number>
+  /** 重跑 AI 持仓管理补录建议（绑定 Trade 后自动触发，也可手动）。只吸收建议字段。
+   *  instruction：标签建议的可教重试（补充要求 + 标签现状一起发给 AI）。 */
+  refreshCaseExecutionSuggestions: (caseId: string, instruction?: string) => Promise<void>
   /** 更新单条建议状态（accepted 带生成的 executionId / dismissed 带时间）。 */
   setCaseExecutionSuggestionStatus: (
     caseId: string,
@@ -272,21 +278,21 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
   const createAccount = useCallback((input: Omit<Account, 'id' | 'createdAt'>): Account => {
     const created: Account = { ...input, id: makeId('acc'), createdAt: Date.now() }
     setAccounts((prev) => [...prev, created])
-    void saveLocalRecord('accounts', created)
+    void bgSaveRecord('accounts', created)
     return created
   }, [makeId])
 
   const createPeriod = useCallback((input: Omit<Period, 'id' | 'createdAt'>): Period => {
     const created: Period = { ...input, id: makeId('per'), createdAt: Date.now() }
     setPeriods((prev) => [...prev, created])
-    void saveLocalRecord('periods', created)
+    void bgSaveRecord('periods', created)
     return created
   }, [makeId])
 
   const createSymbol = useCallback((input: Omit<(typeof seedState.symbols)[number], 'id'>) => {
     const created = { ...input, id: makeId('sym') }
     setSymbols((prev) => [...prev, created])
-    void saveLocalRecord('symbols', created)
+    void bgSaveRecord('symbols', created)
     return created
   }, [makeId])
 
@@ -294,7 +300,7 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
     const now = Date.now()
     const created = { ...input, tags: uniqueTagNames(input.tags), mentions: parseNoteMentions(input.content), id: makeId('note'), createdAt: now, updatedAt: now }
     setNotes((prev) => [...prev, created])
-    void saveLocalRecord('notes', created)
+    void bgSaveRecord('notes', created)
     return created
   }, [makeId])
 
@@ -331,7 +337,7 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
 
   const deleteAttachment = useCallback((id: string) => {
     setAttachments((prev) => prev.filter((item) => item.id !== id))
-    void deleteLocalRecord('attachments', id)
+    void bgDeleteRecord('attachments', id)
   }, [])
 
   const createCase = useCallback((input: Omit<TradeCase, 'id' | 'createdAt' | 'updatedAt'>): TradeCase => {
@@ -346,7 +352,7 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
       updatedAt: now,
     }
     setCases((prev) => [...prev, created])
-    void saveLocalRecord('cases', created)
+    void bgSaveRecord('cases', created)
     return created
   }, [caseTagDefs, makeId])
 
@@ -364,7 +370,7 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
             : [...new Set(patch.tagIds.filter((tagId) => availableTagIds.has(tagId)))],
           updatedAt: Date.now(),
         }
-        void saveLocalRecord('cases', next)
+        void bgSaveRecord('cases', next)
         return next
       }),
     )
@@ -391,12 +397,12 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
       createdAt: Date.now(),
     }
     setCaseCards((prev) => [...prev, created].sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id)))
-    void saveLocalRecord('caseCards', created)
+    void bgSaveRecord('caseCards', created)
     setCases((prev) =>
       prev.map((caseRecord) => {
         if (caseRecord.id !== created.caseId) return caseRecord
         const next = { ...caseRecord, updatedAt: created.createdAt }
-        void saveLocalRecord('cases', next)
+        void bgSaveRecord('cases', next)
         return next
       }),
     )
@@ -412,13 +418,13 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
     setCaseCards((prev) => prev
       .map((item) => (item.id === cardId ? next : item))
       .sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id)))
-    void saveLocalRecord('caseCards', next)
+    void bgSaveRecord('caseCards', next)
     const now = Date.now()
     setCases((prev) =>
       prev.map((caseRecord) => {
         if (caseRecord.id !== targetCaseId && caseRecord.id !== card.caseId) return caseRecord
         const nextCase = { ...caseRecord, updatedAt: now }
-        void saveLocalRecord('cases', nextCase)
+        void bgSaveRecord('cases', nextCase)
         return nextCase
       }),
     )
@@ -440,7 +446,7 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
     setCaseCards((prev) => prev
       .map((item) => (item.id === cardId ? next : item))
       .sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id)))
-    void saveLocalRecord('caseCards', next)
+    void bgSaveRecord('caseCards', next)
     return next
   }, [caseCards])
 
@@ -458,7 +464,7 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
     setCaseCards((prev) => prev
       .map((item) => (item.id === cardId ? next : item))
       .sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id)))
-    void saveLocalRecord('caseCards', next)
+    void bgSaveRecord('caseCards', next)
     return next
   }, [caseCards])
 
@@ -468,7 +474,7 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
     const card = caseCards.find((item) => item.id === cardId)
     if (!card) return
     setCaseCards((prev) => prev.filter((item) => item.id !== cardId))
-    void deleteLocalRecord('caseCards', cardId)
+    void bgDeleteRecord('caseCards', cardId)
     const now = Date.now()
     setCases((prev) =>
       prev.map((caseRecord) => {
@@ -482,7 +488,7 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
           const suggestions = caseRecord.aiTagSuggestions.suggestions.filter((suggestion) => suggestion.cardId !== cardId)
           next = { ...next, aiTagSuggestions: { ...caseRecord.aiTagSuggestions, suggestions } }
         }
-        void saveLocalRecord('cases', next)
+        void bgSaveRecord('cases', next)
         return next
       }),
     )
@@ -499,7 +505,7 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
     setCaseCards((prev) => prev
       .map((item) => (item.id === cardId ? next : item))
       .sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id)))
-    void saveLocalRecord('caseCards', next)
+    void bgSaveRecord('caseCards', next)
     return next
   }, [caseCards])
 
@@ -529,19 +535,33 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
    *  吸收返回的新卡让 UI 立即更新（data-changed 事件随后兜底），并把 Case 上
    *  指向原卡的建议清掉（证据悬空，与 Rust persist_resplit 同规则）。失败抛给
    *  调用方 toast，任务中心记录全过程。 */
-  const resplitCaseCard = useCallback(async (cardId: string): Promise<number> => {
+  const previewCaseCardResplit = useCallback(async (cardId: string): Promise<CaseCardResplitSegment[]> => {
     const card = caseCards.find((item) => item.id === cardId)
     if (!card) throw new Error('这张卡不存在')
+    const taskId = beginAiTask({ kind: 'split', label: 'AI 重拆预览', targetType: 'card', targetId: cardId })
+    try {
+      const result = await previewCaseCardResplitRemote(cardId)
+      completeAiTask(taskId, { ok: true })
+      return result.segments
+    } catch (cause) {
+      completeAiTask(taskId, { ok: false, error: cause instanceof Error ? cause.message : String(cause) })
+      throw cause
+    }
+  }, [caseCards, beginAiTask, completeAiTask])
+
+  const applyCaseCardResplit = useCallback(async (cardId: string, originalText: string, segments: CaseCardResplitSegment[]): Promise<number> => {
+    const card = caseCards.find((item) => item.id === cardId)
     const taskId = beginAiTask({ kind: 'split', label: 'AI 重拆此卡', targetType: 'card', targetId: cardId })
     try {
-      const result = await resplitCaseCardRemote(cardId)
+      const result = await applyCaseCardResplitRemote(cardId, originalText, segments)
       setCaseCards((prev) => {
         const without = prev.filter((item) => item.id !== cardId)
         const incoming = result.cards.filter((item) => !without.some((existing) => existing.id === item.id))
         return [...without, ...incoming].sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id))
       })
+      const caseId = card?.caseId ?? result.caseId
       setCases((prev) => prev.map((caseRecord) => {
-        if (caseRecord.id !== card.caseId) return caseRecord
+        if (caseRecord.id !== caseId) return caseRecord
         let next = { ...caseRecord }
         if (next.aiExecutionSuggestions) {
           const suggestions = next.aiExecutionSuggestions.suggestions.filter((item) => item.cardId !== cardId)
@@ -564,7 +584,7 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
   /** 重跑持仓管理补录建议：只吸收 aiExecutionSuggestions / aiTagSuggestions 字段——请求期间
    *  本地的标题/状态/标签修改不被回滚（与 analyzeCaseCard 同一吸收模式）。
    *  失败不 reject，写入 aiTasks.checkErrorByCase，由面板就地显示。 */
-  const refreshCaseExecutionSuggestions = useCallback(async (caseId: string): Promise<void> => {
+  const refreshCaseExecutionSuggestions = useCallback(async (caseId: string, instruction?: string): Promise<void> => {
     setAiTasks((prev) => {
       const checkErrorByCase = { ...prev.checkErrorByCase }
       delete checkErrorByCase[caseId]
@@ -576,7 +596,7 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
     })
     const taskId = beginAiTask({ kind: 'suggestions', label: '补录建议', targetType: 'case', targetId: caseId })
     try {
-      const updated = await suggestCaseExecutionsRemote(caseId)
+      const updated = await suggestCaseExecutionsRemote(caseId, instruction)
       setCases((prev) => prev.map((item) => {
         if (item.id !== updated.id) return item
         return {
@@ -616,7 +636,7 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
         }
       })
       const next = { ...item, aiExecutionSuggestions: { ...item.aiExecutionSuggestions, suggestions } }
-      void saveLocalRecord('cases', next)
+      void bgSaveRecord('cases', next)
       return next
     }))
   }, [])
@@ -639,7 +659,7 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
         }
       })
       const next = { ...item, aiTagSuggestions: { ...item.aiTagSuggestions, suggestions } }
-      void saveLocalRecord('cases', next)
+      void bgSaveRecord('cases', next)
       return next
     }))
   }, [])
@@ -688,7 +708,7 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
       setCases((prev) => prev.map((item) => {
         if (item.id !== caseId) return item
         const next = { ...item, aiSummary: withMeta }
-        void saveLocalRecord('cases', next)
+        void bgSaveRecord('cases', next)
         return next
       }))
       completeAiTask(taskId, { ok: true })
@@ -741,7 +761,7 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
       !(attachment.ownerType === 'case' && attachment.ownerId === id) &&
       !(attachment.ownerType === 'case-card' && removedCardIds.has(attachment.ownerId)),
     ))
-    void deleteLocalRecord('cases', id)
+    void bgDeleteRecord('cases', id)
   }, [caseCards])
 
   const createCaseBinding = useCallback(async (
@@ -777,19 +797,19 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
     const normalizedRecords = records.map((record) => ({ ...record, tags: normalizeTradeTagNames(record.tags, tagDefs) }))
     setTrades((prev) => [...prev, ...normalizedRecords])
     normalizedRecords.forEach((record) => {
-      void saveLocalRecord('trades', record)
+      void bgSaveRecord('trades', record)
     })
     requestAutoCloseCheck()
   }, [tagDefs, requestAutoCloseCheck])
 
   const createImportBatch = useCallback((batch: ImportBatch) => {
     setImportBatches((prev) => [...prev, batch])
-    void saveLocalRecord('importBatches', batch)
+    void bgSaveRecord('importBatches', batch)
   }, [])
 
   const createChartImport = useCallback((record: ChartImport, candles: ChartCandle[]) => {
     setChartImports((prev) => [record, ...prev.filter((item) => item.id !== record.id)])
-    void saveLocalRecord('chartImports', record)
+    void bgSaveRecord('chartImports', record)
     const recordsToSave: ChartCandle[] = []
     const nextById = new Map(chartCandles.map((item) => [item.id, item]))
     for (const candle of candles) {
@@ -799,12 +819,12 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
       recordsToSave.push(next)
     }
     setChartCandles([...nextById.values()].sort((a, b) => a.time - b.time))
-    void saveLocalRecords('chartCandles', recordsToSave)
+    void bgSaveRecords('chartCandles', recordsToSave)
   }, [chartCandles])
 
   const deleteChartImport = useCallback((id: string) => {
     setChartImports((prev) => prev.filter((item) => item.id !== id))
-    void deleteLocalRecord('chartImports', id)
+    void bgDeleteRecord('chartImports', id)
     setChartCandles((prev) => {
       const next: ChartCandle[] = []
       for (const candle of prev) {
@@ -814,11 +834,11 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
         }
         const importIds = candle.importIds.filter((importId) => importId !== id)
         if (importIds.length === 0) {
-          void deleteLocalRecord('chartCandles', candle.id)
+          void bgDeleteRecord('chartCandles', candle.id)
         } else {
           const updated = { ...candle, importIds }
           next.push(updated)
-          void saveLocalRecord('chartCandles', updated)
+          void bgSaveRecord('chartCandles', updated)
         }
       }
       return next
@@ -828,14 +848,14 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
   const rollbackImportBatch = useCallback((batchId: string) => {
     setTrades((prev) => {
       const removed = prev.filter((trade) => trade.importBatchId === batchId)
-      removed.forEach((trade) => void deleteLocalRecord('trades', trade.id))
+      removed.forEach((trade) => void bgDeleteRecord('trades', trade.id))
       return prev.filter((trade) => trade.importBatchId !== batchId)
     })
     setImportBatches((prev) =>
       prev.map((batch) => {
         if (batch.id !== batchId) return batch
         const next = { ...batch, status: 'rolled-back' as const, rolledBackAt: Date.now() }
-        void saveLocalRecord('importBatches', next)
+        void bgSaveRecord('importBatches', next)
         return next
       }),
     )
@@ -844,40 +864,40 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
   const deleteTrade = useCallback((id: string) => {
     setTrades((prev) => prev.filter((trade) => trade.id !== id))
     setCaseBindings((prev) => prev.filter((binding) => binding.tradeId !== id))
-    void deleteLocalRecord('trades', id)
+    void bgDeleteRecord('trades', id)
   }, [])
 
   const deletePeriod = useCallback((id: string) => {
     setPeriods((prev) => prev.filter((period) => period.id !== id))
     setTrades((prev) => {
       const removed = prev.filter((trade) => trade.periodId === id)
-      removed.forEach((trade) => void deleteLocalRecord('trades', trade.id))
+      removed.forEach((trade) => void bgDeleteRecord('trades', trade.id))
       return prev.filter((trade) => trade.periodId !== id)
     })
     setCases((prev) => {
       const removed = prev.filter((caseRecord) => caseRecord.periodId === id)
-      removed.forEach((caseRecord) => void deleteLocalRecord('cases', caseRecord.id))
+      removed.forEach((caseRecord) => void bgDeleteRecord('cases', caseRecord.id))
       const removedIds = new Set(removed.map((caseRecord) => caseRecord.id))
       setCaseCards((cards) => cards.filter((card) => !removedIds.has(card.caseId)))
       setCaseBindings((bindings) => bindings.filter((binding) => !removedIds.has(binding.caseId)))
       return prev.filter((caseRecord) => caseRecord.periodId !== id)
     })
-    void deleteLocalRecord('periods', id)
+    void bgDeleteRecord('periods', id)
   }, [])
 
   const deleteAccount = useCallback((id: string) => {
     setAccounts((prev) => prev.filter((account) => account.id !== id))
     setPeriods((prev) => {
       const removedPeriods = prev.filter((period) => period.accountId === id)
-      removedPeriods.forEach((period) => void deleteLocalRecord('periods', period.id))
+      removedPeriods.forEach((period) => void bgDeleteRecord('periods', period.id))
       setTrades((tp) => {
         const removedTrades = tp.filter((trade) => trade.accountId === id)
-        removedTrades.forEach((trade) => void deleteLocalRecord('trades', trade.id))
+        removedTrades.forEach((trade) => void bgDeleteRecord('trades', trade.id))
         return tp.filter((trade) => trade.accountId !== id)
       })
       setCases((cp) => {
         const removedCases = cp.filter((caseRecord) => caseRecord.accountId === id)
-        removedCases.forEach((caseRecord) => void deleteLocalRecord('cases', caseRecord.id))
+        removedCases.forEach((caseRecord) => void bgDeleteRecord('cases', caseRecord.id))
         const removedCaseIds = new Set(removedCases.map((caseRecord) => caseRecord.id))
         setCaseCards((cards) => cards.filter((card) => !removedCaseIds.has(card.caseId)))
         setCaseBindings((bindings) => bindings.filter((binding) => !removedCaseIds.has(binding.caseId)))
@@ -885,22 +905,22 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
       })
       return prev.filter((period) => period.accountId !== id)
     })
-    void deleteLocalRecord('accounts', id)
+    void bgDeleteRecord('accounts', id)
   }, [])
 
   const deleteSymbol = useCallback((id: string) => {
     setSymbols((prev) => prev.filter((symbol) => symbol.id !== id))
     setPeriods((prev) => {
       const next = prev.map((period) => ({ ...period, symbolIds: period.symbolIds.filter((symbolId) => symbolId !== id) }))
-      next.forEach((period) => void saveLocalRecord('periods', period))
+      next.forEach((period) => void bgSaveRecord('periods', period))
       return next
     })
-    void deleteLocalRecord('symbols', id)
+    void bgDeleteRecord('symbols', id)
   }, [])
 
   const deleteNote = useCallback((id: string) => {
     setNotes((prev) => prev.filter((note) => note.id !== id))
-    void deleteLocalRecord('notes', id)
+    void bgDeleteRecord('notes', id)
   }, [])
 
   const applySnapshot = useCallback((snapshot: CairnStateSnapshot) => {
@@ -942,10 +962,10 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
           const normalized = normalizeSnapshot(snapshot)
           void logFrontendMessage(`local state loaded: accounts=${normalized.snapshot.accounts.length}, periods=${normalized.snapshot.periods.length}, trades=${normalized.snapshot.trades.length}, cases=${normalized.snapshot.cases.length}`)
           applySnapshot(normalized.snapshot)
-          normalized.migratedTrades.forEach((trade) => void saveLocalRecord('trades', trade))
-          normalized.migratedNotes.forEach((note) => void saveLocalRecord('notes', note))
-          normalized.migratedTagDefs.forEach((tag) => void saveLocalRecord('tagDefs', tag))
-          normalized.removedTagDefIds.forEach((id) => void deleteLocalRecord('tagDefs', id))
+          normalized.migratedTrades.forEach((trade) => void bgSaveRecord('trades', trade))
+          normalized.migratedNotes.forEach((note) => void bgSaveRecord('notes', note))
+          normalized.migratedTagDefs.forEach((tag) => void bgSaveRecord('tagDefs', tag))
+          normalized.removedTagDefIds.forEach((id) => void bgDeleteRecord('tagDefs', id))
         })
         .catch((err) => {
           console.error('Failed to load local CAIRN state', err)
@@ -1029,7 +1049,7 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
       prev.map((a) => {
         if (a.id !== id) return a
         const next = { ...a, ...patch }
-        void saveLocalRecord('accounts', next)
+        void bgSaveRecord('accounts', next)
         return next
       }),
     )
@@ -1040,7 +1060,7 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
       prev.map((p) => {
         if (p.id !== id) return p
         const next = { ...p, ...patch }
-        void saveLocalRecord('periods', next)
+        void bgSaveRecord('periods', next)
         return next
       }),
     )
@@ -1052,7 +1072,7 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
       prev.map((t) => {
         if (t.id !== id) return t
         const next = { ...t, ...patch, tags: patch.tags ? normalizeTradeTagNames(patch.tags, tagDefs) : t.tags }
-        void saveLocalRecord('trades', next)
+        void bgSaveRecord('trades', next)
         return next
       }),
     )
@@ -1105,7 +1125,7 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
       if (account.equity === equity) continue
       const next = { ...account, equity, equityUpdatedAt: Date.now() }
       setAccounts((prev) => prev.map((item) => (item.id === account.id ? next : item)))
-      void saveLocalRecord('accounts', next)
+      void bgSaveRecord('accounts', next)
     }
   }, [trades, accounts])
 
@@ -1137,7 +1157,7 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
       prev.map((note) => {
         if (note.id !== id) return note
         const next = { ...note, ...patch, tags: patch.tags ? uniqueTagNames(patch.tags) : note.tags, mentions: parseNoteMentions(patch.content ?? note.content), updatedAt: Date.now() }
-        void saveLocalRecord('notes', next)
+        void bgSaveRecord('notes', next)
         return next
       }),
     )
@@ -1149,7 +1169,7 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
       prev.map((t) => {
         if (t.id !== id) return t
         const next = { ...t, status }
-        void saveLocalRecord('trades', next)
+        void bgSaveRecord('trades', next)
         return next
       }),
     )
@@ -1165,7 +1185,7 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
       if (!normalized || findTagByName(tagDefs, normalized)) return null
       const created: TagDef = { id: makeId('tag'), name: normalized, color, createdAt: Date.now() }
       setTagDefs((prev) => (findTagByName(prev, normalized) ? prev : [...prev, created]))
-      void saveLocalRecord('tagDefs', created)
+      void bgSaveRecord('tagDefs', created)
       return created
     },
     [makeId, tagDefs],
@@ -1185,7 +1205,7 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
           tp.map((t) => {
             if (!t.tags.some((name) => tagNamesEqual(name, target.name))) return t
             const next = { ...t, tags: normalizeTradeTagNames(t.tags.map((name) => (tagNamesEqual(name, target.name) ? newName : name)), prev) }
-            void saveLocalRecord('trades', next)
+            void bgSaveRecord('trades', next)
             return next
           }),
         )
@@ -1193,7 +1213,7 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
       return prev.map((t) => {
         if (t.id !== id) return t
         const next = { ...t, ...patch, name: normalizedName ?? t.name }
-        void saveLocalRecord('tagDefs', next)
+        void bgSaveRecord('tagDefs', next)
         return next
       })
     })
@@ -1207,11 +1227,11 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
         tp.map((t) => {
           if (!t.tags.some((name) => tagNamesEqual(name, target.name))) return t
           const next = { ...t, tags: t.tags.filter((name) => !tagNamesEqual(name, target.name)) }
-          void saveLocalRecord('trades', next)
+          void bgSaveRecord('trades', next)
           return next
         }),
       )
-      void deleteLocalRecord('tagDefs', id)
+      void bgDeleteRecord('tagDefs', id)
       return prev.filter((t) => t.id !== id)
     })
   }, [])
@@ -1221,7 +1241,7 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
     if (!normalized || findTagByName(caseTagDefs, normalized)) return null
     const created: CaseTagDef = { id: makeId('case-tag'), name: normalized, color, createdAt: Date.now() }
     setCaseTagDefs((prev) => (findTagByName(prev, normalized) ? prev : [...prev, created]))
-    void saveLocalRecord('caseTagDefs', created)
+    void bgSaveRecord('caseTagDefs', created)
     return created
   }, [caseTagDefs, makeId])
 
@@ -1235,7 +1255,7 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
       return prev.map((tag) => {
         if (tag.id !== id) return tag
         const next = { ...tag, ...patch, name: normalizedName ?? tag.name }
-        void saveLocalRecord('caseTagDefs', next)
+        void bgSaveRecord('caseTagDefs', next)
         return next
       })
     })
@@ -1247,11 +1267,11 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
       prev.map((caseRecord) => {
         if (!caseRecord.tagIds.includes(id)) return caseRecord
         const next = { ...caseRecord, tagIds: caseRecord.tagIds.filter((tagId) => tagId !== id), updatedAt: Date.now() }
-        void saveLocalRecord('cases', next)
+        void bgSaveRecord('cases', next)
         return next
       }),
     )
-    void deleteLocalRecord('caseTagDefs', id)
+    void bgDeleteRecord('caseTagDefs', id)
   }, [])
 
   const value = useMemo<CairnStore>(
@@ -1304,7 +1324,8 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
       deleteCaseCard,
       updateCaseCardAnalysis,
       analyzeCaseCard,
-      resplitCaseCard,
+      previewCaseCardResplit,
+      applyCaseCardResplit,
       refreshCaseExecutionSuggestions,
       setCaseExecutionSuggestionStatus,
       setCaseTagSuggestionStatus,
@@ -1347,7 +1368,7 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
       updateCaseTag,
       deleteCaseTag,
     }),
-    [accounts, periods, trades, tagDefs, cases, caseCards, caseBindings, caseTagDefs, importBatches, attachments, chartImports, chartCandles, symbols, notes, aiTasks, aiTaskList, beginAiTask, completeAiTask, appendAiTaskStream, updateAiTaskProgress, markAiTasksRead, dismissAiTask, updateAccount, updatePeriod, updateTrade, updateNote, createAccount, createPeriod, createSymbol, createNote, createImageAttachment, deleteAttachment, createCase, updateCase, deleteCase, createCaseCard, moveCaseCard, updateCaseCardText, updateCaseCardBarRef, updateCaseCardAnalysis, analyzeCaseCard, resplitCaseCard, prefillTradePlanFromBoundCase, createCaseBinding, deleteCaseBinding, createTrades, createImportBatch, createChartImport, deleteChartImport, rollbackImportBatch, deleteAccount, deletePeriod, deleteTrade, deleteSymbol, deleteNote, restoreState, exportBackup, setTradeStatus, createTag, updateTag, deleteTag, createCaseTag, updateCaseTag, deleteCaseTag],
+    [accounts, periods, trades, tagDefs, cases, caseCards, caseBindings, caseTagDefs, importBatches, attachments, chartImports, chartCandles, symbols, notes, aiTasks, aiTaskList, beginAiTask, completeAiTask, appendAiTaskStream, updateAiTaskProgress, markAiTasksRead, dismissAiTask, updateAccount, updatePeriod, updateTrade, updateNote, createAccount, createPeriod, createSymbol, createNote, createImageAttachment, deleteAttachment, createCase, updateCase, deleteCase, createCaseCard, moveCaseCard, updateCaseCardText, updateCaseCardBarRef, updateCaseCardAnalysis, analyzeCaseCard, previewCaseCardResplit, applyCaseCardResplit, prefillTradePlanFromBoundCase, createCaseBinding, deleteCaseBinding, createTrades, createImportBatch, createChartImport, deleteChartImport, rollbackImportBatch, deleteAccount, deletePeriod, deleteTrade, deleteSymbol, deleteNote, restoreState, exportBackup, setTradeStatus, createTag, updateTag, deleteTag, createCaseTag, updateCaseTag, deleteCaseTag],
   )
 
   return <StoreContext.Provider value={value}>{children}</StoreContext.Provider>

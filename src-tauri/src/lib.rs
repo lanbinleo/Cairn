@@ -90,18 +90,57 @@ fn export_backup(app: AppHandle, db: State<'_, db::Db>) -> Result<String, String
 }
 
 #[tauri::command]
-fn frontend_log(app: AppHandle, message: String) {
-    diagnostics::app_log(&app, format!("frontend: {message}"));
+fn frontend_log(_app: AppHandle, level: Option<String>, message: String) {
+    let level = match level.as_deref() {
+        Some("warn") => diagnostics::Level::Warn,
+        Some("error") => diagnostics::Level::Error,
+        _ => diagnostics::Level::Info,
+    };
+    diagnostics::log(level, "frontend", message);
+}
+
+/// 日志读取结果：可用日期列表（新的在前）+ 当前选中日期 + 内容尾部（≤512KB）。
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LogBundle {
+    files: Vec<String>,
+    active: String,
+    content: String,
 }
 
 #[tauri::command]
-fn read_logs(app: AppHandle) -> Result<String, String> {
-    diagnostics::read_log(&app)
+fn read_logs(app: AppHandle, date: Option<String>) -> Result<LogBundle, String> {
+    let files = diagnostics::list_log_files(&app)?;
+    let active = date.unwrap_or_else(diagnostics::today);
+    let content = diagnostics::read_log(&app, Some(&active))?;
+    Ok(LogBundle { files, active, content })
 }
 
 #[tauri::command]
-fn get_log_path(app: AppHandle) -> Result<String, String> {
-    diagnostics::log_path(&app).map(|path| path.to_string_lossy().to_string())
+fn clear_logs(app: AppHandle, date: Option<String>) -> Result<LogBundle, String> {
+    diagnostics::clear_log(&app, date.as_deref())?;
+    read_logs(app, date)
+}
+
+#[tauri::command]
+fn get_logs_dir(app: AppHandle) -> Result<String, String> {
+    diagnostics::logs_dir(&app).map(|path| path.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+fn open_logs_dir(app: AppHandle) -> Result<(), String> {
+    let dir = diagnostics::logs_dir(&app)?;
+    let _ = fs::create_dir_all(&dir);
+    let program = match std::env::consts::OS {
+        "windows" => "explorer",
+        "macos" => "open",
+        _ => "xdg-open",
+    };
+    std::process::Command::new(program)
+        .arg(&dir)
+        .spawn()
+        .map(|_| ())
+        .map_err(|err| format!("打开日志目录失败：{err}"))
 }
 
 #[tauri::command]
@@ -220,6 +259,16 @@ mod tests {
     use super::*;
 
     #[test]
+    fn fmt_num_strips_float_noise() {
+        assert_eq!(fmt_num(2.4425999999999997), "2.4426");
+        assert_eq!(fmt_num(0.30000000000000004), "0.3");
+        assert_eq!(fmt_num(2.0), "2");
+        assert_eq!(fmt_num(1000.0), "1000");
+        assert_eq!(fmt_num(0.123456789), "0.123457");
+        assert_eq!(fmt_num(-1.5), "-1.5");
+    }
+
+    #[test]
     fn widget_script_version_parses_userscript_header() {
         let source = "// ==UserScript==\n// @name    Cairn\n// @version  0.2.4\n// ==/UserScript==\nbody;";
         assert_eq!(widget_script_version(source), "0.2.4");
@@ -306,6 +355,60 @@ mod tests {
             signal: None,
             quote: quote.to_string(),
         }
+    }
+
+    #[test]
+    fn split_preview_never_degrades_and_batch_create_persists_edited_segments() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        db::migrate(&conn).unwrap();
+        db::save_record_in_tx(
+            &conn,
+            "cases",
+            "case-1",
+            json!({ "id": "case-1", "accountId": "acct-1", "periodId": "period-1", "title": "T",
+                "status": "active", "provenance": "forward", "tagIds": [], "createdAt": 1, "updatedAt": 1 }),
+        )
+        .unwrap();
+        let db = db::Db::from_conn(conn);
+
+        // 预览：校验失败直接报错（与直接拆卡的「退化单卡」相反——用户在场）
+        assert!(futures::executor::block_on(run_split_preview(None, &db, "case-404", "pre-entry", "文本")).is_err());
+        assert!(futures::executor::block_on(run_split_preview(None, &db, "case-1", "invalid", "文本")).is_err());
+        let long_text = "现在是 BAR 120，这根 K 线收了长上影，我看到区间上沿又一次失败了。下一根直接砸下来，突破了昨天的低点。再下一根缩量回抽，没有跟随的空头。我决定继续等一个更干净的入场位置再说。";
+        let err = futures::executor::block_on(run_split_preview(None, &db, "case-1", "pre-entry", long_text)).unwrap_err();
+        assert!(err.contains("Provider"), "预览不降级，got: {err}");
+        // 短文本 → 单段（机械 barRef 提取，不走 AI）
+        let segments = futures::executor::block_on(run_split_preview(None, &db, "case-1", "pre-entry", "BAR 88 很短")).unwrap();
+        assert_eq!(segments.len(), 1);
+        assert_eq!(segments[0].bar_ref, Some(88));
+
+        // 手动落库：改过的分段（用户已在预览里过目，verbatim 覆盖率不校验）
+        let edited = vec![
+            json!({ "text": "第一段（用户改过）", "barRef": 120 }),
+            json!({ "text": "第二段", "barRef": null }),
+        ];
+        let (cards, changed) = run_batch_create(None, &db, "case-1", "pre-entry", &edited, Some("planned".to_string()), "bc-1", 1000).unwrap();
+        assert!(changed);
+        assert_eq!(cards.len(), 2);
+        assert_eq!(cards[0]["id"], "bc-1-0");
+        assert_eq!(cards[0]["rawText"], "第一段（用户改过）");
+        assert_eq!(cards[0]["barRef"], 120);
+        assert_eq!(cards[0]["entryDecision"], "planned");
+        assert_eq!(cards[1]["createdAt"], 1001);
+        assert!(cards[1].get("barRef").is_none());
+        assert!(cards[1].get("entryDecision").is_none());
+        // 幂等重放：同 rid 返回已建卡（预览会话持有 rid，重复确认只来自超时重试）
+        let (replayed, changed) = run_batch_create(None, &db, "case-1", "pre-entry", &edited, None, "bc-1", 2000).unwrap();
+        assert!(!changed);
+        assert_eq!(replayed.len(), 2);
+        // 边界校验：空数组 / 段过多 / 空文本 / 非法 barRef / 非法 rid / 未知 Case
+        assert!(run_batch_create(None, &db, "case-1", "pre-entry", &[], None, "bc-2", 3000).is_err());
+        let many: Vec<Value> = (0..21).map(|i| json!({ "text": format!("段{i}"), "barRef": null })).collect();
+        assert!(run_batch_create(None, &db, "case-1", "pre-entry", &many, None, "bc-3", 3000).is_err());
+        assert!(run_batch_create(None, &db, "case-1", "pre-entry", &[json!({ "text": "  ", "barRef": null })], None, "bc-4", 3000).is_err());
+        assert!(run_batch_create(None, &db, "case-1", "pre-entry", &[json!({ "text": "x", "barRef": 0 })], None, "bc-5", 3000).is_err());
+        assert!(run_batch_create(None, &db, "case-1", "pre-entry", &edited, None, "非法!", 3000).is_err());
+        assert!(run_batch_create(None, &db, "case-404", "pre-entry", &edited, None, "bc-6", 3000).is_err());
     }
 
     #[test]
@@ -399,16 +502,27 @@ mod tests {
         let db = db::Db::from_conn(conn);
 
         // 未知卡 → 报错
-        assert!(futures::executor::block_on(run_card_resplit(None, &db, "card-404", 1000)).is_err());
+        assert!(futures::executor::block_on(run_card_resplit_preview(None, &db, "card-404")).is_err());
         // 短卡 → 报错，不走 AI
-        let err = futures::executor::block_on(run_card_resplit(None, &db, "card-short", 1000)).unwrap_err();
+        let err = futures::executor::block_on(run_card_resplit_preview(None, &db, "card-short")).unwrap_err();
         assert!(err.contains("不需要重拆"));
         // 长卡但无 AI（单测无 AppHandle → 无默认 Provider）→ 报错且原卡不动（与批量拆卡的「退化单卡」相反）
-        let err = futures::executor::block_on(run_card_resplit(None, &db, "card-long", 1000)).unwrap_err();
+        let err = futures::executor::block_on(run_card_resplit_preview(None, &db, "card-long")).unwrap_err();
         assert!(err.contains("Provider"), "got: {err}");
         let all = db::read_case_cards_for_case(&db.conn().unwrap(), "case-1").unwrap();
         assert_eq!(all.len(), 2, "failure path must not touch any card");
         assert_eq!(all[1]["rawText"], long_text);
+
+        // 应用步：<2 段拒绝；原文不匹配（期间被编辑）拒绝
+        let one_segment = vec![json!({ "text": "一段", "barRef": null })];
+        let err = run_card_resplit_apply(None, &db, "card-long", long_text, &one_segment, 1000).unwrap_err();
+        assert!(err.contains("至少要拆成 2 张"));
+        let two_segments = vec![
+            json!({ "text": "第一段，足够长也不会真的走 AI。", "barRef": 120 }),
+            json!({ "text": "第二段。", "barRef": null }),
+        ];
+        let err = run_card_resplit_apply(None, &db, "card-long", "已经被编辑过的另一种原文", &two_segments, 1000).unwrap_err();
+        assert!(err.contains("刚被编辑过"));
     }
 
     #[test]
@@ -530,6 +644,14 @@ fn format_utc_compact(epoch_ms: u64) -> String {
         .unwrap_or_else(|| "-".to_string())
 }
 
+/// 数量/价格进 AI 上下文前的格式化：最多 6 位小数并去掉尾零，
+/// 避免浮点累加噪声（2.4425999999999997）被模型原样复述。与前端 fmtQty 同语义。
+fn fmt_num(value: f64) -> String {
+    let s = format!("{value:.6}");
+    let s = s.trim_end_matches('0').trim_end_matches('.');
+    s.to_string()
+}
+
 fn truncate_chars(text: &str, limit: usize) -> String {
     text.chars().take(limit).collect()
 }
@@ -559,10 +681,10 @@ fn trade_action_lines(trade: &Value) -> Vec<(u64, String)> {
             let Some(action) = execution.get("action").and_then(Value::as_str) else { continue };
             let mut line = execution_action_label(action).to_string();
             if let Some(price) = execution.get("price").and_then(Value::as_f64) {
-                line.push_str(&format!(" {price}"));
+                line.push_str(&format!(" {}", fmt_num(price)));
             }
             if let Some(quantity) = execution.get("quantity").and_then(Value::as_f64) {
-                line.push_str(&format!(" ×{quantity}"));
+                line.push_str(&format!(" ×{}", fmt_num(quantity)));
             }
             lines.push((time, line));
         }
@@ -573,7 +695,7 @@ fn trade_action_lines(trade: &Value) -> Vec<(u64, String)> {
             let Some(event_type) = event.get("type").and_then(Value::as_str) else { continue };
             let mut line = trade_event_label(event_type).to_string();
             if let Some(price) = event.get("price").and_then(Value::as_f64) {
-                line.push_str(&format!(" {price}"));
+                line.push_str(&format!(" {}", fmt_num(price)));
             }
             lines.push((time, line));
         }
@@ -614,7 +736,7 @@ fn card_context(conn: &rusqlite::Connection, card: &Value) -> String {
                     }
                     summary.push_str(&format!("，{status}"));
                     if let Some(stop) = trade.get("initialStopLoss").and_then(Value::as_f64) {
-                        summary.push_str(&format!("，初始止损 {stop}"));
+                        summary.push_str(&format!("，初始止损 {}", fmt_num(stop)));
                     }
                     lines.push(summary);
                     for (time, line) in trade_action_lines(&trade).into_iter().take(24) {
@@ -712,12 +834,20 @@ pub(crate) async fn run_card_analysis(
         messages.push(ai::ChatMessage::user(format!("补充整理要求：{extra}")));
     }
     ai::log_provider_event(app, format!("analyzing card {card_id} with {model}"));
-    let content = ai::chat_completion_with_retry(&provider, &model, &messages).await?;
+    // 非 JSON 输出时修正重试一轮（0.3.6）；内容质量类问题（quote 非逐字等）仍是
+    // 静默丢弃派生字段的设计，不触发重试
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_millis() as u64)
         .unwrap_or(0);
-    let analysis = ai::parse_analysis(&phase, &raw_text, &content, &model, &provider.id, now)?;
+    let parse = |content: &str| {
+        ai::parse_analysis(&phase, &raw_text, content, &model, &provider.id, now)
+    };
+    let analysis =
+        ai::chat_completion_validated(&provider, &model, &messages, parse, &|message: &str| {
+            ai::log_provider_event(app, message.to_string());
+        })
+        .await?;
 
     // 写回前重读现记录，只覆盖 aiAnalysis（barRef 也只在现记录缺失时回填）：
     // 分析耗时秒级到 30 秒，期间用户的 rawText 错字修正 / barRef 修正 /
@@ -808,13 +938,13 @@ fn suggestion_context(
                 .next()
         })
     {
-        out.push_str(&format!("，首笔入场 {entry}"));
+        out.push_str(&format!("，首笔入场 {}", fmt_num(entry)));
     }
     if let Some(stop) = trade.get("initialStopLoss").and_then(Value::as_f64) {
-        out.push_str(&format!("，初始止损 {stop}"));
+        out.push_str(&format!("，初始止损 {}", fmt_num(stop)));
     }
     if let Some(target) = trade.get("initialTakeProfit").and_then(Value::as_f64) {
-        out.push_str(&format!("，初始止盈 {target}"));
+        out.push_str(&format!("，初始止盈 {}", fmt_num(target)));
     }
     out.push_str("\n已落库动作（来自交易所导出与手动记录）：\n");
     let actions = trade_action_lines(trade);
@@ -963,10 +1093,11 @@ pub(crate) async fn run_execution_suggestions(
     app: &AppHandle,
     db: &db::Db,
     case_id: &str,
+    instruction: Option<String>,
 ) -> Result<Value, String> {
-    let (trade, cards, provider, model, context, tag_defs) = {
+    let (trade, cards, provider, model, context, tag_defs, handled_tags) = {
         let conn = db.conn()?;
-        db::read_record_by_id(&conn, "cases", case_id)?
+        let case_record = db::read_record_by_id(&conn, "cases", case_id)?
             .ok_or_else(|| format!("case not found: {case_id}"))?;
         let cards = db::read_case_cards_for_case(&conn, case_id)?;
         let binding = db::read_simple_collection(&conn, "caseBindings")?
@@ -985,17 +1116,70 @@ pub(crate) async fn run_execution_suggestions(
         let mut context = suggestion_context(&conn, &trade, &cards);
         let tag_defs = db::read_simple_collection(&conn, "tagDefs")?;
         context.push_str(&tag_vocabulary_block(&tag_defs));
-        (trade, cards, provider, model, context, tag_defs)
+        // 可教重试（0.3.6）需要现状：此前建议里已应用/已忽略的标签名单
+        let handled_tags = case_record
+            .get("aiTagSuggestions")
+            .and_then(|value| value.get("suggestions"))
+            .and_then(Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|item| {
+                        let name = item.get("name").and_then(Value::as_str)?.trim().to_string();
+                        let accepted = item.get("acceptedAt").is_some();
+                        let dismissed = item.get("dismissedAt").is_some();
+                        (accepted || dismissed).then_some((name, accepted))
+                    })
+                    .collect::<Vec<(String, bool)>>()
+            })
+            .unwrap_or_default();
+        (trade, cards, provider, model, context, tag_defs, handled_tags)
     };
 
-    let messages = ai::build_suggestion_messages(&context);
+    let mut messages = ai::build_suggestion_messages(&context);
+    // instruction：用户在「AI 标签建议」面板手打的补充要求。带上现状（已有/已应用/
+    // 已忽略），temperature=0 下没有这段差异，重跑只会得到同样的输出。
+    let instruction_text = instruction
+        .as_deref()
+        .map(str::trim)
+        .filter(|text| !text.is_empty());
+    if let Some(extra) = instruction_text {
+        let existing_tags: Vec<String> = trade
+            .get("tags")
+            .and_then(Value::as_array)
+            .map(|items| items.iter().filter_map(Value::as_str).map(str::to_string).collect())
+            .unwrap_or_default();
+        let accepted: Vec<String> = handled_tags
+            .iter()
+            .filter(|(_, accepted)| *accepted)
+            .map(|(name, _)| name.clone())
+            .collect();
+        let dismissed: Vec<String> = handled_tags
+            .iter()
+            .filter(|(_, accepted)| !*accepted)
+            .map(|(name, _)| name.clone())
+            .collect();
+        let mut state = String::new();
+        if !existing_tags.is_empty() {
+            state.push_str(&format!("Trade 已有标签：{}。", existing_tags.join("、")));
+        }
+        if !accepted.is_empty() {
+            state.push_str(&format!("此前建议已应用：{}。", accepted.join("、")));
+        }
+        if !dismissed.is_empty() {
+            state.push_str(&format!("此前建议已忽略（不要重复建议）：{}。", dismissed.join("、")));
+        }
+        messages.push(ai::ChatMessage::user(format!(
+            "补充建议要求：{extra}\n{state}请优先给出与已忽略标签不同的、更多或更贴合的标签建议，\
+每条仍必须有逐字原话证据；只能使用标签词表中的名字，除非本条要求里明确写出了新标签名。"
+        )));
+    }
     // analyzedAt 取发起时刻：AI 期间新增/编辑的卡片才不会被误判为「总结前」
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_millis() as u64)
         .unwrap_or(0);
     ai::log_provider_event(app, format!("checking execution suggestions for case {case_id} with {model}"));
-    let content = ai::chat_completion_with_retry(&provider, &model, &messages).await?;
     let card_pairs: Vec<(String, String)> = cards
         .iter()
         .map(|card| {
@@ -1005,21 +1189,31 @@ pub(crate) async fn run_execution_suggestions(
             )
         })
         .collect();
-    let parsed = ai::parse_execution_suggestions(&content, &card_pairs)?;
-    let deduped = dedup_suggestions_against_trade(parsed, &trade);
-
-    // 标签建议：词表校验 + 证据逐字校验在 parse_trade_tags 内完成，这里再剔除
-    // Trade 已带的标签（重复建议没有意义）
+    // 标签建议词表：词表校验 + 证据逐字校验在 parse_trade_tags 内完成
     let vocabulary: Vec<String> = tag_defs
         .iter()
         .filter_map(|def| def.get("name").and_then(Value::as_str).map(str::to_string))
         .collect();
+    // 执行建议与标签建议共用一次调用的输出：非 JSON 时修正轮对两者同时生效（0.3.6）
+    let parse = |content: &str| -> Result<(Vec<ai::ParsedSuggestion>, Vec<ai::ParsedTradeTag>), String> {
+        let suggestions = ai::parse_execution_suggestions(content, &card_pairs)?;
+        let tags = ai::parse_trade_tags(content, &card_pairs, &vocabulary, instruction_text);
+        Ok((suggestions, tags))
+    };
+    let (parsed, parsed_tags_all) =
+        ai::chat_completion_validated(&provider, &model, &messages, parse, &|message: &str| {
+            ai::log_provider_event(app, message.to_string());
+        })
+        .await?;
+    let deduped = dedup_suggestions_against_trade(parsed, &trade);
+
+    // 标签建议这里再剔除 Trade 已带的标签（重复建议没有意义）
     let existing_tags: Vec<String> = trade
         .get("tags")
         .and_then(Value::as_array)
         .map(|items| items.iter().filter_map(Value::as_str).map(str::to_string).collect())
         .unwrap_or_default();
-    let parsed_tags: Vec<ai::ParsedTradeTag> = ai::parse_trade_tags(&content, &card_pairs, &vocabulary)
+    let parsed_tags: Vec<ai::ParsedTradeTag> = parsed_tags_all
         .into_iter()
         .filter(|tag| {
             !existing_tags
@@ -1157,8 +1351,9 @@ async fn suggest_case_executions(
     app: AppHandle,
     db: tauri::State<'_, db::Db>,
     case_id: String,
+    instruction: Option<String>,
 ) -> Result<Value, String> {
-    let result = run_execution_suggestions(&app, &db, &case_id).await;
+    let result = run_execution_suggestions(&app, &db, &case_id, instruction).await;
     if let Err(err) = &result {
         // 手动检查失败必须留痕：前端只显示一句话，原因靠日志页排查
         ai::log_provider_event(&app, format!("execution suggestions for case {case_id} failed: {err}"));
@@ -1439,6 +1634,88 @@ async fn ai_suggest_bindings(app: AppHandle, context: String, candidate_count: u
     Ok(json!({ "schemaVersion": ai::BINDING_PROMPT_VERSION, "matches": matches }))
 }
 
+/// 拆卡类请求的公共校验：Case 存在、phase 合法（rawText 由各入口自校验）。
+fn validate_split_request(
+    conn: &rusqlite::Connection,
+    case_id: &str,
+    phase: &str,
+) -> Result<(), String> {
+    if db::read_record_by_id(conn, "cases", case_id)?.is_none() {
+        return Err(format!("case not found: {case_id}"));
+    }
+    const PHASES: [&str; 5] = ["pre-entry", "entry", "intermediate", "closing", "reflection"];
+    if !PHASES.contains(&phase) {
+        return Err(format!("invalid phase: {phase}; must be one of {PHASES:?}"));
+    }
+    Ok(())
+}
+
+/// 拆卡 AI（含修正轮）→ 机械校验分段。直接拆与预览共用；调用方决定降级策略。
+async fn run_split_ai(
+    app: Option<&AppHandle>,
+    phase: &str,
+    raw_text: &str,
+) -> Result<Vec<ai::ParsedCardSplit>, String> {
+    if raw_text.chars().count() < 60 {
+        return Ok(vec![ai::ParsedCardSplit {
+            bar_ref: api::extract_bar_ref(raw_text),
+            text: raw_text.trim().to_string(),
+        }]);
+    }
+    let (provider, model) = app
+        .and_then(|app| ai::default_provider(app).ok().flatten())
+        .ok_or_else(|| "还没有默认 AI Provider，请在 设置 → AI 中配置".to_string())?;
+    let messages = ai::build_split_messages(phase, raw_text);
+    let parse = |content: &str| ai::parse_card_splits(content, raw_text);
+    let log = |message: &str| {
+        if let Some(app) = app {
+            ai::log_provider_event(app, message.to_string());
+        }
+    };
+    ai::chat_completion_validated(&provider, &model, &messages, parse, &log).await
+}
+
+/// 批量落库（直接拆卡与手动 batch-create 共用，调用方持有短 DB 锁）：
+/// 幂等重验 → 逐张写入 {rid}-{i}（createdAt 逐张 +1ms，entryDecision 只落首张）。
+/// 返回 (卡列表, 是否新建)。
+fn persist_batch_splits(
+    conn: &rusqlite::Connection,
+    case_id: &str,
+    phase: &str,
+    splits: Vec<ai::ParsedCardSplit>,
+    entry_decision: Option<&str>,
+    client_request_id: &str,
+    now: u64,
+) -> Result<(Vec<Value>, bool), String> {
+    // 重验首段存在性——并发同 rid（重试撞上慢请求）直接读回
+    if let Some(replayed) = collect_batch_replay(conn, client_request_id)? {
+        return Ok((replayed, false));
+    }
+    let mut created: Vec<Value> = Vec::new();
+    for (index, split) in splits.into_iter().enumerate() {
+        let id = format!("{client_request_id}-{index}");
+        // createdAt 逐张 +1ms：前端按 createdAt 排序，避免 10 张以上时 id 字典序错乱
+        let mut data = json!({
+            "id": id,
+            "caseId": case_id,
+            "phase": phase,
+            "rawText": split.text,
+            "createdAt": now + index as u64,
+        });
+        if let Some(bar) = split.bar_ref {
+            data["barRef"] = json!(bar);
+        }
+        if index == 0 {
+            if let Some(decision) = entry_decision {
+                data["entryDecision"] = json!(decision);
+            }
+        }
+        db::save_record_in_tx(conn, "caseCards", &id, data.clone())?;
+        created.push(data);
+    }
+    Ok((created, true))
+}
+
 /// 批量语音拆卡（0.3.0）：一大段口语原文按 K 线锚点 AI 拆成多张卡，直接落库（流畅优先，
 /// 不做预览——拆错了用删卡/改字收拾）。机械校验失败或 AI 不可用时整体退化为一张完整卡，
 /// 绝不丢原文。幂等：clientRequestId 首段存在时视为重放，原样返回已创建的卡。
@@ -1457,19 +1734,14 @@ pub(crate) async fn run_batch_split(
     // 阶段 1（短锁）：校验 + 幂等重放探测
     {
         let conn = db.conn()?;
-        if db::read_record_by_id(&conn, "cases", case_id)?.is_none() {
-            return Err(format!("case not found: {case_id}"));
-        }
-        const PHASES: [&str; 5] = ["pre-entry", "entry", "intermediate", "closing", "reflection"];
-        if !PHASES.contains(&phase) {
-            return Err(format!("invalid phase: {phase}; must be one of {PHASES:?}"));
-        }
+        validate_split_request(&conn, case_id, phase)?;
         if raw_text.trim().is_empty() {
             return Err("request body is missing valid rawText".to_string());
         }
-        if !client_request_id
-            .chars()
-            .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
+        if client_request_id.is_empty()
+            || !client_request_id
+                .chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
             || client_request_id.len() > 48
         {
             return Err("invalid clientRequestId: use 1-48 characters of letters, digits, '-' or '_'".to_string());
@@ -1490,62 +1762,125 @@ pub(crate) async fn run_batch_split(
     }
 
     // 阶段 2（无锁）：AI 拆分。短文本不可能是多卡；无 AppHandle（单测）、无默认
-    // Provider 或 AI/解析失败 → 退化为完整单卡。
-    let single = || vec![ai::ParsedCardSplit {
-        bar_ref: api::extract_bar_ref(raw_text),
-        text: raw_text.trim().to_string(),
-    }];
-    let splits: Vec<ai::ParsedCardSplit> = if raw_text.chars().count() < 60 {
-        single()
-    } else {
-        match app.and_then(|app| ai::default_provider(app).ok().flatten()) {
-            Some((provider, model)) => {
-                let messages = ai::build_split_messages(phase, raw_text);
-                match ai::chat_completion_with_retry(&provider, &model, &messages).await {
-                    Ok(content) => ai::parse_card_splits(&content, raw_text).unwrap_or_else(|_| single()),
-                    Err(err) => {
-                        if let Some(app) = app {
-                            ai::log_provider_event(app, format!("batch split degraded to single card: {err}"));
-                        }
-                        single()
-                    }
-                }
+    // Provider 或 AI/解析失败 → 退化为完整单卡。校验失败先走修正轮（带上轮回复
+    // 与错误），仍失败才降级（0.3.6）；降级原因也进日志（此前校验失败是静默降级）。
+    let splits = match run_split_ai(app, phase, raw_text).await {
+        Ok(splits) => splits,
+        Err(err) => {
+            if let Some(app) = app {
+                ai::log_provider_event(app, format!("batch split degraded to single card: {err}"));
             }
-            None => single(),
+            vec![ai::ParsedCardSplit {
+                bar_ref: api::extract_bar_ref(raw_text),
+                text: raw_text.trim().to_string(),
+            }]
         }
     };
 
-    // 阶段 3（短锁）：落库。重验首段存在性——并发同 rid（重试撞上慢请求）直接读回。
+    // 阶段 3（短锁）：落库
     let conn = db.conn()?;
-    if let Some(replayed) = collect_batch_replay(&conn, client_request_id)? {
-        return Ok((replayed, false));
-    }
-    let mut created: Vec<Value> = Vec::new();
-    for (index, split) in splits.into_iter().enumerate() {
-        let id = format!("{client_request_id}-{index}");
-        // createdAt 逐张 +1ms：前端按 createdAt 排序，避免 10 张以上时 id 字典序错乱
-        let mut data = json!({
-            "id": id,
-            "caseId": case_id,
-            "phase": phase,
-            "rawText": split.text,
-            "createdAt": now + index as u64,
-        });
-        if let Some(bar) = split.bar_ref {
-            data["barRef"] = json!(bar);
-        }
-        if index == 0 {
-            if let Some(decision) = entry_decision.as_deref() {
-                data["entryDecision"] = json!(decision);
-            }
-        }
-        db::save_record_in_tx(&conn, "caseCards", &id, data.clone())?;
-        created.push(data);
-    }
+    let (created, changed) = persist_batch_splits(
+        &conn,
+        case_id,
+        phase,
+        splits,
+        entry_decision.as_deref(),
+        client_request_id,
+        now,
+    )?;
     if let Some(app) = app {
         ai::log_provider_event(app, format!("batch split for case {case_id}: {} cards", created.len()));
     }
-    Ok((created, true))
+    Ok((created, changed))
+}
+
+/// 拆卡预览（0.3.6 手动模式）：跑拆卡 AI（含修正轮）+ 机械校验，返回分段但不落库。
+/// 预览模式下用户在场：AI 不可用/校验失败直接报错，不静默降级——由前端提示改走
+/// 直接拆卡或单卡提交。<60 字不经 AI 直接单段（与直接拆卡同口径）。
+pub(crate) async fn run_split_preview(
+    app: Option<&AppHandle>,
+    db: &db::Db,
+    case_id: &str,
+    phase: &str,
+    raw_text: &str,
+) -> Result<Vec<ai::ParsedCardSplit>, String> {
+    {
+        let conn = db.conn()?;
+        validate_split_request(&conn, case_id, phase)?;
+        if raw_text.trim().is_empty() {
+            return Err("request body is missing valid rawText".to_string());
+        }
+    }
+    run_split_ai(app, phase, raw_text).await
+}
+
+/// 手动拆卡落库（0.3.6）：用户在预览模态框里改过的分段直接建卡。手动模式不强制
+/// verbatim 覆盖率（用户已过目），只做机械边界校验：1–20 段、trim 后非空、
+/// barRef 1–1440 或 null。幂等重放同 run_batch_split（重放返回已建卡，不比对文本
+/// ——预览会话持有 rid，重复确认只可能来自网络超时后的重试）。
+pub(crate) fn run_batch_create(
+    app: Option<&AppHandle>,
+    db: &db::Db,
+    case_id: &str,
+    phase: &str,
+    segments: &[Value],
+    entry_decision: Option<String>,
+    client_request_id: &str,
+    now: u64,
+) -> Result<(Vec<Value>, bool), String> {
+    if client_request_id.is_empty()
+        || !client_request_id
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
+        || client_request_id.len() > 48
+    {
+        return Err("invalid clientRequestId: use 1-48 characters of letters, digits, '-' or '_'".to_string());
+    }
+    if segments.is_empty() {
+        return Err("segments is empty".to_string());
+    }
+    if segments.len() > 20 {
+        return Err(format!("segments has {} items (max 20)", segments.len()));
+    }
+    let mut splits: Vec<ai::ParsedCardSplit> = Vec::with_capacity(segments.len());
+    for item in segments {
+        let text = item
+            .get("text")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+            .ok_or_else(|| "segment text is empty".to_string())?
+            .to_string();
+        let bar_ref = match item.get("barRef") {
+            None => None,
+            Some(value) if value.is_null() => None,
+            Some(value) => {
+                let bar = value
+                    .as_i64()
+                    .filter(|bar| (1..=1440).contains(bar))
+                    .ok_or_else(|| format!("segment barRef is invalid: {value} (1-1440 or null)"))?;
+                Some(bar)
+            }
+        };
+        splits.push(ai::ParsedCardSplit { bar_ref, text });
+    }
+    let conn = db.conn()?;
+    validate_split_request(&conn, case_id, phase)?;
+    let (created, changed) = persist_batch_splits(
+        &conn,
+        case_id,
+        phase,
+        splits,
+        entry_decision.as_deref(),
+        client_request_id,
+        now,
+    )?;
+    if changed {
+        if let Some(app) = app {
+            ai::log_provider_event(app, format!("batch create for case {case_id}: {} cards", created.len()));
+        }
+    }
+    Ok((created, changed))
 }
 
 /// 幂等重放收集：{rid}-0 存在 → 依序收集 {rid}-{i} 直到断档。
@@ -1567,18 +1902,16 @@ fn collect_batch_replay(
     Ok(Some(replayed))
 }
 
-/// AI 重拆已有卡片（0.3.4）：复盘时发现一张卡里挤了多个独立观察，用拆卡 AI 重新
-/// 拆分并替换原卡。与批量拆卡共用 prompt 与机械校验，但降级策略相反——AI 不可用、
-/// 校验不过或只拆出一段时原卡原样不动（返回错误）：重拆是破坏性替换，不允许
-/// 「退化成单卡」白白丢掉原卡的 aiAnalysis / rawTextHistory。
-/// 锁纪律与 run_batch_split 相同（短锁×3，AI 期间不持锁）。
-pub(crate) async fn run_card_resplit(
+/// AI 重拆已有卡片（0.3.4；0.3.6 起拆成预览/应用两步）：复盘时发现一张卡里挤了
+/// 多个独立观察，用拆卡 AI 重新拆分。与批量拆卡共用 prompt 与机械校验，但降级
+/// 策略相反——AI 不可用或校验不过时原卡原样不动（返回错误）：重拆是破坏性替换，
+/// 不允许「退化成单卡」白白丢掉原卡的 aiAnalysis / rawTextHistory。
+/// 预览步只跑 AI 返回分段；应用步（run_card_resplit_apply）才做替换。
+pub(crate) async fn run_card_resplit_preview(
     app: Option<&AppHandle>,
     db: &db::Db,
     card_id: &str,
-    now: u64,
-) -> Result<(String, Vec<Value>), String> {
-    // 阶段 1（短锁）：读原卡并校验
+) -> Result<(String, Vec<ai::ParsedCardSplit>), String> {
     let original = {
         let conn = db.conn()?;
         db::read_record_by_id(&conn, "caseCards", card_id)?
@@ -1603,9 +1936,8 @@ pub(crate) async fn run_card_resplit(
     if raw_text.chars().count() < 60 {
         return Err("这张卡不足 60 字，不需要重拆".to_string());
     }
-    let created_at = original.get("createdAt").and_then(Value::as_u64).unwrap_or(now);
 
-    // 阶段 2（无锁）：AI 拆分。任何失败都不动原卡。
+    // 无锁 AI 拆分。任何失败都不动原卡。
     let (provider, model) = app
         .and_then(|app| ai::default_provider(app).ok().flatten())
         .ok_or_else(|| "还没有默认 AI Provider，请在 设置 → AI 中配置".to_string())?;
@@ -1613,16 +1945,60 @@ pub(crate) async fn run_card_resplit(
         ai::log_provider_event(app, format!("resplitting card {card_id} with {model}"));
     }
     let messages = ai::build_split_messages(&phase, &raw_text);
-    let content = ai::chat_completion_with_retry(&provider, &model, &messages)
-        .await
-        .map_err(|err| format!("这张卡拆不开：{err}"))?;
-    let splits = ai::parse_card_splits(&content, &raw_text)
-        .map_err(|_| "这张卡拆不开：AI 拆分未通过逐字/覆盖率校验，原卡未改动".to_string())?;
-    if splits.len() <= 1 {
-        return Err("AI 认为这张卡是一段完整记录，拆不出多张".to_string());
+    // 校验失败（非逐字/覆盖率不过）时自动带上第一轮回复与错误修正重试一轮（0.3.6），
+    // 仍失败才放弃——错误文案带具体校验原因，用户知道哪里出了问题。
+    let parse = |content: &str| ai::parse_card_splits(content, &raw_text);
+    let splits = ai::chat_completion_validated(&provider, &model, &messages, parse, &|message: &str| {
+        if let Some(app) = app {
+            ai::log_provider_event(app, message.to_string());
+        }
+    })
+    .await
+    .map_err(|err| format!("这张卡拆不开：{err}（原卡未改动）"))?;
+    Ok((case_id, splits))
+}
+
+/// 重拆应用步：用户在预览对话框里改过的分段替换原卡。original_text 是预览时读到
+/// 的原文（前端回传）——应用前重读原卡比对，期间被编辑/删除则中止，保证替换的
+/// 永远是用户看到的那张卡。分段边界校验同 batch-create，但要求 ≥2 段（1 段没有
+/// 替换的意义，改字走 ✎ 编辑）。
+pub(crate) fn run_card_resplit_apply(
+    app: Option<&AppHandle>,
+    db: &db::Db,
+    card_id: &str,
+    original_text: &str,
+    segments: &[Value],
+    now: u64,
+) -> Result<(String, Vec<Value>), String> {
+    if segments.len() < 2 {
+        return Err("至少要拆成 2 张卡才有替换的意义；只想改字请用「修正原文错字」".to_string());
+    }
+    if segments.len() > 20 {
+        return Err(format!("segments has {} items (max 20)", segments.len()));
+    }
+    let mut splits: Vec<ai::ParsedCardSplit> = Vec::with_capacity(segments.len());
+    for item in segments {
+        let text = item
+            .get("text")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+            .ok_or_else(|| "segment text is empty".to_string())?
+            .to_string();
+        let bar_ref = match item.get("barRef") {
+            None => None,
+            Some(value) if value.is_null() => None,
+            Some(value) => {
+                let bar = value
+                    .as_i64()
+                    .filter(|bar| (1..=1440).contains(bar))
+                    .ok_or_else(|| format!("segment barRef is invalid: {value} (1-1440 or null)"))?;
+                Some(bar)
+            }
+        };
+        splits.push(ai::ParsedCardSplit { bar_ref, text });
     }
 
-    // 阶段 3（短锁）：重读原卡确认未被并发改动，然后替换
     let conn = db.conn()?;
     let current = db::read_record_by_id(&conn, "caseCards", card_id)?
         .ok_or_else(|| "这张卡已被删除，已取消重拆".to_string())?;
@@ -1631,9 +2007,15 @@ pub(crate) async fn run_card_resplit(
         .and_then(Value::as_str)
         .unwrap_or_default()
         .trim();
-    if current_text != raw_text {
+    if current_text != original_text.trim() {
         return Err("这张卡刚被编辑过，已取消重拆；请重新发起".to_string());
     }
+    let case_id = current
+        .get("caseId")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "card is missing caseId".to_string())?
+        .to_string();
+    let created_at = current.get("createdAt").and_then(Value::as_u64).unwrap_or(now);
     let rid = format!("rs-{}", ai::next_task_id());
     let created = persist_resplit(&conn, &current, splits, &rid, created_at)?;
     if let Some(app) = app {
@@ -1717,13 +2099,32 @@ fn persist_resplit(
 /// AI 重拆已有卡片（GUI）：成功后逐张 spawn 自动分析。任务注册在前端（GUI 任务模式），
 /// 结果卡由前端吸收合并，后续 data-changed 事件兜底。
 #[tauri::command]
-async fn resplit_case_card(
+async fn preview_case_card_resplit(
     app: AppHandle,
     db: tauri::State<'_, db::Db>,
     card_id: String,
 ) -> Result<Value, String> {
+    let (case_id, segments) = run_card_resplit_preview(Some(&app), &db, &card_id).await?;
+    let segments: Vec<Value> = segments
+        .iter()
+        .map(|split| match split.bar_ref {
+            Some(bar) => json!({ "text": split.text, "barRef": bar }),
+            None => json!({ "text": split.text, "barRef": null }),
+        })
+        .collect();
+    Ok(json!({ "caseId": case_id, "segments": segments }))
+}
+
+#[tauri::command]
+fn apply_case_card_resplit(
+    app: AppHandle,
+    db: tauri::State<'_, db::Db>,
+    card_id: String,
+    original_text: String,
+    segments: Vec<Value>,
+) -> Result<Value, String> {
     let now = now_ms();
-    let (case_id, cards) = run_card_resplit(Some(&app), &db, &card_id, now).await?;
+    let (case_id, cards) = run_card_resplit_apply(Some(&app), &db, &card_id, &original_text, &segments, now)?;
     for card in &cards {
         if let Some(id) = card.get("id").and_then(Value::as_str) {
             ai::spawn_auto_analysis(&app, id.to_string());
@@ -1790,6 +2191,108 @@ pub(crate) fn batch_split_endpoint(
         }
         Err(message) => {
             ai::emit_task_event(app, &split_task_id, "split", "failed", "批量拆卡", Some("case"), Some(&case_id), Some(&message));
+            let status = api::error_status(&message);
+            api::ApiOutcome { status, body: json!({ "error": message }), data_changed: false }
+        }
+    }
+}
+
+/// REST 拆卡预览入口（0.3.6 手动模式，server 循环分发，同 batch-split 的理由）：
+/// 跑 AI（含修正轮）+ 机械校验，返回分段但不落库。用户在场，AI/校验失败直接报错，
+/// 不静默降级。
+pub(crate) fn split_preview_endpoint(
+    app: &AppHandle,
+    db: &db::Db,
+    url: &str,
+    auth: Option<&str>,
+    token: &str,
+    body: &[u8],
+    now: u64,
+) -> api::ApiOutcome {
+    let _ = now;
+    if !api::authorized(token, auth) {
+        return api::ApiOutcome { status: 401, body: json!("missing or invalid bearer token"), data_changed: false };
+    }
+    let parsed: Value = match serde_json::from_slice(body) {
+        Ok(value) => value,
+        Err(_) => return api::ApiOutcome { status: 400, body: json!("invalid JSON body"), data_changed: false },
+    };
+    let path = url.split('?').next().unwrap_or("").trim_matches('/');
+    // api/v1/cases/{caseId}/cards/split-preview
+    let case_id = path.split('/').nth(3).unwrap_or_default().to_string();
+    let split_task_id = ai::next_task_id();
+    ai::emit_task_event(app, &split_task_id, "split", "start", "拆卡预览", Some("case"), Some(&case_id), None);
+    let run = || -> Result<Vec<ai::ParsedCardSplit>, String> {
+        let phase = parsed.get("phase").and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty())
+            .ok_or_else(|| "request body is missing valid phase".to_string())?.to_string();
+        let raw_text = parsed.get("rawText").and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty())
+            .ok_or_else(|| "request body is missing valid rawText".to_string())?.to_string();
+        tauri::async_runtime::block_on(run_split_preview(Some(app), db, &case_id, &phase, &raw_text))
+    };
+    match run() {
+        Ok(splits) => {
+            ai::emit_task_event(app, &split_task_id, "split", "succeeded", "拆卡预览", Some("case"), Some(&case_id), None);
+            let segments: Vec<Value> = splits
+                .iter()
+                .map(|split| match split.bar_ref {
+                    Some(bar) => json!({ "text": split.text, "barRef": bar }),
+                    None => json!({ "text": split.text, "barRef": null }),
+                })
+                .collect();
+            api::ApiOutcome { status: 200, body: json!({ "segments": segments, "version": ai::SPLIT_PROMPT_VERSION }), data_changed: false }
+        }
+        Err(message) => {
+            ai::emit_task_event(app, &split_task_id, "split", "failed", "拆卡预览", Some("case"), Some(&case_id), Some(&message));
+            let status = api::error_status(&message);
+            api::ApiOutcome { status, body: json!({ "error": message }), data_changed: false }
+        }
+    }
+}
+
+/// REST 手动拆卡落库入口（0.3.6）：预览模态框确认后的分段建卡。无 AI 调用，
+/// 同样在取 DB 锁之前由 server 循环分发（run_batch_create 自己短锁）。成功后
+/// 逐张 spawn 自动分析。
+pub(crate) fn batch_create_endpoint(
+    app: &AppHandle,
+    db: &db::Db,
+    url: &str,
+    auth: Option<&str>,
+    token: &str,
+    body: &[u8],
+    now: u64,
+) -> api::ApiOutcome {
+    if !api::authorized(token, auth) {
+        return api::ApiOutcome { status: 401, body: json!("missing or invalid bearer token"), data_changed: false };
+    }
+    let parsed: Value = match serde_json::from_slice(body) {
+        Ok(value) => value,
+        Err(_) => return api::ApiOutcome { status: 400, body: json!("invalid JSON body"), data_changed: false },
+    };
+    let path = url.split('?').next().unwrap_or("").trim_matches('/');
+    // api/v1/cases/{caseId}/cards/batch-create
+    let case_id = path.split('/').nth(3).unwrap_or_default().to_string();
+    let run = || -> Result<(Vec<Value>, bool), String> {
+        let phase = parsed.get("phase").and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty())
+            .ok_or_else(|| "request body is missing valid phase".to_string())?.to_string();
+        let client_request_id = parsed.get("clientRequestId").and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty())
+            .ok_or_else(|| "request body is missing valid clientRequestId".to_string())?.to_string();
+        let segments = parsed.get("segments").and_then(Value::as_array)
+            .ok_or_else(|| "request body is missing valid segments".to_string())?;
+        let entry_decision = parsed.get("entryDecision").and_then(Value::as_str).map(str::to_string);
+        run_batch_create(Some(app), db, &case_id, &phase, segments, entry_decision, &client_request_id, now)
+    };
+    match run() {
+        Ok((cards, changed)) => {
+            if changed {
+                for card in &cards {
+                    if let Some(id) = card.get("id").and_then(Value::as_str) {
+                        ai::spawn_auto_analysis(app, id.to_string());
+                    }
+                }
+            }
+            api::ApiOutcome { status: 200, body: json!({ "cards": cards, "version": ai::SPLIT_PROMPT_VERSION }), data_changed: changed }
+        }
+        Err(message) => {
             let status = api::error_status(&message);
             api::ApiOutcome { status, body: json!({ "error": message }), data_changed: false }
         }
@@ -1908,6 +2411,7 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
+            diagnostics::init(app.handle());
             diagnostics::app_log(app.handle(), "setup started");
             let db = db::init(app.handle()).map_err(|err| {
                 diagnostics::app_log(app.handle(), format!("db init failed: {err}"));
@@ -1947,7 +2451,9 @@ pub fn run() {
             export_backup,
             frontend_log,
             read_logs,
-            get_log_path,
+            clear_logs,
+            get_logs_dir,
+            open_logs_dir,
             get_api_status,
             get_widget_script,
             check_widget_script_update,
@@ -1959,7 +2465,8 @@ pub fn run() {
             set_default_ai_provider,
             fetch_ai_models,
             analyze_case_card,
-            resplit_case_card,
+            preview_case_card_resplit,
+            apply_case_card_resplit,
             suggest_case_executions,
             ai_summarize_case,
             ai_suggest_bindings,

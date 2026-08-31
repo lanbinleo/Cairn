@@ -37,7 +37,7 @@ import {
   isPositionExecutionAction,
   orderTypeLabel,
 } from '@/lib/executions'
-import { fmtPrice, fmtUtcDate, fmtUtcTime } from '@/lib/format'
+import { fmtPrice, fmtQty, fmtUtcDate, fmtUtcTime } from '@/lib/format'
 import { toast } from '@/components/ui/sonner'
 import { useCairn } from '@/lib/store'
 import { findTagByName, normalizeTagName, sortTagDefsByColor, sortTagNamesByColor, tagNamesEqual, uniqueTagNames } from '@/lib/tags'
@@ -559,7 +559,7 @@ export function EditTradeDialog({
                   const priceLabel = execution.action === 'stop' ? 'Stop price' : execution.action === 'target-moved' ? 'Target price' : isManagementAction ? 'Order price' : '价格'
                   const summaryPrice = execution.price == null ? '—' : fmtPrice(execution.price)
                   const summary = isPositionAction
-                    ? `${actionLabel} · ${execution.quantity ?? '—'} @ ${summaryPrice}`
+                    ? `${actionLabel} · ${execution.quantity == null ? '—' : fmtQty(execution.quantity)} @ ${summaryPrice}`
                     : `${actionLabel} · ${summaryPrice}${execution.anchorPrice == null ? '' : ` · anchor ${fmtPrice(execution.anchorPrice)}`}`
                   return (
                     <div

@@ -1,6 +1,25 @@
 import { describe, expect, it } from 'vitest'
 
-import { fmtCompactMoney } from './format'
+import { fmtCompactMoney, fmtQty } from './format'
+
+describe('fmtQty', () => {
+  it('去掉浮点累加噪声并保留必要精度', () => {
+    expect(fmtQty(2.4425999999999997)).toBe('2.4426')
+    expect(fmtQty(0.30000000000000004)).toBe('0.3')
+    expect(fmtQty(1.2213 + 1.2213)).toBe('2.4426')
+  })
+
+  it('整数与尾零去掉', () => {
+    expect(fmtQty(2)).toBe('2')
+    expect(fmtQty(1.5)).toBe('1.5')
+    expect(fmtQty(0)).toBe('0')
+  })
+
+  it('超过 6 位小数截断，合约数量精度不丢', () => {
+    expect(fmtQty(0.123456789)).toBe('0.123457')
+    expect(fmtQty(1234.000001)).toBe('1234.000001')
+  })
+})
 
 describe('fmtCompactMoney', () => {
   it('小数值保持完整格式', () => {

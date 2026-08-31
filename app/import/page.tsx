@@ -13,6 +13,8 @@ import {
 } from 'lucide-react'
 
 import { PageHeader } from '@/components/page-header'
+import { useConfirm } from '@/components/confirm-dialog-provider'
+import { toast } from '@/components/ui/sonner'
 import { BindingSuggestForTrade } from '@/components/binding-suggestions'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -151,6 +153,7 @@ function proposedTradeCandidate(
 
 export default function ImportPage() {
   const navigate = useNavigate()
+  const confirm = useConfirm()
   const { accounts, periods, symbols, trades, getPeriod, updatePeriod, createTrades, createImportBatch, rollbackImportBatch, cases, caseCards, caseBindings, createCaseBinding, deleteCaseBinding } = useCairn()
   const fileInputs = useRef<Record<string, HTMLInputElement | null>>({})
   const [step, setStep] = useState(0)
@@ -851,11 +854,23 @@ export default function ImportPage() {
               {createdBatchId && (
                 <Button
                   variant="outline"
-                  onClick={() => {
-                    batchBindings.forEach((entry) => void deleteCaseBinding(entry.bindingId))
-                    rollbackImportBatch(createdBatchId)
-                    setCreatedBatchId('')
-                    navigate('/trades')
+                  onClick={async () => {
+                    const ok = await confirm({
+                      title: '撤销本次导入？',
+                      description: '刚导入的 Trade 会删除，导入中建立的 Case 关联会解除（可从备份恢复）。',
+                      confirmText: '撤销导入',
+                      destructive: true,
+                    })
+                    if (!ok) return
+                    try {
+                      for (const entry of batchBindings) await deleteCaseBinding(entry.bindingId)
+                      rollbackImportBatch(createdBatchId)
+                      setCreatedBatchId('')
+                      toast.success('已撤销本次导入。')
+                      navigate('/trades')
+                    } catch (error) {
+                      toast.error(`撤销失败：${String(error)}。部分 Trade 或关联可能残留，可重试或手动清理。`)
+                    }
                   }}
                 >
                   撤销本次导入

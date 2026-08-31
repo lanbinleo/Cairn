@@ -6,7 +6,7 @@
 
 import { caseCardDigest } from './cases'
 import { computeTradeMetrics } from './metrics'
-import { fmtDuration, fmtMoney, fmtR, fmtUtcDateTime } from './format'
+import { fmtDuration, fmtMoney, fmtNum, fmtQty, fmtR, fmtUtcDateTime } from './format'
 import type { Account, CaseCard, Period, Trade, TradeCase, TradingSymbol } from './types'
 
 const PHASE_NAME: Record<CaseCard['phase'], string> = {
@@ -58,26 +58,28 @@ export function buildCaseSummaryContext(input: CaseSummaryContextInput): string 
 
   if (trade) {
     const m = computeTradeMetrics(trade)
+    // 数字一律格式化后再进上下文：浮点噪声（2.4425999999999997）会被模型原样复述
+    const price = (value: number) => fmtNum(value, symbol?.pricePrecision ?? 6)
     const direction = trade.direction === 'long' ? '做多' : '做空'
     const status = trade.status === 'closed' ? '已平仓' : '持仓中'
     lines.push(`Trade #${trade.seq} ${direction} ${status}`)
     if (m.entryTime > 0 && m.exitTime > 0) {
-      lines.push(`开仓 ${fmtUtcDateTime(m.entryTime, false)} @ ${m.avgEntry} · 平仓 ${fmtUtcDateTime(m.exitTime, false)} @ ${m.avgExit} · 持仓 ${fmtDuration(m.durationMs)}`)
+      lines.push(`开仓 ${fmtUtcDateTime(m.entryTime, false)} @ ${price(m.avgEntry)} · 平仓 ${fmtUtcDateTime(m.exitTime, false)} @ ${price(m.avgExit)} · 持仓 ${fmtDuration(m.durationMs)}`)
     }
-    lines.push(`总仓位 ${m.totalQuantity} · 盈亏 ${fmtMoney(m.pnl)} · R（初始风险）${fmtR(m.rMultiple)} · R（实际风险）${fmtR(m.rActual)}`)
+    lines.push(`总仓位 ${fmtQty(m.totalQuantity)} · 盈亏 ${fmtMoney(m.pnl)} · R（初始风险）${fmtR(m.rMultiple)} · R（实际风险）${fmtR(m.rActual)}`)
     const plan: string[] = []
-    if (trade.initialEntryPrice != null) plan.push(`入场 ${trade.initialEntryPrice}`)
-    if (trade.initialStopLoss != null) plan.push(`止损 ${trade.initialStopLoss}`)
-    if (trade.initialTakeProfit != null) plan.push(`止盈 ${trade.initialTakeProfit}`)
-    lines.push(plan.length > 0 ? `初始计划：${plan.join(' · ')}${m.finalStop != null && trade.initialStopLoss != null && m.finalStop !== trade.initialStopLoss ? `（最终止损 ${m.finalStop}，有移动）` : ''}` : '初始计划：未记录')
+    if (trade.initialEntryPrice != null) plan.push(`入场 ${price(trade.initialEntryPrice)}`)
+    if (trade.initialStopLoss != null) plan.push(`止损 ${price(trade.initialStopLoss)}`)
+    if (trade.initialTakeProfit != null) plan.push(`止盈 ${price(trade.initialTakeProfit)}`)
+    lines.push(plan.length > 0 ? `初始计划：${plan.join(' · ')}${m.finalStop != null && trade.initialStopLoss != null && m.finalStop !== trade.initialStopLoss ? `（最终止损 ${price(m.finalStop)}，有移动）` : ''}` : '初始计划：未记录')
 
     const executions = [...trade.executions].sort((a, b) => a.time - b.time || a.id.localeCompare(b.id))
     if (executions.length > 0) {
       lines.push('执行动作时间线（来自交易所导出与手动记录）：')
       for (const execution of executions) {
         const parts = [ACTION_NAME[execution.action] ?? execution.action]
-        if (execution.price != null) parts.push(`${execution.price}`)
-        if (execution.quantity != null) parts.push(`×${execution.quantity}`)
+        if (execution.price != null) parts.push(`${price(execution.price)}`)
+        if (execution.quantity != null) parts.push(`×${fmtQty(execution.quantity)}`)
         parts.push(`（${fmtUtcDateTime(execution.time, false)}${execution.signal ? `，${execution.signal}` : ''}）`)
         lines.push(`- ${parts.join(' ')}`)
       }

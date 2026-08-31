@@ -1,7 +1,10 @@
 import { invoke } from '@tauri-apps/api/core'
 
+import { toast } from '@/components/ui/sonner'
+
 import type { CairnStateSnapshot } from './seed'
 import { seedState } from './seed'
+import { logFrontendError } from './frontend-log'
 import type { BindingMatch } from './binding-suggestions'
 import type { CaseCard, CaseSummary, TradeCase } from './types'
 
@@ -134,6 +137,33 @@ export async function saveLocalRecords<T extends { id: string }>(
   await invoke('save_records', { collection, records })
 }
 
+/* ---------- fire-and-forget 持久化（0.3.6） ----------
+ * store 里的 void save/delete 调用统一走 bg* 函数：UI 已经即时更新，
+ * 落库失败必须让用户知道（toast + 前端日志），否则就是「以为存了其实没存」。
+ * 需要自行处理错误的调用方请 await 对应的非 bg 函数。 */
+
+function notifyPersistFailure(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error)
+  toast.error(`本地保存失败：${message}。当前改动可能没有存上，重启后会回退。`)
+  void logFrontendError(`persist failed: ${message}`)
+}
+
+export function bgSaveRecord<T extends { id: string }>(collection: CollectionName, record: T): void {
+  saveLocalRecord(collection, record).catch(notifyPersistFailure)
+}
+
+export function bgSaveRecords<T extends { id: string }>(collection: CollectionName, records: T[]): void {
+  saveLocalRecords(collection, records).catch(notifyPersistFailure)
+}
+
+export function bgDeleteRecord(collection: CollectionName, id: string): void {
+  deleteLocalRecord(collection, id).catch(notifyPersistFailure)
+}
+
+export function bgReplaceCollection<T extends { id: string }>(collection: CollectionName, records: T[]): void {
+  replaceLocalCollection(collection, records).catch(notifyPersistFailure)
+}
+
 /* ---------- 本地 REST API 管理 ---------- */
 
 export interface ApiStatus {
@@ -263,12 +293,30 @@ export async function analyzeCaseCard(cardId: string, instruction?: string): Pro
   return invoke<CaseCard>('analyze_case_card', { cardId, instruction: instruction ?? null })
 }
 
-/** AI 重拆一张已有 Card（0.3.4）：原卡软删除，返回新拆出的卡；拆不动时原卡不动并报错。 */
-export async function resplitCaseCard(cardId: string): Promise<{ caseId: string; cards: CaseCard[] }> {
+export interface CaseCardResplitSegment {
+  text: string
+  barRef: number | null
+}
+
+/** AI 重拆预览（0.3.6 两步式）：跑拆卡 AI 返回分段，不落库、原卡不动。 */
+export async function previewCaseCardResplit(cardId: string): Promise<{ caseId: string; segments: CaseCardResplitSegment[] }> {
   if (!isTauriRuntime()) {
     throw new Error('AI 重拆需要桌面版运行')
   }
-  return invoke<{ caseId: string; cards: CaseCard[] }>('resplit_case_card', { cardId })
+  return invoke<{ caseId: string; segments: CaseCardResplitSegment[] }>('preview_case_card_resplit', { cardId })
+}
+
+/** AI 重拆应用：确认后的分段替换原卡（软删）。originalText 是预览时的原文——
+ *  应用前比对原卡，期间被编辑/删除则中止。 */
+export async function applyCaseCardResplit(
+  cardId: string,
+  originalText: string,
+  segments: CaseCardResplitSegment[],
+): Promise<{ caseId: string; cards: CaseCard[] }> {
+  if (!isTauriRuntime()) {
+    throw new Error('AI 重拆需要桌面版运行')
+  }
+  return invoke<{ caseId: string; cards: CaseCard[] }>('apply_case_card_resplit', { cardId, originalText, segments })
 }
 
 /** AI 秘书代拟 Case 标题，返回草稿（不落库）。 */
@@ -279,12 +327,13 @@ export async function draftCaseTitle(caseId: string): Promise<string> {
   return invoke<string>('draft_case_title', { caseId })
 }
 
-/** AI 持仓管理补录建议：检查绑定 Trade 的卡片动作覆盖情况，返回更新后的 Case。 */
-export async function suggestCaseExecutions(caseId: string): Promise<TradeCase> {
+/** AI 持仓管理补录建议：检查绑定 Trade 的卡片动作覆盖情况，返回更新后的 Case。
+ *  instruction（0.3.6）：标签建议的可教重试——用户补充要求会连同标签现状一起发给 AI。 */
+export async function suggestCaseExecutions(caseId: string, instruction?: string): Promise<TradeCase> {
   if (!isTauriRuntime()) {
     throw new Error('AI 建议需要桌面版运行')
   }
-  return invoke<TradeCase>('suggest_case_executions', { caseId })
+  return invoke<TradeCase>('suggest_case_executions', { caseId, instruction: instruction ?? null })
 }
 
 /** 整单总结：上下文由前端组装，Rust 只做 AI 管道；返回总结 blob（analyzedAt 由调用方补）。
