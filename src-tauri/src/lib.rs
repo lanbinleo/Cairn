@@ -1028,10 +1028,11 @@ pub(crate) async fn run_execution_suggestions(
     app: &AppHandle,
     db: &db::Db,
     case_id: &str,
+    instruction: Option<String>,
 ) -> Result<Value, String> {
-    let (trade, cards, provider, model, context, tag_defs) = {
+    let (trade, cards, provider, model, context, tag_defs, handled_tags) = {
         let conn = db.conn()?;
-        db::read_record_by_id(&conn, "cases", case_id)?
+        let case_record = db::read_record_by_id(&conn, "cases", case_id)?
             .ok_or_else(|| format!("case not found: {case_id}"))?;
         let cards = db::read_case_cards_for_case(&conn, case_id)?;
         let binding = db::read_simple_collection(&conn, "caseBindings")?
@@ -1050,10 +1051,64 @@ pub(crate) async fn run_execution_suggestions(
         let mut context = suggestion_context(&conn, &trade, &cards);
         let tag_defs = db::read_simple_collection(&conn, "tagDefs")?;
         context.push_str(&tag_vocabulary_block(&tag_defs));
-        (trade, cards, provider, model, context, tag_defs)
+        // 可教重试（0.3.6）需要现状：此前建议里已应用/已忽略的标签名单
+        let handled_tags = case_record
+            .get("aiTagSuggestions")
+            .and_then(|value| value.get("suggestions"))
+            .and_then(Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|item| {
+                        let name = item.get("name").and_then(Value::as_str)?.trim().to_string();
+                        let accepted = item.get("acceptedAt").is_some();
+                        let dismissed = item.get("dismissedAt").is_some();
+                        (accepted || dismissed).then_some((name, accepted))
+                    })
+                    .collect::<Vec<(String, bool)>>()
+            })
+            .unwrap_or_default();
+        (trade, cards, provider, model, context, tag_defs, handled_tags)
     };
 
-    let messages = ai::build_suggestion_messages(&context);
+    let mut messages = ai::build_suggestion_messages(&context);
+    // instruction：用户在「AI 标签建议」面板手打的补充要求。带上现状（已有/已应用/
+    // 已忽略），temperature=0 下没有这段差异，重跑只会得到同样的输出。
+    let instruction_text = instruction
+        .as_deref()
+        .map(str::trim)
+        .filter(|text| !text.is_empty());
+    if let Some(extra) = instruction_text {
+        let existing_tags: Vec<String> = trade
+            .get("tags")
+            .and_then(Value::as_array)
+            .map(|items| items.iter().filter_map(Value::as_str).map(str::to_string).collect())
+            .unwrap_or_default();
+        let accepted: Vec<String> = handled_tags
+            .iter()
+            .filter(|(_, accepted)| *accepted)
+            .map(|(name, _)| name.clone())
+            .collect();
+        let dismissed: Vec<String> = handled_tags
+            .iter()
+            .filter(|(_, accepted)| !*accepted)
+            .map(|(name, _)| name.clone())
+            .collect();
+        let mut state = String::new();
+        if !existing_tags.is_empty() {
+            state.push_str(&format!("Trade 已有标签：{}。", existing_tags.join("、")));
+        }
+        if !accepted.is_empty() {
+            state.push_str(&format!("此前建议已应用：{}。", accepted.join("、")));
+        }
+        if !dismissed.is_empty() {
+            state.push_str(&format!("此前建议已忽略（不要重复建议）：{}。", dismissed.join("、")));
+        }
+        messages.push(ai::ChatMessage::user(format!(
+            "补充建议要求：{extra}\n{state}请优先给出与已忽略标签不同的、更多或更贴合的标签建议，\
+每条仍必须有逐字原话证据；只能使用标签词表中的名字，除非本条要求里明确写出了新标签名。"
+        )));
+    }
     // analyzedAt 取发起时刻：AI 期间新增/编辑的卡片才不会被误判为「总结前」
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1077,7 +1132,7 @@ pub(crate) async fn run_execution_suggestions(
     // 执行建议与标签建议共用一次调用的输出：非 JSON 时修正轮对两者同时生效（0.3.6）
     let parse = |content: &str| -> Result<(Vec<ai::ParsedSuggestion>, Vec<ai::ParsedTradeTag>), String> {
         let suggestions = ai::parse_execution_suggestions(content, &card_pairs)?;
-        let tags = ai::parse_trade_tags(content, &card_pairs, &vocabulary);
+        let tags = ai::parse_trade_tags(content, &card_pairs, &vocabulary, instruction_text);
         Ok((suggestions, tags))
     };
     let (parsed, parsed_tags_all) =
@@ -1231,8 +1286,9 @@ async fn suggest_case_executions(
     app: AppHandle,
     db: tauri::State<'_, db::Db>,
     case_id: String,
+    instruction: Option<String>,
 ) -> Result<Value, String> {
-    let result = run_execution_suggestions(&app, &db, &case_id).await;
+    let result = run_execution_suggestions(&app, &db, &case_id, instruction).await;
     if let Err(err) = &result {
         // 手动检查失败必须留痕：前端只显示一句话，原因靠日志页排查
         ai::log_provider_event(&app, format!("execution suggestions for case {case_id} failed: {err}"));

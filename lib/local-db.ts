@@ -279,12 +279,13 @@ export async function draftCaseTitle(caseId: string): Promise<string> {
   return invoke<string>('draft_case_title', { caseId })
 }
 
-/** AI 持仓管理补录建议：检查绑定 Trade 的卡片动作覆盖情况，返回更新后的 Case。 */
-export async function suggestCaseExecutions(caseId: string): Promise<TradeCase> {
+/** AI 持仓管理补录建议：检查绑定 Trade 的卡片动作覆盖情况，返回更新后的 Case。
+ *  instruction（0.3.6）：标签建议的可教重试——用户补充要求会连同标签现状一起发给 AI。 */
+export async function suggestCaseExecutions(caseId: string, instruction?: string): Promise<TradeCase> {
   if (!isTauriRuntime()) {
     throw new Error('AI 建议需要桌面版运行')
   }
-  return invoke<TradeCase>('suggest_case_executions', { caseId })
+  return invoke<TradeCase>('suggest_case_executions', { caseId, instruction: instruction ?? null })
 }
 
 /** 整单总结：上下文由前端组装，Rust 只做 AI 管道；返回总结 blob（analyzedAt 由调用方补）。

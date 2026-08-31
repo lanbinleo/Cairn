@@ -1235,7 +1235,7 @@ pub fn spawn_auto_suggestions(app: &AppHandle, case_id: String) {
         let task_id = next_task_id();
         emit_task_event(&app, &task_id, "suggestions", "start", "补录建议", Some("case"), Some(&case_id), None);
         let result =
-            tauri::async_runtime::block_on(crate::run_execution_suggestions(&app, &db, &case_id));
+            tauri::async_runtime::block_on(crate::run_execution_suggestions(&app, &db, &case_id, None));
         match result {
             Ok(case) => {
                 emit_task_event(&app, &task_id, "suggestions", "succeeded", "补录建议", Some("case"), Some(&case_id), None);
@@ -1518,7 +1518,7 @@ pub fn parse_analysis(
 
 // ==================== 持仓管理动作补录建议 ====================
 
-pub const SUGGESTION_PROMPT_VERSION: &str = "0.3.4-suggest-2";
+pub const SUGGESTION_PROMPT_VERSION: &str = "0.3.6-suggest-3";
 
 /// 建议只覆盖管理类动作（编辑器规范集：stop / target-moved / order-edit）。
 /// 开仓、加仓、减仓、平仓以交易所导入的成交为准，AI 一律不碰。
@@ -1662,13 +1662,18 @@ pub struct ParsedTradeTag {
 
 /// 校验标签建议（不整体失败，逐条丢弃不可信项）：name 命中词表（忽略大小写与
 /// 空白差异）、quote 必须逐字来自某张卡原文（优先 cardIndex 指向的卡）、按 name
-/// 去重、最多 15 条。词表为空（用户还没建标签）时直接返回空。
+/// 去重、最多 15 条。词表为空且没有 instruction 时直接返回空。
+/// instruction（用户可教重试，0.3.6）：name 逐字出现在用户输入的要求文本里也放行
+/// ——用户亲手写下这个名字就是授权创建，应用侧有 defensive createTag 兜底；
+/// 无 instruction 的常规跑维持严格词表，模型造的名字一律丢弃。
 pub fn parse_trade_tags(
     content: &str,
     cards: &[(String, String)],
     vocabulary: &[String],
+    instruction: Option<&str>,
 ) -> Vec<ParsedTradeTag> {
-    if vocabulary.is_empty() {
+    let instruction = instruction.map(str::trim).filter(|text| !text.is_empty());
+    if vocabulary.is_empty() && instruction.is_none() {
         return Vec::new();
     }
     let Ok(parsed) = serde_json::from_str::<Value>(extract_json_object(content)) else {
@@ -1692,12 +1697,21 @@ pub fn parse_trade_tags(
         else {
             continue;
         };
-        let Some(name) = vocab
+        let name = match vocab
             .iter()
             .find(|(key, _)| *key == normalize(raw_name))
             .map(|(_, original)| original.clone())
-        else {
-            continue;
+        {
+            Some(canonical) => canonical,
+            // 词表外名字：只有用户 instruction 里逐字写过才放行（用户教的新标签）
+            None => match instruction
+                .as_deref()
+                .map(|text| text.to_lowercase().contains(&normalize(raw_name)))
+                .unwrap_or(false)
+            {
+                true => raw_name.to_string(),
+                false => continue,
+            },
         };
         if out.iter().any(|tag| tag.name == name) {
             continue;
@@ -2809,7 +2823,7 @@ mod tests {
             {"name":"仓位过重"},
             {"name":"FOMO","quote":"仓位有点过重了"}
         ]}"#;
-        let tags = parse_trade_tags(content, &cards, &vocabulary);
+        let tags = parse_trade_tags(content, &cards, &vocabulary, None);
         // 命中：突破（cardIndex 定位）；FOMO（无 cardIndex → 全文找第一张含原话的卡）。
         // 丢弃：quote 与 cardIndex 错位（仓位过重@card-1）、不在词表、quote 无处可寻、
         // 缺 quote、重名去重。
@@ -2819,9 +2833,32 @@ mod tests {
         assert_eq!(tags[0].signal.as_deref(), Some("区间上沿突破"));
         assert_eq!(tags[1].name, "FOMO");
         assert_eq!(tags[1].card_id, "card-1");
-        // 空词表 → 直接空（用户还没建标签）
-        assert!(parse_trade_tags(content, &cards, &[]).is_empty());
+        // 空词表且无 instruction → 直接空（用户还没建标签）
+        assert!(parse_trade_tags(content, &cards, &[], None).is_empty());
         // 输出里没有 tradeTags 字段 → 空，不报错
-        assert!(parse_trade_tags(r#"{"suggestions":[]}"#, &cards, &vocabulary).is_empty());
+        assert!(parse_trade_tags(r#"{"suggestions":[]}"#, &cards, &vocabulary, None).is_empty());
+    }
+
+    #[test]
+    fn parse_trade_tags_instruction_allows_new_names() {
+        let cards = vec![("card-1".to_string(), "追高了，情绪一上头就进去了".to_string())];
+        let content = r#"{"suggestions":[],"tradeTags":[
+            {"cardIndex":1,"name":"追高","quote":"追高了"},
+            {"cardIndex":1,"name":"情绪上头","quote":"情绪一上头就进去了"},
+            {"cardIndex":1,"name":"完全没提过","quote":"追高了"}
+        ]}"#;
+        // 无 instruction：词表外名字一律丢弃
+        assert!(parse_trade_tags(content, &cards, &[], None).is_empty());
+        // instruction 里逐字写过的名字放行（用户教的新标签），没写过的仍丢弃
+        let tags = parse_trade_tags(
+            content,
+            &cards,
+            &[],
+            Some("加一个「追高」标签和一个「情绪上头」标签"),
+        );
+        assert_eq!(tags.len(), 2);
+        assert_eq!(tags[0].name, "追高");
+        assert_eq!(tags[1].name, "情绪上头");
+        assert!(!tags.iter().any(|tag| tag.name == "完全没提过"));
     }
 }

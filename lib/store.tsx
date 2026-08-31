@@ -77,8 +77,9 @@ interface CairnStore {
   analyzeCaseCard: (cardId: string, instruction?: string, options?: { registerTask?: boolean }) => Promise<CaseCard | undefined>
   /** AI 重拆一张已有卡（三个点菜单）：原卡替换为多张新卡；拆不动时抛错、原卡不动。 */
   resplitCaseCard: (cardId: string) => Promise<number>
-  /** 重跑 AI 持仓管理补录建议（绑定 Trade 后自动触发，也可手动）。只吸收建议字段。 */
-  refreshCaseExecutionSuggestions: (caseId: string) => Promise<void>
+  /** 重跑 AI 持仓管理补录建议（绑定 Trade 后自动触发，也可手动）。只吸收建议字段。
+   *  instruction：标签建议的可教重试（补充要求 + 标签现状一起发给 AI）。 */
+  refreshCaseExecutionSuggestions: (caseId: string, instruction?: string) => Promise<void>
   /** 更新单条建议状态（accepted 带生成的 executionId / dismissed 带时间）。 */
   setCaseExecutionSuggestionStatus: (
     caseId: string,
@@ -564,7 +565,7 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
   /** 重跑持仓管理补录建议：只吸收 aiExecutionSuggestions / aiTagSuggestions 字段——请求期间
    *  本地的标题/状态/标签修改不被回滚（与 analyzeCaseCard 同一吸收模式）。
    *  失败不 reject，写入 aiTasks.checkErrorByCase，由面板就地显示。 */
-  const refreshCaseExecutionSuggestions = useCallback(async (caseId: string): Promise<void> => {
+  const refreshCaseExecutionSuggestions = useCallback(async (caseId: string, instruction?: string): Promise<void> => {
     setAiTasks((prev) => {
       const checkErrorByCase = { ...prev.checkErrorByCase }
       delete checkErrorByCase[caseId]
@@ -576,7 +577,7 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
     })
     const taskId = beginAiTask({ kind: 'suggestions', label: '补录建议', targetType: 'case', targetId: caseId })
     try {
-      const updated = await suggestCaseExecutionsRemote(caseId)
+      const updated = await suggestCaseExecutionsRemote(caseId, instruction)
       setCases((prev) => prev.map((item) => {
         if (item.id !== updated.id) return item
         return {
