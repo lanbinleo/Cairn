@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { ArrowRightLeft, ChevronDown, ChevronRight, MoreHorizontal, Pencil, Split, Sparkles, Trash2 } from 'lucide-react'
 
 import { CaseCardAnalysisView, EditableHighlightedCaseCardText, HighlightedCaseCardText } from '@/components/case-card-analysis'
+import { useConfirm } from '@/components/confirm-dialog-provider'
 import { RelativeTime } from '@/components/relative-time'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -11,6 +12,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { toast } from '@/components/ui/sonner'
 import { Textarea } from '@/components/ui/textarea'
 import { CASE_PHASE_OPTIONS, caseCardDigest, caseEntryDecisionLabel, casePhaseLabel, displayPhaseForCaseCard, isCaseCardAnalysisStale } from '@/lib/cases'
 import { getDefaultAiConcurrency } from '@/lib/local-db'
@@ -54,6 +56,7 @@ interface CaseCardTimelineProps {
  */
 export function CaseCardTimeline({ cards, showMoveToCase = true, showBatchAnalyze = true, targetCardId }: CaseCardTimelineProps) {
   const { cases, analyzeCaseCard, resplitCaseCard, updateCaseCardText, updateCaseCardBarRef, deleteCaseCard, updateCaseCardAnalysis, moveCaseCard, beginAiTask, completeAiTask } = useCairn()
+  const confirm = useConfirm()
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set())
   const [editingCardId, setEditingCardId] = useState<string | null>(null)
   const [editText, setEditText] = useState('')
@@ -113,7 +116,12 @@ export function CaseCardTimeline({ cards, showMoveToCase = true, showBatchAnalyz
   async function runAnalysis(cardId: string, instruction?: string, options?: { registerTask?: boolean }) {
     const card = cards.find((item) => item.id === cardId)
     if (card?.aiAnalysis?.userAdjusted && !instruction) {
-      if (!window.confirm('重新识别会覆盖你手动调整过的标签与 memo，继续？')) return
+      const ok = await confirm({
+        title: '重新识别这张卡？',
+        description: '会覆盖你手动调整过的标签与 memo。',
+        confirmText: '重新识别',
+      })
+      if (!ok) return
     }
     setAnalysisErrors((prev) => {
       if (!prev[cardId]) return prev
@@ -171,10 +179,16 @@ export function CaseCardTimeline({ cards, showMoveToCase = true, showBatchAnalyz
   /** AI 重拆一张已有卡（三个点菜单）：原卡替换为多张新卡；失败原因就地显示（任务中心也有）。 */
   async function runResplit(card: CaseCard) {
     if (resplittingCardIds.has(card.id)) return
-    if (!window.confirm('将这张卡拆成多张？原卡会被替换（可从备份恢复），AI 识别会重新跑。')) return
+    const ok = await confirm({
+      title: '将这张卡拆成多张？',
+      description: '原卡会被替换（可从备份恢复），AI 识别会重新跑。',
+      confirmText: '开始重拆',
+    })
+    if (!ok) return
     setResplittingCardIds((prev) => new Set(prev).add(card.id))
     try {
-      await resplitCaseCard(card.id)
+      const created = await resplitCaseCard(card.id)
+      toast.success(`已拆成 ${created} 张卡`)
     } catch (error) {
       setAnalysisErrors((prev) => ({ ...prev, [card.id]: error instanceof Error ? error.message : String(error) }))
     } finally {
@@ -329,9 +343,17 @@ export function CaseCardTimeline({ cards, showMoveToCase = true, showBatchAnalyz
                                 <DropdownMenuItem
                                   variant="destructive"
                                   onClick={() => {
-                                    if (window.confirm('删除这张卡片？原文与 AI 分析一起移除（软删除，可从备份恢复）。')) {
-                                      deleteCaseCard(card.id)
-                                    }
+                                    void confirm({
+                                      title: '删除这张卡片？',
+                                      description: '原文与 AI 分析一起移除（软删除，可从备份恢复）。',
+                                      confirmText: '删除',
+                                      destructive: true,
+                                    }).then((ok) => {
+                                      if (ok) {
+                                        deleteCaseCard(card.id)
+                                        toast.success('已删除卡片')
+                                      }
+                                    })
                                   }}
                                 >
                                   <Trash2 />

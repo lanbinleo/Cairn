@@ -3,6 +3,7 @@
 import { useState } from 'react'
 import { Pencil, Trash2 } from 'lucide-react'
 
+import { useConfirm } from '@/components/confirm-dialog-provider'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -17,6 +18,7 @@ import { Field, FieldDescription, FieldGroup, FieldLabel } from '@/components/ui
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
+import { toast } from '@/components/ui/sonner'
 import { useCairn } from '@/lib/store'
 import type { Account, AccountKind } from '@/lib/types'
 
@@ -28,6 +30,7 @@ export function EditAccountDialog({
   size?: 'default' | 'icon-sm'
 }) {
   const { updateAccount, deleteAccount } = useCairn()
+  const confirm = useConfirm()
   const [open, setOpen] = useState(false)
 
   const [name, setName] = useState(account.name)
@@ -130,10 +133,17 @@ export function EditAccountDialog({
           <Button
             variant="destructive"
             onClick={() => {
-              if (window.confirm(`删除账户「${account.name}」？相关 Period 和 Trade 也会删除。`)) {
+              void confirm({
+                title: `删除账户「${account.name}」？`,
+                description: '相关 Period 和 Trade 也会一起删除（可从备份恢复）。',
+                confirmText: '删除',
+                destructive: true,
+              }).then((ok) => {
+                if (!ok) return
                 deleteAccount(account.id)
                 setOpen(false)
-              }
+                toast.success('已删除账户')
+              })
             }}
           >
             <Trash2 data-icon="inline-start" />

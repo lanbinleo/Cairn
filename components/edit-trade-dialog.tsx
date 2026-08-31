@@ -4,6 +4,7 @@ import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } f
 import { Check, ChevronDown, ChevronRight, GripVertical, Pencil, Plus, RotateCcw, Trash2 } from 'lucide-react'
 
 import { TAG_COLORS, tagColorClasses, tagColorNames, tagDotClasses } from '@/components/tag-badge'
+import { useConfirm } from '@/components/confirm-dialog-provider'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
@@ -37,6 +38,7 @@ import {
   orderTypeLabel,
 } from '@/lib/executions'
 import { fmtPrice, fmtUtcDate, fmtUtcTime } from '@/lib/format'
+import { toast } from '@/components/ui/sonner'
 import { useCairn } from '@/lib/store'
 import { findTagByName, normalizeTagName, sortTagDefsByColor, sortTagNamesByColor, tagNamesEqual, uniqueTagNames } from '@/lib/tags'
 import type { Execution, ExecutionAction, OrderType, TagColor, Trade } from '@/lib/types'
@@ -170,6 +172,7 @@ export function EditTradeDialog({
   prefill?: { execution: Execution; nonce: number } | null
 }) {
   const { updateTrade, deleteTrade, tagDefs, createTag, setTradeStatus } = useCairn()
+  const confirm = useConfirm()
   const [open, setOpen] = useState(false)
   const [activeTab, setActiveTab] = useState('basic')
 
@@ -759,10 +762,17 @@ export function EditTradeDialog({
             <Button
               variant="destructive"
               onClick={() => {
-                if (window.confirm(`删除 Trade #${trade.seq}？`)) {
+                void confirm({
+                  title: `删除 Trade #${trade.seq}？`,
+                  description: '相关执行、评估与关联会一起删除（可从备份恢复）。',
+                  confirmText: '删除',
+                  destructive: true,
+                }).then((ok) => {
+                  if (!ok) return
                   deleteTrade(trade.id)
                   setOpen(false)
-                }
+                  toast.success('已删除 Trade')
+                })
               }}
             >
               <Trash2 data-icon="inline-start" />

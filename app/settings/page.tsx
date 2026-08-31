@@ -13,11 +13,13 @@ import { PageHeader } from '@/components/page-header'
 import { CreateSymbolDialog } from '@/components/create-symbol-dialog'
 import { BackupCard } from '@/components/backup-card'
 import { AiProviderBadge, AiProviderDialog } from '@/components/ai-provider-dialog'
+import { useConfirm } from '@/components/confirm-dialog-provider'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { toast } from '@/components/ui/sonner'
 import {
   Select,
   SelectContent,
@@ -74,6 +76,7 @@ function SettingRow({
 export default function SettingsPage() {
   const { theme, setTheme } = useTheme()
   const { symbols, trades, deleteSymbol } = useCairn()
+  const confirm = useConfirm()
   const [mounted, setMounted] = useState(false)
   const [logs, setLogs] = useState('')
   const [logPath, setLogPath] = useState('')
@@ -100,7 +103,6 @@ export default function SettingsPage() {
   const [proxyModeDraft, setProxyModeDraft] = useState<'system' | 'manual' | 'off'>('system')
   const [proxyUrlDraft, setProxyUrlDraft] = useState('http://127.0.0.1:7890')
   const [effectiveProxy, setEffectiveProxy] = useState<string | undefined>()
-  const [networkMessage, setNetworkMessage] = useState('')
   const [savingNetwork, setSavingNetwork] = useState(false)
 
   useEffect(() => setMounted(true), [])
@@ -137,14 +139,13 @@ export default function SettingsPage() {
 
   async function saveProxyConfig() {
     setSavingNetwork(true)
-    setNetworkMessage('')
     try {
       const saved = await saveNetworkSettings({ mode: proxyModeDraft, proxyUrl: proxyUrlDraft })
       setProxyUrlDraft(saved.proxyUrl)
       setEffectiveProxy(saved.effectiveProxyUrl)
-      setNetworkMessage('已保存，出站请求立即走新配置。')
+      toast.success('已保存，出站请求立即走新配置。')
     } catch (error) {
-      setNetworkMessage(`保存失败：${String(error)}`)
+      toast.error(`保存失败：${String(error)}`)
     } finally {
       setSavingNetwork(false)
     }
@@ -155,6 +156,7 @@ export default function SettingsPage() {
       setAiProviders(await setDefaultAiProvider(id))
     } catch (error) {
       console.warn('[cairn] set default provider failed:', error)
+      toast.error('设置默认 Provider 失败，请重试。')
     }
   }
 
@@ -174,22 +176,27 @@ export default function SettingsPage() {
     try {
       const status = await setApiConfig(apiEnabledDraft, port)
       applyApiStatus(status)
-      setApiMessage('配置已保存；重启应用后生效。')
+      toast.success('配置已保存，重启应用后生效。')
     } catch (error) {
-      setApiMessage(`保存失败：${String(error)}`)
+      toast.error(`保存失败：${String(error)}`)
     } finally {
       setSavingApi(false)
     }
   }
 
   async function refreshApiToken() {
-    if (!window.confirm('重新生成 token 后，现有脚本需要更新为新 token 才能继续写入。确定重新生成？')) return
+    const ok = await confirm({
+      title: '重新生成访问 Token？',
+      description: '现有脚本需要更新为新 token 才能继续写入。',
+      confirmText: '重新生成',
+    })
+    if (!ok) return
     try {
       const status = await regenerateApiToken()
       applyApiStatus(status)
-      setApiMessage('token 已重新生成。')
+      toast.success('token 已重新生成，请更新浮窗脚本。')
     } catch (error) {
-      setApiMessage(`重新生成失败：${String(error)}`)
+      toast.error(`重新生成失败：${String(error)}`)
     }
   }
 
@@ -396,7 +403,16 @@ export default function SettingsPage() {
                           size="icon-sm"
                           aria-label={`删除品种 ${s.exchange}:${s.code}`}
                           onClick={() => {
-                            if (window.confirm(`删除品种「${s.exchange}:${s.code}」？`)) deleteSymbol(s.id)
+                            void confirm({
+                              title: `删除品种「${s.exchange}:${s.code}」？`,
+                              confirmText: '删除',
+                              destructive: true,
+                            }).then((ok) => {
+                              if (ok) {
+                                deleteSymbol(s.id)
+                                toast.success('已删除品种')
+                              }
+                            })
                           }}
                         >
                           <Trash2 />
@@ -688,7 +704,6 @@ export default function SettingsPage() {
                     />
                   </SettingRow>
                 )}
-                {networkMessage && <div className="text-xs text-muted-foreground">{networkMessage}</div>}
                 {proxyModeDraft === 'system' && (
                   <p className="mt-2 text-xs text-muted-foreground">
                     {effectiveProxy ? `已检测到系统代理：${effectiveProxy}` : '未检测到系统代理，将直连'}
@@ -824,9 +839,19 @@ export default function SettingsPage() {
                           aria-label={`删除 ${provider.name}`}
                           onClick={(event) => {
                             event.stopPropagation()
-                            if (window.confirm(`删除 AI Provider「${provider.name}」？`)) {
-                              void deleteAiProvider(provider.id).then(setAiProviders)
-                            }
+                            void confirm({
+                              title: `删除 AI Provider「${provider.name}」？`,
+                              confirmText: '删除',
+                              destructive: true,
+                            }).then((ok) => {
+                              if (!ok) return
+                              void deleteAiProvider(provider.id)
+                                .then((next) => {
+                                  setAiProviders(next)
+                                  toast.success('已删除 Provider')
+                                })
+                                .catch((error) => toast.error(`删除失败：${String(error)}`))
+                            })
                           }}
                         >
                           <Trash2 />

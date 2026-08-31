@@ -9,11 +9,13 @@ import { CaseExecutionSuggestions } from '@/components/case-execution-suggestion
 import { CaseSummaryCard } from '@/components/case-summary-card'
 import { CaseTagSuggestions } from '@/components/case-tag-suggestions'
 import { BindingSuggestForTrade } from '@/components/binding-suggestions'
+import { useConfirm } from '@/components/confirm-dialog-provider'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Field, FieldDescription, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
+import { toast } from '@/components/ui/sonner'
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { CASE_PROVENANCE_OPTIONS, caseStatusLabel } from '@/lib/cases'
 import { useCairn } from '@/lib/store'
@@ -73,6 +75,7 @@ export function TradeCasePanel({
     createCaseBinding,
     deleteCaseBinding,
   } = useCairn()
+  const confirm = useConfirm()
   const [selectedCaseId, setSelectedCaseId] = useState('')
   const [newTitle, setNewTitle] = useState(`Trade #${String(trade.seq).padStart(3, '0')} Case`)
   const [provenance, setProvenance] = useState<CaseProvenance>('forward')
@@ -132,11 +135,16 @@ export function TradeCasePanel({
 
   async function unbindCase() {
     if (!binding || !caseRecord) return
-    if (!window.confirm(`解除 Trade #${String(trade.seq).padStart(3, '0')} 与 Case「${caseRecord.title}」的关联？`)) return
+    const ok = await confirm({
+      title: `解除 Trade #${String(trade.seq).padStart(3, '0')} 与 Case「${caseRecord.title}」的关联？`,
+      confirmText: '解除关联',
+    })
+    if (!ok) return
     setBusy(true)
     setError('')
     try {
       await deleteCaseBinding(binding.id)
+      toast.success('已解除关联')
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause))
     } finally {

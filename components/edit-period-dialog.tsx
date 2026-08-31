@@ -3,6 +3,7 @@
 import { useState } from 'react'
 import { Pencil, Trash2 } from 'lucide-react'
 
+import { useConfirm } from '@/components/confirm-dialog-provider'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -16,6 +17,7 @@ import {
 import { Field, FieldDescription, FieldGroup, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
+import { toast } from '@/components/ui/sonner'
 import { useCairn } from '@/lib/store'
 import type { Period } from '@/lib/types'
 
@@ -40,6 +42,7 @@ export function EditPeriodDialog({
   size?: 'default' | 'icon-sm'
 }) {
   const { updatePeriod, deletePeriod } = useCairn()
+  const confirm = useConfirm()
   const [open, setOpen] = useState(false)
 
   const [name, setName] = useState(period.name)
@@ -135,10 +138,17 @@ export function EditPeriodDialog({
           <Button
             variant="destructive"
             onClick={() => {
-              if (window.confirm(`删除 Period「${period.name}」？相关 Trade 也会删除。`)) {
+              void confirm({
+                title: `删除 Period「${period.name}」？`,
+                description: '相关 Trade 也会一起删除（可从备份恢复）。',
+                confirmText: '删除',
+                destructive: true,
+              }).then((ok) => {
+                if (!ok) return
                 deletePeriod(period.id)
                 setOpen(false)
-              }
+                toast.success('已删除 Period')
+              })
             }}
           >
             <Trash2 data-icon="inline-start" />

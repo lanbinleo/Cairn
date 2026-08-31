@@ -8,6 +8,7 @@ import { CaseTagBadge } from '@/components/case-tag-badge'
 import { CaseCardTimeline } from '@/components/case-card-timeline'
 import { CaseSummaryCard } from '@/components/case-summary-card'
 import { BindingSuggestForCase } from '@/components/binding-suggestions'
+import { useConfirm } from '@/components/confirm-dialog-provider'
 import { ManageCaseTagsDialog } from '@/components/manage-case-tags-dialog'
 import { RelativeTime } from '@/components/relative-time'
 import { Badge } from '@/components/ui/badge'
@@ -16,6 +17,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Field, FieldDescription, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { toast } from '@/components/ui/sonner'
 import { Separator } from '@/components/ui/separator'
 import { Textarea } from '@/components/ui/textarea'
 import {
@@ -47,6 +49,7 @@ const PHASE_TONES: Record<CaseCardPhase, string> = {
 export default function CaseDetailPage() {
   const { caseId = '' } = useParams()
   const navigate = useNavigate()
+  const confirm = useConfirm()
   const {
     accounts,
     periods,
@@ -195,10 +198,17 @@ export default function CaseDetailPage() {
             variant="ghost"
             className="text-muted-foreground hover:text-destructive"
             onClick={() => {
-              if (window.confirm(`删除 Case「${caseRecord.title}」及其全部 Cards？`)) {
+              void confirm({
+                title: `删除 Case「${caseRecord.title}」？`,
+                description: '其全部 Cards 会一起删除（软删除，可从备份恢复）。',
+                confirmText: '删除',
+                destructive: true,
+              }).then((ok) => {
+                if (!ok) return
                 deleteCase(caseRecord.id)
                 navigate('/cases')
-              }
+                toast.success('已删除 Case')
+              })
             }}
           >
             <Trash2 data-icon="inline-start" />删除
