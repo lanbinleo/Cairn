@@ -5,6 +5,7 @@
  */
 
 import { caseCardDigest } from './cases'
+import { feeRatesForAccount } from './fee'
 import { computeTradeMetrics } from './metrics'
 import { fmtDuration, fmtMoney, fmtNum, fmtQty, fmtR, fmtUtcDateTime } from './format'
 import type { Account, CaseCard, Period, Trade, TradeCase, TradingSymbol } from './types'
@@ -57,7 +58,7 @@ export function buildCaseSummaryContext(input: CaseSummaryContextInput): string 
   if (meta.length > 0) lines.push(meta.join(' · '))
 
   if (trade) {
-    const m = computeTradeMetrics(trade)
+    const m = computeTradeMetrics(trade, account ? feeRatesForAccount(account) : undefined)
     // 数字一律格式化后再进上下文：浮点噪声（2.4425999999999997）会被模型原样复述
     const price = (value: number) => fmtNum(value, symbol?.pricePrecision ?? 6)
     const direction = trade.direction === 'long' ? '做多' : '做空'
@@ -66,7 +67,7 @@ export function buildCaseSummaryContext(input: CaseSummaryContextInput): string 
     if (m.entryTime > 0 && m.exitTime > 0) {
       lines.push(`开仓 ${fmtUtcDateTime(m.entryTime, false)} @ ${price(m.avgEntry)} · 平仓 ${fmtUtcDateTime(m.exitTime, false)} @ ${price(m.avgExit)} · 持仓 ${fmtDuration(m.durationMs)}`)
     }
-    lines.push(`总仓位 ${fmtQty(m.totalQuantity)} · 盈亏 ${fmtMoney(m.pnl)} · R（初始风险）${fmtR(m.rMultiple)} · R（实际风险）${fmtR(m.rActual)}`)
+    lines.push(`总仓位 ${fmtQty(m.totalQuantity)} · 盈亏 ${fmtMoney(m.pnl)}${m.fees > 0 ? `（含手续费 ${fmtMoney(m.fees)}，毛盈亏 ${fmtMoney(m.grossPnl)}）` : ''} · R（初始风险）${fmtR(m.rMultiple)} · R（实际风险）${fmtR(m.rActual)}`)
     const plan: string[] = []
     if (trade.initialEntryPrice != null) plan.push(`入场 ${price(trade.initialEntryPrice)}`)
     if (trade.initialStopLoss != null) plan.push(`止损 ${price(trade.initialStopLoss)}`)

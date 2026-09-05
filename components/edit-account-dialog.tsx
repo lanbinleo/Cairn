@@ -20,6 +20,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { toast } from '@/components/ui/sonner'
 import { useCairn } from '@/lib/store'
+import { parseFeePctInput } from '@/lib/fee'
 import type { Account, AccountKind } from '@/lib/types'
 
 export function EditAccountDialog({
@@ -37,6 +38,8 @@ export function EditAccountDialog({
   const [kind, setKind] = useState<AccountKind>(account.kind)
   const [balance, setBalance] = useState(String(account.initialBalance))
   const [currency, setCurrency] = useState(account.currency)
+  const [takerFee, setTakerFee] = useState(account.takerFeePct != null ? String(account.takerFeePct) : '')
+  const [makerFee, setMakerFee] = useState(account.makerFeePct != null ? String(account.makerFeePct) : '')
   const [note, setNote] = useState(account.note ?? '')
 
   function resetForm() {
@@ -44,6 +47,8 @@ export function EditAccountDialog({
     setKind(account.kind)
     setBalance(String(account.initialBalance))
     setCurrency(account.currency)
+    setTakerFee(account.takerFeePct != null ? String(account.takerFeePct) : '')
+    setMakerFee(account.makerFeePct != null ? String(account.makerFeePct) : '')
     setNote(account.note ?? '')
   }
 
@@ -54,6 +59,8 @@ export function EditAccountDialog({
       kind,
       initialBalance: Number.isFinite(parsed) && parsed > 0 ? parsed : account.initialBalance,
       currency: currency.trim().toUpperCase() || account.currency,
+      takerFeePct: parseFeePctInput(takerFee),
+      makerFeePct: parseFeePctInput(makerFee),
       note: note.trim() === '' ? undefined : note.trim(),
     })
     setOpen(false)
@@ -122,6 +129,32 @@ export function EditAccountDialog({
             </Field>
           </div>
           <FieldDescription>修改初始资金会重算所有统计与资金曲线</FieldDescription>
+
+          <div className="grid grid-cols-2 gap-4">
+            <Field>
+              <FieldLabel htmlFor="edit-acc-taker-fee">Taker 费率 %</FieldLabel>
+              <Input
+                id="edit-acc-taker-fee"
+                type="number"
+                inputMode="decimal"
+                placeholder="如 0.05"
+                value={takerFee}
+                onChange={(e) => setTakerFee(e.target.value)}
+              />
+            </Field>
+            <Field>
+              <FieldLabel htmlFor="edit-acc-maker-fee">Maker 费率 %</FieldLabel>
+              <Input
+                id="edit-acc-maker-fee"
+                type="number"
+                inputMode="decimal"
+                placeholder="如 0.02"
+                value={makerFee}
+                onChange={(e) => setMakerFee(e.target.value)}
+              />
+            </Field>
+          </div>
+          <FieldDescription>按成交额逐笔计提（开平双边），PnL 与统计按净额；留空不计。修改费率会按新费率追溯重算该账户全部历史统计</FieldDescription>
 
           <Field>
             <FieldLabel htmlFor="edit-acc-note">备注</FieldLabel>

@@ -4,6 +4,7 @@ import { Link } from 'react-router-dom'
 
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { computeTradeMetrics } from '@/lib/metrics'
+import { feeRatesForAccount } from '@/lib/fee'
 import { fmtMoney, fmtPct } from '@/lib/format'
 import { useCairn } from '@/lib/store'
 import type { Trade } from '@/lib/types'
@@ -25,7 +26,7 @@ export function TradeTitle({
 }) {
   const { getAccount, getSymbolLabel } = useTradeTooltipData()
   const account = getAccount(trade.accountId)
-  const m = computeTradeMetrics(trade)
+  const m = computeTradeMetrics(trade, account ? feeRatesForAccount(account) : undefined)
   const pnlPct = account ? m.pnl / account.initialBalance : null
   const closed = trade.status === 'closed'
   const tone = !closed

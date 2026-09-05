@@ -17,6 +17,7 @@ import { parseNoteMentions } from './note-mentions'
 import { extractExplicitBarRef, isDefaultCaseTitle } from './cases'
 import { findTagByName, normalizeTagDefs, normalizeTagName, normalizeTradeTagNames, uniqueTagNames, tagNamesEqual } from './tags'
 import { firstPlausibleNumberIn } from './process-score'
+import { feeRatesForAccount } from './fee'
 import { computeTradeMetrics } from './metrics'
 import type { Account, AiTask, AiTaskEventPayload, Attachment, CaseCard, CaseCardAnalysis, CaseExecutionSuggestion, CaseSummary, CaseTagDef, CaseTagSuggestion, CaseTradeBinding, ChartCandle, ChartImport, ChartTimeframe, ImportBatch, Period, Trade, TradeCase, TagDef, TagColor } from './types'
 
@@ -1118,9 +1119,10 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
    */
   useEffect(() => {
     for (const account of accounts) {
+      const rates = feeRatesForAccount(account)
       const pnlSum = trades
         .filter((item) => item.accountId === account.id && item.status === 'closed')
-        .reduce((sum, item) => sum + computeTradeMetrics(item).pnl, 0)
+        .reduce((sum, item) => sum + computeTradeMetrics(item, rates).pnl, 0)
       const equity = account.initialBalance + pnlSum
       if (account.equity === equity) continue
       const next = { ...account, equity, equityUpdatedAt: Date.now() }

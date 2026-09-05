@@ -3,6 +3,7 @@
  */
 
 import { computeTradeMetrics } from './metrics'
+import { ZERO_FEE_RATES, type FeeRates } from './fee'
 import { savedProcessScoreTotal } from './process-score'
 import type { Trade } from './types'
 
@@ -57,11 +58,11 @@ export function tradeFilterChips(conditions: TradeFilterConditions): Array<{ key
   return chips
 }
 
-export function matchesTradeFilter(trade: Trade, conditions: TradeFilterConditions): boolean {
+export function matchesTradeFilter(trade: Trade, conditions: TradeFilterConditions, rates: FeeRates = ZERO_FEE_RATES): boolean {
   if (conditions.status != null && trade.status !== conditions.status) return false
 
   if (conditions.rMin != null || conditions.rMax != null) {
-    const { rMultiple } = computeTradeMetrics(trade)
+    const { rMultiple } = computeTradeMetrics(trade, rates)
     if (rMultiple == null) return false
     if (conditions.rMin != null && rMultiple < conditions.rMin) return false
     if (conditions.rMax != null && rMultiple > conditions.rMax) return false

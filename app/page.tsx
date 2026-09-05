@@ -13,12 +13,13 @@ import { Badge } from '@/components/ui/badge'
 import { Card, CardAction, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { useCairn } from '@/lib/store'
 import { computeStats, computeEquityCurve, computeTradeMetrics } from '@/lib/metrics'
+import { feeRatesForAccount, feeRatesResolverFor } from '@/lib/fee'
 import { fmtMoney, fmtPct, fmtDateRange } from '@/lib/format'
 
 export default function DashboardPage() {
   const { accounts, periods, trades } = useCairn()
   const totalInitial = accounts.reduce((s, a) => s + a.initialBalance, 0)
-  const stats = computeStats(trades, totalInitial)
+  const stats = computeStats(trades, totalInitial, feeRatesResolverFor(accounts))
   const totalEquity = totalInitial + stats.totalPnl
 
   const recentTrades = [...trades]
@@ -79,8 +80,8 @@ export default function DashboardPage() {
           <CardContent className="flex flex-col gap-1">
             {accounts.map((account) => {
               const accountTrades = trades.filter((t) => t.accountId === account.id)
-              const accountStats = computeStats(accountTrades, account.initialBalance)
-              const curve = computeEquityCurve(accountTrades, account.initialBalance)
+              const accountStats = computeStats(accountTrades, account.initialBalance, () => feeRatesForAccount(account))
+              const curve = computeEquityCurve(accountTrades, account.initialBalance, () => feeRatesForAccount(account))
               return (
                 <Link
                   key={account.id}
@@ -127,7 +128,7 @@ export default function DashboardPage() {
             {recentPeriods.map((period) => {
               const account = accounts.find((a) => a.id === period.accountId)
               const periodTrades = trades.filter((t) => t.periodId === period.id)
-              const periodStats = computeStats(periodTrades, account?.initialBalance ?? 0)
+              const periodStats = computeStats(periodTrades, account?.initialBalance ?? 0, account ? () => feeRatesForAccount(account) : undefined)
               return (
                 <Link
                   key={period.id}

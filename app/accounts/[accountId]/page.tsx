@@ -13,6 +13,7 @@ import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { useCairn } from '@/lib/store'
 import { computeStats, computeEquityCurve } from '@/lib/metrics'
+import { feeRatesForAccount } from '@/lib/fee'
 import { fmtMoney, fmtCompactMoney, fmtPct, fmtDateRange, fmtUtcDate } from '@/lib/format'
 
 export default function AccountDetailPage() {
@@ -22,8 +23,8 @@ export default function AccountDetailPage() {
   if (!account) return <Navigate to="/accounts" replace />
 
   const accountTrades = trades.filter((t) => t.accountId === account.id)
-  const stats = computeStats(accountTrades, account.initialBalance)
-  const curve = computeEquityCurve(accountTrades, account.initialBalance)
+  const stats = computeStats(accountTrades, account.initialBalance, () => feeRatesForAccount(account))
+  const curve = computeEquityCurve(accountTrades, account.initialBalance, () => feeRatesForAccount(account))
   const accountPeriods = periods
     .filter((p) => p.accountId === account.id)
     .sort((a, b) => b.chartStart - a.chartStart)
@@ -98,7 +99,7 @@ export default function AccountDetailPage() {
         <CardContent className="flex flex-col gap-1">
           {accountPeriods.map((period) => {
             const periodTrades = trades.filter((t) => t.periodId === period.id)
-            const pStats = computeStats(periodTrades, account.initialBalance)
+            const pStats = computeStats(periodTrades, account.initialBalance, () => feeRatesForAccount(account))
             return (
               <div
                 key={period.id}

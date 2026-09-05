@@ -9,6 +9,7 @@ import { TradeTitle } from '@/components/trade-title'
 import { TagBadge } from '@/components/tag-badge'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { computeTradeMetrics, equityBeforeByTrade } from '@/lib/metrics'
+import { feeRatesForAccount, feeRatesResolverFor } from '@/lib/fee'
 import { fmtUtcDateTime, fmtDuration } from '@/lib/format'
 import { useCairn } from '@/lib/store'
 import { sortTagNamesByColor } from '@/lib/tags'
@@ -71,6 +72,7 @@ export function TradesTable({
 }) {
   const { getAccount, getPeriod, symbols, tagDefs, accounts, trades: allTrades } = useCairn()
   const sorted = [...trades].sort((a, b) => computeTradeMetrics(b).entryTime - computeTradeMetrics(a).entryTime)
+  const ratesFor = useMemo(() => feeRatesResolverFor(accounts), [accounts])
   /**
    * 每笔入场前权益（PnL% 分母）。必须用全账户全量交易推导——trades prop 在
    * 调用方可能是筛选/分页/最近的子集，按子集累计会把分母重置回初始资金。
@@ -79,7 +81,7 @@ export function TradesTable({
     const merged = new Map<string, number>()
     for (const account of accounts) {
       const accountTrades = allTrades.filter((trade) => trade.accountId === account.id)
-      for (const [tradeId, equity] of equityBeforeByTrade(accountTrades, account.initialBalance)) {
+      for (const [tradeId, equity] of equityBeforeByTrade(accountTrades, account.initialBalance, () => feeRatesForAccount(account))) {
         merged.set(tradeId, equity)
       }
     }
@@ -110,7 +112,7 @@ export function TradesTable({
       </TableHeader>
       <TableBody>
         {sorted.map((trade) => {
-          const m = computeTradeMetrics(trade)
+          const m = computeTradeMetrics(trade, ratesFor(trade))
           const account = getAccount(trade.accountId)
           const period = getPeriod(trade.periodId)
           const symbol = symbols.find((x) => x.id === trade.symbolId)
