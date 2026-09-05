@@ -17,6 +17,8 @@ export interface Account {
   takerFeePct?: number
   /** Maker 手续费率（百分比数值：0.02 = 0.02%；缺省/0 不计费） */
   makerFeePct?: number
+  /** 临时关闭手续费（0.3.7）：费率保留，全部统计回到毛口径；删除即恢复净额 */
+  feesDisabled?: boolean
   note?: string
   /** 当前权益快照（initialBalance + 已平仓 PnL；派生数据，交易变化后由前端重算） */
   equity?: number

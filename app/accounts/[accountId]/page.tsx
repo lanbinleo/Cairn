@@ -1,7 +1,8 @@
 'use client'
 
+import { useState } from 'react'
 import { Link, Navigate, useParams } from 'react-router-dom'
-import { ChevronRight } from 'lucide-react'
+import { ChevronDown, ChevronRight } from 'lucide-react'
 
 import { PnlText } from '@/components/pnl-text'
 import { StatCard } from '@/components/stat-card'
@@ -11,14 +12,18 @@ import { EditPeriodDialog } from '@/components/edit-period-dialog'
 import { CreatePeriodDialog } from '@/components/create-period-dialog'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Switch } from '@/components/ui/switch'
+import { toast } from '@/components/ui/sonner'
 import { useCairn } from '@/lib/store'
 import { computeStats, computeEquityCurve } from '@/lib/metrics'
 import { feeRatesForAccount } from '@/lib/fee'
 import { fmtMoney, fmtCompactMoney, fmtPct, fmtDateRange, fmtUtcDate } from '@/lib/format'
+import { cn } from '@/lib/utils'
 
 export default function AccountDetailPage() {
   const { accountId = '' } = useParams()
-  const { getAccount, periods, trades, symbolLabel } = useCairn()
+  const { getAccount, periods, trades, symbolLabel, updateAccount } = useCairn()
+  const [feesOpen, setFeesOpen] = useState(false)
   const account = getAccount(accountId)
   if (!account) return <Navigate to="/accounts" replace />
 
@@ -156,6 +161,49 @@ export default function AccountDetailPage() {
             )
           })}
         </CardContent>
+      </Card>
+
+      {/* 手续费开关收在折叠区（0.3.7）：临时对比毛/净口径用，平时不打扰 */}
+      <Card>
+        <CardHeader>
+          <button
+            type="button"
+            className="flex w-full items-center justify-between gap-2 text-left"
+            aria-expanded={feesOpen}
+            onClick={() => setFeesOpen((v) => !v)}
+          >
+            <span className="flex flex-wrap items-center gap-2">
+              <CardTitle className="text-base">手续费</CardTitle>
+              <span className="text-sm text-muted-foreground">
+                {account.takerFeePct != null || account.makerFeePct != null
+                  ? `Taker ${account.takerFeePct ?? 0} % / Maker ${account.makerFeePct ?? 0} %`
+                  : '未配置费率'}
+              </span>
+              {account.feesDisabled && <Badge variant="secondary">已临时关闭</Badge>}
+            </span>
+            <ChevronDown className={cn('size-4 shrink-0 text-muted-foreground transition-transform', feesOpen && 'rotate-180')} />
+          </button>
+        </CardHeader>
+        {feesOpen && (
+          <CardContent>
+            <div className="flex items-center justify-between gap-4 rounded-lg border p-3">
+              <div className="flex flex-col gap-0.5">
+                <span className="text-sm font-medium">临时关闭手续费</span>
+                <span className="text-xs text-muted-foreground">
+                  关闭后该账户全部统计回到毛口径（PnL / 胜率 / R / 权益曲线）；费率保留，重新打开即恢复净额
+                </span>
+              </div>
+              <Switch
+                checked={account.feesDisabled ?? false}
+                disabled={!account.takerFeePct && !account.makerFeePct}
+                onCheckedChange={(checked) => {
+                  updateAccount(account.id, { feesDisabled: checked || undefined })
+                  toast.success(checked ? '已临时关闭手续费，统计回到毛口径' : '已恢复手续费，统计回到净额')
+                }}
+              />
+            </div>
+          </CardContent>
+        )}
       </Card>
     </div>
   )

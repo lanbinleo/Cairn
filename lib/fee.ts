@@ -17,7 +17,9 @@ export interface FeeRates {
 
 export const ZERO_FEE_RATES: FeeRates = { takerPct: 0, makerPct: 0 }
 
-export function feeRatesForAccount(account: Pick<Account, 'takerFeePct' | 'makerFeePct'>): FeeRates {
+/** 费率归一：未配置 = 不计费；feesDisabled（0.3.7 临时关闭）= 毛口径，费率配置保留 */
+export function feeRatesForAccount(account: Pick<Account, 'takerFeePct' | 'makerFeePct' | 'feesDisabled'>): FeeRates {
+  if (account.feesDisabled) return ZERO_FEE_RATES
   return {
     takerPct: account.takerFeePct ?? 0,
     makerPct: account.makerFeePct ?? 0,
@@ -26,7 +28,7 @@ export function feeRatesForAccount(account: Pick<Account, 'takerFeePct' | 'maker
 
 /** 混合账户集合的费率 resolver：dashboard / 交易列表等跨账户面用 */
 export function feeRatesResolverFor(
-  accounts: Array<Pick<Account, 'id' | 'takerFeePct' | 'makerFeePct'>>,
+  accounts: Array<Pick<Account, 'id' | 'takerFeePct' | 'makerFeePct' | 'feesDisabled'>>,
 ): (trade: { accountId: string }) => FeeRates | undefined {
   const byId = new Map(accounts.map((account) => [account.id, feeRatesForAccount(account)]))
   return (trade) => byId.get(trade.accountId)

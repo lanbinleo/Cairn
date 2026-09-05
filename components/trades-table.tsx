@@ -1,15 +1,19 @@
 'use client'
 
-import { useMemo, type ReactNode } from 'react'
+import { useMemo, useState, type ReactNode } from 'react'
 import { Link } from 'react-router-dom'
+import { Copy } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
+import { toast } from '@/components/ui/sonner'
 import { PnlText, RText } from '@/components/pnl-text'
 import { TradeTitle } from '@/components/trade-title'
 import { TagBadge } from '@/components/tag-badge'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { computeTradeMetrics, equityBeforeByTrade } from '@/lib/metrics'
 import { feeRatesForAccount, feeRatesResolverFor } from '@/lib/fee'
+import { buildTradesTableCopy } from '@/lib/trade-table-copy'
 import { fmtUtcDateTime, fmtDuration } from '@/lib/format'
 import { useCairn } from '@/lib/store'
 import { sortTagNamesByColor } from '@/lib/tags'
@@ -70,7 +74,8 @@ export function TradesTable({
   /** 是否显示 账户/Period 列（全局交易列表用） */
   showContext?: boolean
 }) {
-  const { getAccount, getPeriod, symbols, tagDefs, accounts, trades: allTrades } = useCairn()
+  const { getAccount, getPeriod, symbols, tagDefs, accounts, periods, trades: allTrades } = useCairn()
+  const [copied, setCopied] = useState(false)
   const sorted = [...trades].sort((a, b) => computeTradeMetrics(b).entryTime - computeTradeMetrics(a).entryTime)
   const ratesFor = useMemo(() => feeRatesResolverFor(accounts), [accounts])
   /**
@@ -93,8 +98,41 @@ export function TradesTable({
     return s ? `${s.exchange}:${s.code}` : symbolId
   }
 
+  /** 一键复制当前表格视图（含元数据，TSV）——粘进 Excel 是纯表格，粘给 AI 自带上下文 */
+  async function handleCopyTable() {
+    const text = buildTradesTableCopy({
+      trades,
+      accounts,
+      periods,
+      symbols,
+      tagDefs,
+      equityBefore,
+    })
+    try {
+      await navigator.clipboard?.writeText(text)
+      setCopied(true)
+      window.setTimeout(() => setCopied(false), 2000)
+      toast.success(`已复制 ${trades.length} 笔交易（含元数据）`)
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : String(error))
+    }
+  }
+
   return (
-    <Table className="table-fixed">
+    <div className="flex flex-col gap-2">
+      <div className="flex items-center justify-end">
+        <Button
+          variant="ghost"
+          size="sm"
+          className="h-7 gap-1 px-2 text-xs text-muted-foreground"
+          disabled={trades.length === 0}
+          onClick={() => void handleCopyTable()}
+        >
+          <Copy className="size-3.5" />
+          {copied ? '已复制' : '复制表格'}
+        </Button>
+      </div>
+      <Table className="table-fixed">
       <TableHeader>
         <TableRow>
           <TableHead className="w-28">交易</TableHead>
@@ -213,6 +251,7 @@ export function TradesTable({
           )
         })}
       </TableBody>
-    </Table>
+      </Table>
+    </div>
   )
 }

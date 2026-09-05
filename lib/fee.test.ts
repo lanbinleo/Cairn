@@ -33,6 +33,11 @@ describe('feeRatesForAccount', () => {
     expect(hasFeeRates(feeRatesForAccount({ takerFeePct: 0.05 }))).toBe(true)
     expect(hasFeeRates(feeRatesForAccount({ makerFeePct: 0.02 }))).toBe(true)
   })
+
+  it('feesDisabled 临时关闭：返回零费率（毛口径），配置保留', () => {
+    const rates = feeRatesForAccount({ takerFeePct: 0.05, makerFeePct: 0.02, feesDisabled: true })
+    expect(rates).toEqual({ takerPct: 0, makerPct: 0 })
+  })
 })
 
 describe('executionFee', () => {

@@ -10,7 +10,8 @@ Detailed per-file map of the codebase. AGENTS.md carries only the top-level orie
 | --- | --- |
 | Bar number ↔ UTC time math | `lib/bar-time.ts` (TS; `resolveCaseCardTimesForTrade` = trade-anchored card resolution) · `src-tauri/src/api.rs` `extract_bar_ref` (Rust twin) |
 | PnL / R / equity / drawdown / risk decomposition / PnL% base | `lib/metrics.ts` (incl. `equityBeforeByTrade`; net of fees since 0.3.7 — pass rates via `FeeRates`/`ratesFor`) |
-| Fees (taker/maker rates, per-fill estimation, order classification) | `lib/fee.ts` (`feeRatesForAccount`, `isTakerOrder`, `executionFee`, `feeRatesResolverFor`, `parseFeePctInput`); `feeOverride` on Execution = imported actual commission |
+| Fees (taker/maker rates, per-fill estimation, order classification) | `lib/fee.ts` (`feeRatesForAccount` 含 feesDisabled 临时关闭, `isTakerOrder`, `executionFee`, `feeRatesResolverFor`, `parseFeePctInput`); `feeOverride` on Execution = imported actual commission; 折叠开关在账户详情页底部 |
+| 交易表格一键复制（0.3.7，TSV + 元数据） | `lib/trade-table-copy.ts` (`buildTradesTableCopy`) · 按钮在 `components/trades-table.tsx` |
 | Case auto-close derivation | `lib/case-auto-close.ts` |
 | Import Case matching (green/yellow/red; chart-axis barRef + price corroboration) | `lib/case-import-matching.ts` (`analyzeCaseTradeMatch` shared with AI binding prefilter) |
 | Trade list advanced filter + presets | `lib/trade-filters.ts` + `components/trade-filter-menu.tsx` |
