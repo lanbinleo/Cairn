@@ -704,6 +704,55 @@ fn trade_action_lines(trade: &Value) -> Vec<(u64, String)> {
     lines
 }
 
+/// 绑定交易的概要与动作时间线（卡片分析背景与 AI 校对事实共用）。读不到绑定或
+/// 交易时返回空——辅助资料绝不阻塞调用方。
+fn bound_trade_lines(conn: &rusqlite::Connection, case_id: &str) -> Vec<String> {
+    let Ok(binding) = db::read_simple_collection(conn, "caseBindings") else {
+        return Vec::new();
+    };
+    let binding = binding
+        .into_iter()
+        .find(|item| item.get("caseId").and_then(Value::as_str) == Some(case_id));
+    let Some(binding) = binding else {
+        return Vec::new();
+    };
+    let Some(trade_id) = binding.get("tradeId").and_then(Value::as_str) else {
+        return Vec::new();
+    };
+    let Ok(Some(trade)) = db::read_trade_with_children(conn, trade_id) else {
+        return Vec::new();
+    };
+    let symbol_label = symbol_label_for_trade(conn, &trade);
+    let direction = match trade.get("direction").and_then(Value::as_str) {
+        Some("long") => "做多",
+        Some("short") => "做空",
+        _ => "交易",
+    };
+    let status = match trade.get("status").and_then(Value::as_str) {
+        Some("closed") => "已平仓",
+        _ => "持仓中",
+    };
+    let mut summary = format!("绑定交易：{direction}");
+    if let Some(symbol_label) = symbol_label {
+        summary.push_str(&format!("（{symbol_label}）"));
+    }
+    summary.push_str(&format!("，{status}"));
+    if let Some(entry) = trade.get("initialEntryPrice").and_then(Value::as_f64) {
+        summary.push_str(&format!("，计划入场 {}", fmt_num(entry)));
+    }
+    if let Some(stop) = trade.get("initialStopLoss").and_then(Value::as_f64) {
+        summary.push_str(&format!("，初始止损 {}", fmt_num(stop)));
+    }
+    if let Some(target) = trade.get("initialTakeProfit").and_then(Value::as_f64) {
+        summary.push_str(&format!("，初始止盈 {}", fmt_num(target)));
+    }
+    let mut lines = vec![summary];
+    for (time, line) in trade_action_lines(&trade).into_iter().take(24) {
+        lines.push(format!("{line}（{}）", format_utc_compact(time)));
+    }
+    lines
+}
+
 /// 卡片分析（prompt v3）的背景资料块：品种、绑定交易的成交动作、同 Case 前情卡片。
 /// 任一来源读取失败都降级为跳过该段——背景资料是辅助，绝不阻塞分析本身。
 fn card_context(conn: &rusqlite::Connection, card: &Value) -> String {
@@ -711,41 +760,7 @@ fn card_context(conn: &rusqlite::Connection, card: &Value) -> String {
         return String::new();
     };
     let card_created = card.get("createdAt").and_then(Value::as_u64).unwrap_or(0);
-    let mut lines: Vec<String> = Vec::new();
-
-    if let Ok(binding) = db::read_simple_collection(conn, "caseBindings") {
-        let binding = binding
-            .into_iter()
-            .find(|item| item.get("caseId").and_then(Value::as_str) == Some(case_id));
-        if let Some(binding) = binding {
-            if let Some(trade_id) = binding.get("tradeId").and_then(Value::as_str) {
-                if let Ok(Some(trade)) = db::read_trade_with_children(conn, trade_id) {
-                    let symbol_label = symbol_label_for_trade(conn, &trade);
-                    let direction = match trade.get("direction").and_then(Value::as_str) {
-                        Some("long") => "做多",
-                        Some("short") => "做空",
-                        _ => "交易",
-                    };
-                    let status = match trade.get("status").and_then(Value::as_str) {
-                        Some("closed") => "已平仓",
-                        _ => "持仓中",
-                    };
-                    let mut summary = format!("绑定交易：{direction}");
-                    if let Some(symbol_label) = symbol_label {
-                        summary.push_str(&format!("（{symbol_label}）"));
-                    }
-                    summary.push_str(&format!("，{status}"));
-                    if let Some(stop) = trade.get("initialStopLoss").and_then(Value::as_f64) {
-                        summary.push_str(&format!("，初始止损 {}", fmt_num(stop)));
-                    }
-                    lines.push(summary);
-                    for (time, line) in trade_action_lines(&trade).into_iter().take(24) {
-                        lines.push(format!("{line}（{}）", format_utc_compact(time)));
-                    }
-                }
-            }
-        }
-    }
+    let mut lines: Vec<String> = bound_trade_lines(conn, case_id);
 
     if let Ok(cards) = db::read_case_cards_for_case(conn, case_id) {
         let previous: Vec<&Value> = cards
@@ -2133,6 +2148,115 @@ fn apply_case_card_resplit(
     Ok(json!({ "caseId": case_id, "cards": cards }))
 }
 
+/// AI 重写草稿（GUI，0.3.7）：只出草稿、绝不落库——前端把草稿填进「编辑原文」
+/// 编辑器，用户过目/修改后保存才走正常的文本修正路径（rawTextHistory 入档、
+/// 旧分析标过期）。机械校验：长度比 30%–110% 且原文数字一个不丢，失败自动
+/// 修复一轮，仍失败报错。
+pub(crate) async fn run_card_rewrite_draft(
+    app: Option<&AppHandle>,
+    db: &db::Db,
+    card_id: &str,
+    instruction: Option<&str>,
+) -> Result<String, String> {
+    let (phase, raw_text, provider, model) = {
+        let conn = db.conn()?;
+        let card = db::read_record_by_id(&conn, "caseCards", card_id)?
+            .ok_or_else(|| format!("case card not found: {card_id}"))?;
+        let (provider, model) = app
+            .and_then(|app| ai::default_provider(app).ok().flatten())
+            .ok_or_else(|| "还没有默认 AI Provider，请在 设置 → AI 中配置".to_string())?;
+        let phase = card.get("phase").and_then(Value::as_str).unwrap_or("intermediate").to_string();
+        let raw_text = card
+            .get("rawText")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        (phase, raw_text, provider, model)
+    };
+    if let Some(app) = app {
+        ai::log_provider_event(app, format!("drafting rewrite for card {card_id} with {model}"));
+    }
+    let messages = ai::build_rewrite_messages(&phase, &raw_text, instruction);
+    let parse = |content: &str| ai::parse_rewrite_draft(content, &raw_text);
+    ai::chat_completion_validated(&provider, &model, &messages, parse, &|message: &str| {
+        if let Some(app) = app {
+            ai::log_provider_event(app, message.to_string());
+        }
+    })
+    .await
+    .map_err(|err| format!("重写草稿生成失败：{err}"))
+}
+
+/// AI 校对（GUI，0.3.7）：找出原文里「有把握是错误」的地方，返回 oldText→newText
+/// 替换对；机械校验 oldText 逐字子串。只出建议、绝不落库——前端逐条勾选套用，
+/// 应用即一次正常的文本修正（rawTextHistory 入档）。
+pub(crate) async fn run_card_proofread(
+    app: Option<&AppHandle>,
+    db: &db::Db,
+    card_id: &str,
+    instruction: Option<&str>,
+) -> Result<Vec<ai::ParsedCorrection>, String> {
+    let (phase, raw_text, facts, provider, model) = {
+        let conn = db.conn()?;
+        let card = db::read_record_by_id(&conn, "caseCards", card_id)?
+            .ok_or_else(|| format!("case card not found: {card_id}"))?;
+        let (provider, model) = app
+            .and_then(|app| ai::default_provider(app).ok().flatten())
+            .ok_or_else(|| "还没有默认 AI Provider，请在 设置 → AI 中配置".to_string())?;
+        let phase = card.get("phase").and_then(Value::as_str).unwrap_or("intermediate").to_string();
+        let raw_text = card
+            .get("rawText")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        let facts = match card.get("caseId").and_then(Value::as_str) {
+            Some(case_id) => bound_trade_lines(&conn, case_id).join("\n"),
+            None => String::new(),
+        };
+        (phase, raw_text, facts, provider, model)
+    };
+    if let Some(app) = app {
+        ai::log_provider_event(app, format!("proofreading card {card_id} with {model}"));
+    }
+    let messages = ai::build_proofread_messages(&phase, &raw_text, &facts, instruction);
+    let parse = |content: &str| ai::parse_proofread(content, &raw_text);
+    ai::chat_completion_validated(&provider, &model, &messages, parse, &|message: &str| {
+        if let Some(app) = app {
+            ai::log_provider_event(app, message.to_string());
+        }
+    })
+    .await
+    .map_err(|err| format!("AI 校对失败：{err}"))
+}
+
+#[tauri::command]
+async fn draft_case_card_rewrite(
+    app: AppHandle,
+    db: tauri::State<'_, db::Db>,
+    card_id: String,
+    instruction: Option<String>,
+) -> Result<Value, String> {
+    let text = run_card_rewrite_draft(Some(&app), &db, &card_id, instruction.as_deref()).await?;
+    Ok(json!({ "text": text }))
+}
+
+#[tauri::command]
+async fn proofread_case_card(
+    app: AppHandle,
+    db: tauri::State<'_, db::Db>,
+    card_id: String,
+    instruction: Option<String>,
+) -> Result<Value, String> {
+    let corrections = run_card_proofread(Some(&app), &db, &card_id, instruction.as_deref()).await?;
+    let items: Vec<Value> = corrections
+        .iter()
+        .map(|item| json!({ "oldText": item.old_text, "newText": item.new_text, "reason": item.reason }))
+        .collect();
+    Ok(json!({ "corrections": items }))
+}
+
 /// REST 批量拆卡入口（由 api server 循环分发；不进 handle_request 路由表——
 /// 它需要 AppHandle 走 AI，而 handle_request 保持无 GUI 依赖、测试二进制可链接）。
 /// 阻塞调用 AI（90s 超时上限；本地 API 单线程，拆分期间其他请求排队——浮窗是
@@ -2467,6 +2591,8 @@ pub fn run() {
             analyze_case_card,
             preview_case_card_resplit,
             apply_case_card_resplit,
+            draft_case_card_rewrite,
+            proofread_case_card,
             suggest_case_executions,
             ai_summarize_case,
             ai_suggest_bindings,
