@@ -4,6 +4,7 @@
  */
 
 import { hasPositionFill, isEntryExecution } from './executions'
+import { executionFee, ZERO_FEE_RATES, type FeeRates } from './fee'
 import type { Execution, Trade, TradeMetrics, EquityPoint, StatsSummary } from './types'
 
 const EPS = 1e-9
@@ -41,8 +42,15 @@ function segmentActualRisk(trade: Trade, entries: Array<Execution & { price: num
   return risk > EPS ? risk : null
 }
 
-/** 计算单个 Trade 的派生指标（基于其全部 Execution） */
-export function computeTradeMetrics(trade: Trade): TradeMetrics {
+/** 混合账户集合逐笔取费率的 resolver（单账户面可传 () => feeRatesForAccount(account)） */
+export type FeeRatesFor = (trade: Trade) => FeeRates | undefined
+
+/**
+ * 计算单个 Trade 的派生指标（基于其全部 Execution）。
+ * rates 缺省时不计手续费（pnl === grossPnl）；传入后 pnl 为净额，R 分子随之净额化，
+ * 风险分母仍是纯价格风险（不掺手续费）。
+ */
+export function computeTradeMetrics(trade: Trade, rates: FeeRates = ZERO_FEE_RATES): TradeMetrics {
   const execs = [...trade.executions].filter(hasPositionFill).sort(byTime)
   const sign = trade.direction === 'long' ? 1 : -1
 
@@ -50,10 +58,12 @@ export function computeTradeMetrics(trade: Trade): TradeMetrics {
   let entryCost = 0
   let exitQty = 0
   let exitProceeds = 0
+  let fees = 0
 
   for (const e of execs) {
     const quantity = e.quantity ?? 0
     const price = e.price ?? 0
+    fees += executionFee(e, rates)
     if (isEntryExecution(e)) {
       entryQty += quantity
       entryCost += quantity * price
@@ -65,9 +75,10 @@ export function computeTradeMetrics(trade: Trade): TradeMetrics {
 
   const avgEntry = entryQty > EPS ? entryCost / entryQty : 0
   const avgExit = exitQty > EPS ? exitProceeds / exitQty : 0
-  // 已实现盈亏：只对已平掉的数量计算
+  // 已实现盈亏：只对已平掉的数量计算；费用按全部持仓腿计提（入场腿的钱已真实付出）
   const closedQty = Math.min(entryQty, exitQty)
-  const pnl = sign * closedQty * (avgExit - avgEntry)
+  const grossPnl = sign * closedQty * (avgExit - avgEntry)
+  const pnl = grossPnl - fees
 
   const entries = execs.filter(isEntryExecution)
   const firstEntry = entries[0]
@@ -102,6 +113,8 @@ export function computeTradeMetrics(trade: Trade): TradeMetrics {
 
   return {
     pnl,
+    grossPnl,
+    fees,
     avgEntry,
     avgExit,
     totalQuantity: entryQty,
@@ -117,11 +130,11 @@ export function computeTradeMetrics(trade: Trade): TradeMetrics {
   }
 }
 
-/** 按平仓时间排序生成资金曲线（初始资金 + 逐笔累计已实现 PnL） */
-export function computeEquityCurve(trades: Trade[], initialBalance: number): EquityPoint[] {
+/** 按平仓时间排序生成资金曲线（初始资金 + 逐笔累计已实现净 PnL） */
+export function computeEquityCurve(trades: Trade[], initialBalance: number, ratesFor?: FeeRatesFor): EquityPoint[] {
   const closed = trades
     .filter((t) => t.status === 'closed')
-    .map((t) => ({ trade: t, m: computeTradeMetrics(t) }))
+    .map((t) => ({ trade: t, m: computeTradeMetrics(t, ratesFor?.(t)) }))
     .sort((a, b) => a.m.exitTime - b.m.exitTime)
 
   const points: EquityPoint[] = []
@@ -140,10 +153,10 @@ export function computeEquityCurve(trades: Trade[], initialBalance: number): Equ
  * 每笔已平仓交易「入场前」的权益（PnL% 的分母）：
  * 按平仓顺序倒推，initialBalance + 该笔之前所有已平仓交易的 PnL。
  */
-export function equityBeforeByTrade(trades: Trade[], initialBalance: number): Map<string, number> {
+export function equityBeforeByTrade(trades: Trade[], initialBalance: number, ratesFor?: FeeRatesFor): Map<string, number> {
   const closed = trades
     .filter((t) => t.status === 'closed')
-    .map((t) => ({ trade: t, m: computeTradeMetrics(t) }))
+    .map((t) => ({ trade: t, m: computeTradeMetrics(t, ratesFor?.(t)) }))
     .sort((a, b) => a.m.exitTime - b.m.exitTime)
   const result = new Map<string, number>()
   let equity = initialBalance
@@ -207,10 +220,10 @@ export function computeEquityMaByDays(points: EquityPoint[], n: number): EquityM
   return out
 }
 
-/** 一批 trades 的统计汇总 */
-export function computeStats(trades: Trade[], initialBalance: number): StatsSummary {
+/** 一批 trades 的统计汇总（全部按净额：胜率 / PF / 期望值 / 回撤随 pnl 净额化） */
+export function computeStats(trades: Trade[], initialBalance: number, ratesFor?: FeeRatesFor): StatsSummary {
   const closed = trades.filter((t) => t.status === 'closed')
-  const metrics = closed.map(computeTradeMetrics)
+  const metrics = closed.map((t) => computeTradeMetrics(t, ratesFor?.(t)))
 
   const wins = metrics.filter((m) => m.pnl > EPS)
   const losses = metrics.filter((m) => m.pnl < -EPS)
