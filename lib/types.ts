@@ -149,7 +149,7 @@ export interface CaseTagSuggestions {
  *  「需重试」不算完成——只有内建重试后的最终结果才落到 succeeded/failed。 */
 export interface AiTask {
   id: string
-  kind: 'analysis' | 'summary' | 'suggestions' | 'binding' | 'title' | 'split'
+  kind: 'analysis' | 'summary' | 'suggestions' | 'binding' | 'title' | 'split' | 'rewrite' | 'proofread'
   label: string
   status: 'running' | 'succeeded' | 'failed'
   startedAt: number

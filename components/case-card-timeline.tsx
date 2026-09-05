@@ -1,9 +1,10 @@
 'use client'
 
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { ArrowRightLeft, ChevronDown, ChevronRight, MoreHorizontal, Pencil, Split, Sparkles, Trash2 } from 'lucide-react'
+import { ArrowRightLeft, ChevronDown, ChevronRight, MoreHorizontal, Pencil, SpellCheck, Split, Sparkles, Trash2, WandSparkles } from 'lucide-react'
 
 import { CaseCardAnalysisView, EditableHighlightedCaseCardText, HighlightedCaseCardText } from '@/components/case-card-analysis'
+import { CaseCardCorrectionDialog, type CaseCardProofreadDraft } from '@/components/case-card-correction-dialog'
 import { useConfirm } from '@/components/confirm-dialog-provider'
 import { RelativeTime } from '@/components/relative-time'
 import { Badge } from '@/components/ui/badge'
@@ -52,11 +53,11 @@ interface CaseCardTimelineProps {
 
 /**
  * 心路历程时间线：Case 详情页与 Trade 详情 Case Tab 共用同一份可编辑视图
- * （错字修正、AI 识别、BAR 修正、标签整理、memo 修正、过期忽略、折叠展开）。
- * 排列按展示阶段分组、组内按创建顺序。
+ * （编辑原文 / AI 重写 / AI 校对、AI 识别、BAR 修正、标签整理、memo 修正、
+ * 过期忽略、折叠展开）。排列按展示阶段分组、组内按创建顺序。
  */
 export function CaseCardTimeline({ cards, showMoveToCase = true, showBatchAnalyze = true, targetCardId }: CaseCardTimelineProps) {
-  const { cases, analyzeCaseCard, previewCaseCardResplit, applyCaseCardResplit, updateCaseCardText, updateCaseCardBarRef, deleteCaseCard, updateCaseCardAnalysis, moveCaseCard, beginAiTask, completeAiTask } = useCairn()
+  const { cases, analyzeCaseCard, previewCaseCardResplit, applyCaseCardResplit, draftCaseCardRewrite, proofreadCaseCard, updateCaseCardText, updateCaseCardBarRef, deleteCaseCard, updateCaseCardAnalysis, moveCaseCard, beginAiTask, completeAiTask } = useCairn()
   const confirm = useConfirm()
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set())
   const [editingCardId, setEditingCardId] = useState<string | null>(null)
@@ -71,6 +72,11 @@ export function CaseCardTimeline({ cards, showMoveToCase = true, showBatchAnalyz
   /** 重拆预览会话（0.3.6 两步式）：AI 分段返回后打开对话框，确认才替换原卡 */
   const [resplitDraft, setResplitDraft] = useState<{ card: CaseCard; segments: { text: string; barRef: number | null }[] } | null>(null)
   const [resplitApplying, setResplitApplying] = useState(false)
+  /** AI 重写 / AI 校对（0.3.7）：草稿只填进「编辑原文」编辑器由用户落笔；校对
+   *  替换对在对话框里逐条勾选，套用才是一次文本修正 */
+  const [rewritingCardIds, setRewritingCardIds] = useState<Set<string>>(new Set())
+  const [proofreadingCardIds, setProofreadingCardIds] = useState<Set<string>>(new Set())
+  const [proofreadDraft, setProofreadDraft] = useState<CaseCardProofreadDraft | null>(null)
   const [analysisErrors, setAnalysisErrors] = useState<Record<string, string>>({})
   const [batchAnalyzing, setBatchAnalyzing] = useState(false)
   const highlightRef = useRef<HTMLDivElement | null>(null)
@@ -236,6 +242,56 @@ export function CaseCardTimeline({ cards, showMoveToCase = true, showBatchAnalyz
     }
   }
 
+  /** AI 重写（0.3.7）：草稿不落库，直接填进「编辑原文」编辑器——用户过目/修改后
+   *  保存才落笔（历史存档照旧）。失败原因就地显示（任务中心也有）。 */
+  async function runRewrite(card: CaseCard) {
+    if (rewritingCardIds.has(card.id)) return
+    setRewritingCardIds((prev) => new Set(prev).add(card.id))
+    try {
+      const text = await draftCaseCardRewrite(card.id)
+      setEditingCardId(card.id)
+      setEditText(text)
+      toast.success('草稿已生成，请过目后保存')
+    } catch (error) {
+      setAnalysisErrors((prev) => ({ ...prev, [card.id]: error instanceof Error ? error.message : String(error) }))
+    } finally {
+      setRewritingCardIds((prev) => {
+        const next = new Set(prev)
+        next.delete(card.id)
+        return next
+      })
+    }
+  }
+
+  /** AI 校对（0.3.7）：替换对候选进对话框逐条勾选；没有发现明显错误就不打扰。 */
+  async function runProofread(card: CaseCard) {
+    if (proofreadingCardIds.has(card.id)) return
+    setProofreadingCardIds((prev) => new Set(prev).add(card.id))
+    try {
+      const corrections = await proofreadCaseCard(card.id)
+      if (corrections.length === 0) {
+        toast.info('AI 未发现明显错误')
+        return
+      }
+      setProofreadDraft({ card, corrections })
+    } catch (error) {
+      setAnalysisErrors((prev) => ({ ...prev, [card.id]: error instanceof Error ? error.message : String(error) }))
+    } finally {
+      setProofreadingCardIds((prev) => {
+        const next = new Set(prev)
+        next.delete(card.id)
+        return next
+      })
+    }
+  }
+
+  /** 套用勾选的校对修正 = 一次正常文本修正（历史入档、AI 识别标过期） */
+  function applyProofread(cardId: string, nextText: string, count: number) {
+    updateCaseCardText(cardId, nextText)
+    setProofreadDraft(null)
+    toast.success(`已套用 ${count} 处修正（原表述已存档）`)
+  }
+
   function saveBarEdit(cardId: string) {
     const trimmed = barDraft.trim()
     if (trimmed === '') {
@@ -359,7 +415,21 @@ export function CaseCardTimeline({ cards, showMoveToCase = true, showBatchAnalyz
                                   }}
                                 >
                                   <Pencil />
-                                  修正原文错字
+                                  编辑原文
+                                </DropdownMenuItem>
+                                <DropdownMenuItem
+                                  disabled={rewritingCardIds.has(card.id)}
+                                  onClick={() => void runRewrite(card)}
+                                >
+                                  <WandSparkles />
+                                  {rewritingCardIds.has(card.id) ? '重写中…' : 'AI 重写'}
+                                </DropdownMenuItem>
+                                <DropdownMenuItem
+                                  disabled={proofreadingCardIds.has(card.id)}
+                                  onClick={() => void runProofread(card)}
+                                >
+                                  <SpellCheck />
+                                  {proofreadingCardIds.has(card.id) ? '校对中…' : 'AI 校对'}
                                 </DropdownMenuItem>
                                 {showMoveToCase && otherCases.length > 0 && (
                                   <DropdownMenuItem
@@ -435,15 +505,31 @@ export function CaseCardTimeline({ cards, showMoveToCase = true, showBatchAnalyz
                         )}
                         {editingCardId === card.id ? (
                           <div className="flex flex-col gap-2">
-                            <Textarea rows={5} value={editText} onChange={(event) => setEditText(event.target.value)} />
+                            <Textarea rows={8} value={editText} onChange={(event) => setEditText(event.target.value)} />
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="text-xs text-muted-foreground">
+                                保存后原表述自动进历史存档；AI 识别标记过期，可一键重跑
+                              </span>
+                              {editText !== card.rawText && (
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  className="h-7 shrink-0 text-muted-foreground"
+                                  title="放弃修改（含 AI 草稿），回到当前保存的原文"
+                                  onClick={() => setEditText(card.rawText)}
+                                >
+                                  恢复原文
+                                </Button>
+                              )}
+                            </div>
                             <div className="flex justify-end gap-2">
                               <Button variant="ghost" size="sm" onClick={() => setEditingCardId(null)}>取消</Button>
-                              <Button size="sm" disabled={!editText.trim()} onClick={() => {
+                              <Button size="sm" disabled={!editText.trim() || editText.trim() === card.rawText.trim()} onClick={() => {
                                 const trimmed = editText.trim()
                                 if (trimmed) updateCaseCardText(card.id, trimmed)
                                 setEditingCardId(null)
                                 setEditText('')
-                              }}>保存修正</Button>
+                              }}>保存</Button>
                             </div>
                           </div>
                         ) : card.aiAnalysis && card.aiAnalysis.labels.length > 0 ? (
@@ -588,6 +674,11 @@ export function CaseCardTimeline({ cards, showMoveToCase = true, showBatchAnalyz
           </DialogFooter>
         </DialogContent>
       </Dialog>
+      <CaseCardCorrectionDialog
+        draft={proofreadDraft}
+        onClose={() => setProofreadDraft(null)}
+        onApply={applyProofread}
+      />
     </Card>
   )
 }

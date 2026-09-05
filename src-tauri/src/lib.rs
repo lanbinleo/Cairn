@@ -1986,7 +1986,7 @@ pub(crate) fn run_card_resplit_apply(
     now: u64,
 ) -> Result<(String, Vec<Value>), String> {
     if segments.len() < 2 {
-        return Err("至少要拆成 2 张卡才有替换的意义；只想改字请用「修正原文错字」".to_string());
+        return Err("至少要拆成 2 张卡才有替换的意义；只想改字请用「编辑原文」".to_string());
     }
     if segments.len() > 20 {
         return Err(format!("segments has {} items (max 20)", segments.len()));

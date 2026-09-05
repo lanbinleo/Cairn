@@ -7,7 +7,7 @@
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import { listen } from '@tauri-apps/api/event'
-import { loadLocalState, saveLocalRecord, deleteLocalRecord, restoreLocalState, exportLocalBackup, saveAttachmentFile, isTauriRuntime, bgSaveRecord, bgSaveRecords, bgDeleteRecord, analyzeCaseCard as analyzeCaseCardRemote, previewCaseCardResplit as previewCaseCardResplitRemote, applyCaseCardResplit as applyCaseCardResplitRemote, draftCaseTitle as draftCaseTitleRemote, suggestCaseExecutions as suggestCaseExecutionsRemote, summarizeCase as summarizeCaseRemote, getAiSettings, type CaseCardResplitSegment } from './local-db'
+import { loadLocalState, saveLocalRecord, deleteLocalRecord, restoreLocalState, exportLocalBackup, saveAttachmentFile, isTauriRuntime, bgSaveRecord, bgSaveRecords, bgDeleteRecord, analyzeCaseCard as analyzeCaseCardRemote, previewCaseCardResplit as previewCaseCardResplitRemote, applyCaseCardResplit as applyCaseCardResplitRemote, draftCaseTitle as draftCaseTitleRemote, suggestCaseExecutions as suggestCaseExecutionsRemote, summarizeCase as summarizeCaseRemote, getAiSettings, draftCaseCardRewrite as draftCaseCardRewriteRemote, proofreadCaseCard as proofreadCaseCardRemote, type CaseCardCorrection, type CaseCardResplitSegment } from './local-db'
 import { buildCaseSummaryContext } from './case-summary'
 import { deriveAutoCloseCases } from './case-auto-close'
 import type { CairnStateSnapshot } from './seed'
@@ -83,6 +83,12 @@ interface CairnStore {
   /** 重拆应用：原卡软删、新卡落库。吸收返回的新卡让 UI 立即更新（data-changed
    *  事件随后兜底），并把 Case 上指向原卡的建议清掉（证据悬空，与 Rust 同规则）。 */
   applyCaseCardResplit: (cardId: string, originalText: string, segments: CaseCardResplitSegment[]) => Promise<number>
+  /** AI 重写草稿（0.3.7）：只出草稿不落库，调用方把草稿填进「编辑原文」编辑器，
+   *  用户过目修改后保存才走 updateCaseCardText（历史入档照旧）。失败抛给调用方就地显示。 */
+  draftCaseCardRewrite: (cardId: string, instruction?: string) => Promise<string>
+  /** AI 校对（0.3.7）：返回 old→new 替换对候选，不落库；逐条勾选套用是一次正常
+   *  的文本修正。失败抛给调用方就地显示，任务中心记录全过程。 */
+  proofreadCaseCard: (cardId: string, instruction?: string) => Promise<CaseCardCorrection[]>
   /** 重跑 AI 持仓管理补录建议（绑定 Trade 后自动触发，也可手动）。只吸收建议字段。
    *  instruction：标签建议的可教重试（补充要求 + 标签现状一起发给 AI）。 */
   refreshCaseExecutionSuggestions: (caseId: string, instruction?: string) => Promise<void>
@@ -582,6 +588,32 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
     }
   }, [caseCards, beginAiTask, completeAiTask])
 
+  /** AI 重写草稿（0.3.7）：草稿不落库（rawText 永远由用户落笔），任务中心记录全过程。 */
+  const draftCaseCardRewrite = useCallback(async (cardId: string, instruction?: string): Promise<string> => {
+    const taskId = beginAiTask({ kind: 'rewrite', label: 'AI 重写草稿', targetType: 'card', targetId: cardId })
+    try {
+      const text = await draftCaseCardRewriteRemote(cardId, instruction)
+      completeAiTask(taskId, { ok: true })
+      return text
+    } catch (cause) {
+      completeAiTask(taskId, { ok: false, error: cause instanceof Error ? cause.message : String(cause) })
+      throw cause
+    }
+  }, [beginAiTask, completeAiTask])
+
+  /** AI 校对（0.3.7）：替换对候选不落库，套用与否由用户逐条勾选。 */
+  const proofreadCaseCard = useCallback(async (cardId: string, instruction?: string): Promise<CaseCardCorrection[]> => {
+    const taskId = beginAiTask({ kind: 'proofread', label: 'AI 校对', targetType: 'card', targetId: cardId })
+    try {
+      const corrections = await proofreadCaseCardRemote(cardId, instruction)
+      completeAiTask(taskId, { ok: true })
+      return corrections
+    } catch (cause) {
+      completeAiTask(taskId, { ok: false, error: cause instanceof Error ? cause.message : String(cause) })
+      throw cause
+    }
+  }, [beginAiTask, completeAiTask])
+
   /** 重跑持仓管理补录建议：只吸收 aiExecutionSuggestions / aiTagSuggestions 字段——请求期间
    *  本地的标题/状态/标签修改不被回滚（与 analyzeCaseCard 同一吸收模式）。
    *  失败不 reject，写入 aiTasks.checkErrorByCase，由面板就地显示。 */
@@ -994,7 +1026,7 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
         if (payload.status === 'start') {
           setAiTaskList((prev) => pruneTasks([{
             id: payload.id,
-            kind: (['analysis', 'summary', 'suggestions', 'binding', 'title', 'split'] as const).includes(payload.kind as AiTask['kind'])
+            kind: (['analysis', 'summary', 'suggestions', 'binding', 'title', 'split', 'rewrite', 'proofread'] as const).includes(payload.kind as AiTask['kind'])
               ? payload.kind as AiTask['kind']
               : 'analysis',
             label: payload.label,
@@ -1328,6 +1360,8 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
       analyzeCaseCard,
       previewCaseCardResplit,
       applyCaseCardResplit,
+      draftCaseCardRewrite,
+      proofreadCaseCard,
       refreshCaseExecutionSuggestions,
       setCaseExecutionSuggestionStatus,
       setCaseTagSuggestionStatus,

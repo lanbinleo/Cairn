@@ -2113,8 +2113,6 @@ pub fn parse_title(content: &str) -> Result<String, String> {
 
 // ==================== 卡片原文 AI 重写草稿（0.3.7） ====================
 
-pub const REWRITE_PROMPT_VERSION: &str = "0.3.7-rewrite-1";
-
 pub fn build_rewrite_messages(phase: &str, raw_text: &str, instruction: Option<&str>) -> Vec<ChatMessage> {
     let system = "你是交易日志的重写秘书。交易者用语音记下了这段原文，里面混着口癖、语气词、重复和离题的废话。你输出一份重写草稿，供交易者本人过目修改后决定是否采用——草稿不是成品，落笔的永远是人。
 
@@ -2190,8 +2188,6 @@ pub fn parse_rewrite_draft(content: &str, raw_text: &str) -> Result<String, Stri
 }
 
 // ==================== 卡片原文 AI 校对（0.3.7） ====================
-
-pub const PROOFREAD_PROMPT_VERSION: &str = "0.3.7-proofread-1";
 
 pub fn build_proofread_messages(
     phase: &str,
