@@ -34,6 +34,8 @@ export default function AccountDetailPage() {
     .filter((p) => p.accountId === account.id)
     .sort((a, b) => b.chartStart - a.chartStart)
   const equity = account.initialBalance + stats.totalPnl
+  // 只有 feeOverride（导入的真实手续费）没有费率时也能对比口径
+  const hasImportedFees = accountTrades.some((t) => t.executions.some((e) => e.feeOverride != null))
 
   return (
     <div className="flex flex-col gap-6 p-6 lg:p-8">
@@ -176,8 +178,10 @@ export default function AccountDetailPage() {
               <CardTitle className="text-base">手续费</CardTitle>
               <span className="text-sm text-muted-foreground">
                 {account.takerFeePct != null || account.makerFeePct != null
-                  ? `Taker ${account.takerFeePct ?? 0} % / Maker ${account.makerFeePct ?? 0} %`
-                  : '未配置费率'}
+                  ? `Taker ${account.takerFeePct ?? 0}% / Maker ${account.makerFeePct ?? 0}%`
+                  : hasImportedFees
+                    ? '费率未配置 · 有导入的真实手续费'
+                    : '未配置费率'}
               </span>
               {account.feesDisabled && <Badge variant="secondary">已临时关闭</Badge>}
             </span>
@@ -190,15 +194,15 @@ export default function AccountDetailPage() {
               <div className="flex flex-col gap-0.5">
                 <span className="text-sm font-medium">临时关闭手续费</span>
                 <span className="text-xs text-muted-foreground">
-                  关闭后该账户全部统计回到毛口径（PnL / 胜率 / R / 权益曲线）；费率保留，重新打开即恢复净额
+                  关闭后按费率推算的部分回到毛口径（PnL / 胜率 / R / 权益曲线）；导入文件自带的每行真实手续费仍保留
                 </span>
               </div>
               <Switch
                 checked={account.feesDisabled ?? false}
-                disabled={!account.takerFeePct && !account.makerFeePct}
+                disabled={!account.takerFeePct && !account.makerFeePct && !hasImportedFees}
                 onCheckedChange={(checked) => {
                   updateAccount(account.id, { feesDisabled: checked || undefined })
-                  toast.success(checked ? '已临时关闭手续费，统计回到毛口径' : '已恢复手续费，统计回到净额')
+                  toast.success(checked ? '已临时关闭费率推算，统计回到毛口径' : '已恢复手续费，统计回到净额')
                 }}
               />
             </div>

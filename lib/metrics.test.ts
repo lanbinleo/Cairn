@@ -161,6 +161,14 @@ describe('computeStats / 曲线净额与费率追溯', () => {
     expect(equityBeforeByTrade(twoTrades(), 1000, () => RATES).get('t2')).toBeCloseTo(1000 + 99.28, 10)
   })
 
+  it('computeStats 内部资金曲线也带费率：最大回撤按净额', () => {
+    // 曲线 1000 → 1099.28（t1 净盈）→ 998.33（t2 净亏 -100.95）→ 净回撤 100.95 > 毛回撤 100
+    const net = computeStats(twoTrades(), 1000, () => RATES)
+    expect(net.maxDrawdown).toBeCloseTo(100.95, 8)
+    const gross = computeStats(twoTrades(), 1000)
+    expect(gross.maxDrawdown).toBeCloseTo(100, 8)
+  })
+
   it('费用可把毛盈利翻成净亏损（胜率随净额）', () => {
     const trade = mkTrade({
       id: 'w', accountId: 'a1', initialStopLoss: 99.9,

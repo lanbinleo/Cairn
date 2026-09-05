@@ -127,7 +127,9 @@ function resolveCaseCardTimesLoose(
     }
     if (time > window.end) {
       // 「昨天」语境前置卡（0.3.7，与展示规则同步）：barRef 可能属于锚定日之前的
-      // 图表日——向前一天找，落回窗口内且不违反创建顺序即采用。
+      // 图表日——向前一天找，落回窗口内且不违反创建顺序即采用。匹配窗口
+      // start = entryTime 比展示版窄，向前找实际上总被序守卫拦住（本块为不可达
+      // 防御：窗口构造将来放宽时行为与展示版保持一致），匹配结果不变。
       const windowStartDay = utcDayStart(window.start)
       let backDay = day
       let backTime = time

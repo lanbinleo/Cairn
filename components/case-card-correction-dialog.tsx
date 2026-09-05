@@ -55,10 +55,12 @@ export function CaseCardCorrectionDialog({
 
   if (!draft || !preview) return null
 
-  const suggestionResults = preview.results.slice(0, draft.corrections.length)
-  const manualResults = preview.results.slice(draft.corrections.length)
+  // results 顺序 = 勾选的建议对在前、手动对在后——用勾选索引把结果映射回建议行
+  const checkedIndexes = draft.corrections.map((_, index) => index).filter((index) => checked.has(index))
+  const suggestionResults = preview.results.slice(0, checkedIndexes.length)
+  const manualResults = preview.results.slice(checkedIndexes.length)
   const failedSuggestionIndexes = new Set(
-    suggestionResults.flatMap((item, index) => (item.ok ? [] : [index])),
+    suggestionResults.flatMap((item, resultIndex) => (item.ok ? [] : [checkedIndexes[resultIndex]])),
   )
   const manualBlocked = manualResults.some((item) => !item.ok)
   const applyCount = preview.results.filter((item) => item.ok).length

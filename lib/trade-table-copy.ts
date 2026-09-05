@@ -12,6 +12,11 @@ import type { Account, Period, TagDef, Trade, TradingSymbol } from './types'
 
 const HEADER = ['交易', '品种', '方向', '账户 / Period', '标签', '进场时间（UTC）', '持仓', 'PnL', 'PnL%', 'R', '状态']
 
+/** TSV 单元格清洗：账户/Period 名等用户输入可能带 tab/换行，会错位整行 */
+function cell(value: string): string {
+  return value.replace(/[\t\r\n]+/g, ' ')
+}
+
 export interface TradesTableCopyInput {
   trades: Trade[]
   accounts: Account[]
@@ -41,11 +46,11 @@ export function buildTradesTableCopy(input: TradesTableCopyInput, now = Date.now
     const base = equityBefore.get(trade.id)
     const pnlPct = trade.status === 'closed' && base ? (m.pnl / base) * 100 : null
     return [
-      `Trade #${String(trade.seq).padStart(3, '0')}`,
-      symbol ? `${symbol.exchange}:${symbol.code}` : trade.symbolId,
+      cell(`Trade #${String(trade.seq).padStart(3, '0')}`),
+      cell(symbol ? `${symbol.exchange}:${symbol.code}` : trade.symbolId),
       trade.direction === 'long' ? '多' : '空',
-      `${account?.name ?? '未知账户'} · ${period?.name ?? '未知 Period'}`,
-      sortTagNamesByColor(trade.tags, tagDefs).join('、'),
+      cell(`${account?.name ?? '未知账户'} · ${period?.name ?? '未知 Period'}`),
+      cell(sortTagNamesByColor(trade.tags, tagDefs).join('、')),
       fmtUtcDateTime(m.entryTime, false),
       trade.status === 'closed' ? fmtDuration(m.durationMs) : '',
       trade.status === 'closed' ? m.pnl.toFixed(2) : '',
@@ -59,7 +64,7 @@ export function buildTradesTableCopy(input: TradesTableCopyInput, now = Date.now
   meta.push(`# ${ordered.length} 笔`)
   if (ordered.length > 0) {
     const accountNames = [...new Set(ordered.map((trade) => accountById.get(trade.accountId)?.name).filter(Boolean))]
-    if (accountNames.length > 0) meta.push(`# 账户：${accountNames.join('、')}`)
+    if (accountNames.length > 0) meta.push(cell(`# 账户：${accountNames.join('、')}`))
     const entryTimes = ordered.map((trade) => computeTradeMetrics(trade).entryTime)
     meta.push(`# 进场范围 ${fmtUtcDateTime(Math.min(...entryTimes), false)} – ${fmtUtcDateTime(Math.max(...entryTimes), false)} UTC`)
   }

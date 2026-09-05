@@ -115,7 +115,7 @@ export function CreateAccountDialog() {
               <Input id="new-acc-maker-fee" type="number" inputMode="decimal" placeholder="如 0.02" value={makerFee} onChange={(e) => setMakerFee(e.target.value)} />
             </Field>
           </div>
-          <FieldDescription>按成交额逐笔计提（开平双边），PnL 与统计按净额；留空不计手续费</FieldDescription>
+          <FieldDescription>按成交额逐笔计提（开平双边），PnL 与统计按净额；留空不计</FieldDescription>
           <FieldDescription>创建后会立即写入本地数据库</FieldDescription>
 
           <Field>

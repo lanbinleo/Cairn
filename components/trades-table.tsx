@@ -114,7 +114,7 @@ export function TradesTable({
       window.setTimeout(() => setCopied(false), 2000)
       toast.success(`已复制 ${trades.length} 笔交易（含元数据）`)
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : String(error))
+      toast.error(`复制失败：${error instanceof Error ? error.message : String(error)}`)
     }
   }
 

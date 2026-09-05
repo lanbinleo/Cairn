@@ -235,7 +235,7 @@ export function computeStats(trades: Trade[], initialBalance: number, ratesFor?:
 
   const rValues = metrics.map((m) => m.rMultiple).filter((r): r is number => r != null)
 
-  const curve = computeEquityCurve(closed, initialBalance)
+  const curve = computeEquityCurve(closed, initialBalance, ratesFor)
   const { maxDrawdown, maxDrawdownPct } = computeMaxDrawdown(curve)
 
   return {

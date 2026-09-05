@@ -2158,13 +2158,10 @@ pub(crate) async fn run_card_rewrite_draft(
     card_id: &str,
     instruction: Option<&str>,
 ) -> Result<String, String> {
-    let (phase, raw_text, provider, model) = {
+    let (phase, raw_text) = {
         let conn = db.conn()?;
         let card = db::read_record_by_id(&conn, "caseCards", card_id)?
             .ok_or_else(|| format!("case card not found: {card_id}"))?;
-        let (provider, model) = app
-            .and_then(|app| ai::default_provider(app).ok().flatten())
-            .ok_or_else(|| "还没有默认 AI Provider，请在 设置 → AI 中配置".to_string())?;
         let phase = card.get("phase").and_then(Value::as_str).unwrap_or("intermediate").to_string();
         let raw_text = card
             .get("rawText")
@@ -2172,8 +2169,11 @@ pub(crate) async fn run_card_rewrite_draft(
             .unwrap_or_default()
             .trim()
             .to_string();
-        (phase, raw_text, provider, model)
+        (phase, raw_text)
     };
+    let (provider, model) = app
+        .and_then(|app| ai::default_provider(app).ok().flatten())
+        .ok_or_else(|| "还没有默认 AI Provider，请在 设置 → AI 中配置".to_string())?;
     if let Some(app) = app {
         ai::log_provider_event(app, format!("drafting rewrite for card {card_id} with {model}"));
     }
@@ -2197,13 +2197,10 @@ pub(crate) async fn run_card_proofread(
     card_id: &str,
     instruction: Option<&str>,
 ) -> Result<Vec<ai::ParsedCorrection>, String> {
-    let (phase, raw_text, facts, provider, model) = {
+    let (phase, raw_text, facts) = {
         let conn = db.conn()?;
         let card = db::read_record_by_id(&conn, "caseCards", card_id)?
             .ok_or_else(|| format!("case card not found: {card_id}"))?;
-        let (provider, model) = app
-            .and_then(|app| ai::default_provider(app).ok().flatten())
-            .ok_or_else(|| "还没有默认 AI Provider，请在 设置 → AI 中配置".to_string())?;
         let phase = card.get("phase").and_then(Value::as_str).unwrap_or("intermediate").to_string();
         let raw_text = card
             .get("rawText")
@@ -2215,8 +2212,11 @@ pub(crate) async fn run_card_proofread(
             Some(case_id) => bound_trade_lines(&conn, case_id).join("\n"),
             None => String::new(),
         };
-        (phase, raw_text, facts, provider, model)
+        (phase, raw_text, facts)
     };
+    let (provider, model) = app
+        .and_then(|app| ai::default_provider(app).ok().flatten())
+        .ok_or_else(|| "还没有默认 AI Provider，请在 设置 → AI 中配置".to_string())?;
     if let Some(app) = app {
         ai::log_provider_event(app, format!("proofreading card {card_id} with {model}"));
     }
