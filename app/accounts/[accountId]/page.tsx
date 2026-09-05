@@ -202,7 +202,10 @@ export default function AccountDetailPage() {
                 disabled={!account.takerFeePct && !account.makerFeePct && !hasImportedFees}
                 onCheckedChange={(checked) => {
                   updateAccount(account.id, { feesDisabled: checked || undefined })
-                  toast.success(checked ? '已临时关闭费率推算，统计回到毛口径' : '已恢复手续费，统计回到净额')
+                  const hasRates = account.takerFeePct != null || account.makerFeePct != null
+                  toast.success(checked
+                    ? (hasRates ? '已临时关闭费率推算，统计回到毛口径' : '已临时关闭费率推算（未配置费率，数字不变）')
+                    : (hasRates ? '已恢复手续费，统计回到净额' : '已重新允许费率推算（未配置费率，数字不变）'))
                 }}
               />
             </div>

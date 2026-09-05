@@ -3003,6 +3003,7 @@ mod tests {
         // 输出里没有 tradeTags 字段 → 空，不报错
         assert!(parse_trade_tags(r#"{"suggestions":[]}"#, &cards, &vocabulary, None).is_empty());
     }
+
     #[test]
     fn parse_trade_tags_instruction_allows_new_names() {
         let cards = vec![("card-1".to_string(), "追高了，情绪一上头就进去了".to_string())];
