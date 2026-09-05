@@ -63,7 +63,7 @@ const fileSlots = [
     key: 'trades',
     icon: FileSpreadsheet,
     title: '① 交易记录',
-    desc: 'TradingView 导出的做单记录（CSV/Excel）：编号、类型、信号、日期时间、价格、数量',
+    desc: 'TradingView 导出的做单记录（CSV/Excel）：编号、类型、信号、日期时间、价格、数量；有订单类型 / 手续费列则一并采用（否则按账户 Taker/Maker 费率事后计提）',
     required: true,
     mockName: 'BTCUSDT_trades_2026-02.csv',
   },
@@ -250,6 +250,7 @@ export default function ImportPage() {
           price: execution.price,
           quantity: execution.quantity,
           signal: execution.signal,
+          feeOverride: execution.commission,
           sourceRef: execution.sourceTradeNo
             ? `tv:trade:${execution.sourceTradeNo}:${execution.sourceRef.replace('tv:', '')}`
             : execution.sourceRef,

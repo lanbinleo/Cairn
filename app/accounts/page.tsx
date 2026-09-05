@@ -12,6 +12,7 @@ import { Badge } from '@/components/ui/badge'
 import { Card, CardContent } from '@/components/ui/card'
 import { useCairn } from '@/lib/store'
 import { computeStats, computeEquityCurve } from '@/lib/metrics'
+import { feeRatesForAccount } from '@/lib/fee'
 import { fmtMoney, fmtPct } from '@/lib/format'
 
 export default function AccountsPage() {
@@ -27,8 +28,8 @@ export default function AccountsPage() {
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         {accounts.map((account) => {
           const accountTrades = trades.filter((t) => t.accountId === account.id)
-          const stats = computeStats(accountTrades, account.initialBalance)
-          const curve = computeEquityCurve(accountTrades, account.initialBalance)
+          const stats = computeStats(accountTrades, account.initialBalance, () => feeRatesForAccount(account))
+          const curve = computeEquityCurve(accountTrades, account.initialBalance, () => feeRatesForAccount(account))
           const periodCount = periods.filter((p) => p.accountId === account.id).length
           const equity = account.initialBalance + stats.totalPnl
 

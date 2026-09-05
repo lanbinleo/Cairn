@@ -6,6 +6,7 @@ import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { EquityChart } from '@/components/equity-chart'
 import { useCairn } from '@/lib/store'
 import { computeEquityCurve, computeMaxDrawdown } from '@/lib/metrics'
+import { feeRatesForAccount } from '@/lib/fee'
 import { fmtMoney, fmtPct } from '@/lib/format'
 
 export function EquitySection() {
@@ -24,6 +25,7 @@ export function EquitySection() {
     const curve = computeEquityCurve(
       trades.filter((t) => t.accountId === account.id),
       account.initialBalance,
+      () => feeRatesForAccount(account),
     )
     const dd = computeMaxDrawdown(curve)
     return { curve, dd, account }

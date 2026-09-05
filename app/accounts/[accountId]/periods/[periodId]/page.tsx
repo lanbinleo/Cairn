@@ -12,6 +12,7 @@ import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { useCairn } from '@/lib/store'
 import { computeStats, computeEquityCurve } from '@/lib/metrics'
+import { feeRatesForAccount } from '@/lib/fee'
 import { fmtMoney, fmtCompactMoney, fmtPct, fmtDateRange } from '@/lib/format'
 
 export default function PeriodDetailPage() {
@@ -22,8 +23,8 @@ export default function PeriodDetailPage() {
   if (!account || !period || period.accountId !== account.id) return <Navigate to="/accounts" replace />
 
   const periodTrades = trades.filter((t) => t.periodId === period.id)
-  const stats = computeStats(periodTrades, account.initialBalance)
-  const curve = computeEquityCurve(periodTrades, account.initialBalance)
+  const stats = computeStats(periodTrades, account.initialBalance, () => feeRatesForAccount(account))
+  const curve = computeEquityCurve(periodTrades, account.initialBalance, () => feeRatesForAccount(account))
 
   return (
     <div className="flex flex-col gap-6 p-6 lg:p-8">

@@ -306,6 +306,32 @@ export async function previewCaseCardResplit(cardId: string): Promise<{ caseId: 
   return invoke<{ caseId: string; segments: CaseCardResplitSegment[] }>('preview_case_card_resplit', { cardId })
 }
 
+/** AI 重写草稿（0.3.7）：跑重写 AI 返回草稿，不落库、原卡不动——草稿填进
+ *  「编辑原文」编辑器由用户过目修改后保存，保存才走正常的文本修正路径。 */
+export async function draftCaseCardRewrite(cardId: string, instruction?: string): Promise<string> {
+  if (!isTauriRuntime()) {
+    throw new Error('AI 重写需要桌面版运行')
+  }
+  const result = await invoke<{ text: string }>('draft_case_card_rewrite', { cardId, instruction: instruction ?? null })
+  return result.text
+}
+
+export interface CaseCardCorrection {
+  oldText: string
+  newText: string
+  reason: string
+}
+
+/** AI 校对（0.3.7）：找出原文里疑似错误的 old→new 替换对，不落库；逐条勾选后
+ *  套用（一次文本修正，历史入档）。 */
+export async function proofreadCaseCard(cardId: string, instruction?: string): Promise<CaseCardCorrection[]> {
+  if (!isTauriRuntime()) {
+    throw new Error('AI 校对需要桌面版运行')
+  }
+  const result = await invoke<{ corrections: CaseCardCorrection[] }>('proofread_case_card', { cardId, instruction: instruction ?? null })
+  return result.corrections
+}
+
 /** AI 重拆应用：确认后的分段替换原卡（软删）。originalText 是预览时的原文——
  *  应用前比对原卡，期间被编辑/删除则中止。 */
 export async function applyCaseCardResplit(

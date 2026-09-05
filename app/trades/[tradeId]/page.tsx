@@ -29,6 +29,7 @@ import { useCairn } from '@/lib/store'
 import { executionActionLabel, hasPositionFill, isPositionExecutionAction, orderTypeLabel } from '@/lib/executions'
 import { aggregateDisplayExecutions } from '@/lib/execution-display'
 import { computeTradeMetrics } from '@/lib/metrics'
+import { feeRatesForAccount } from '@/lib/fee'
 import { savedProcessScoreTotal } from '@/lib/process-score'
 import { fmtPrice, fmtDuration, fmtQty, fmtUtcDateTime, fmtUtcDate, fmtMoney } from '@/lib/format'
 import { sortTagNamesByColor } from '@/lib/tags'
@@ -96,7 +97,7 @@ export default function TradeDetailPage() {
   const account = getAccount(trade.accountId)
   const period = getPeriod(trade.periodId)
   const symbol = getSymbol(trade.symbolId)
-  const m = computeTradeMetrics(trade)
+  const m = computeTradeMetrics(trade, account ? feeRatesForAccount(account) : undefined)
   const tags = sortTagNamesByColor(trade.tags, tagDefs)
   const executionTimes = trade.executions.map((execution) => execution.time)
   const barMinutes = chartTimeframeMinutes(chartTimeframe)
@@ -570,6 +571,14 @@ export default function TradeDetailPage() {
                 <span className="text-sm text-muted-foreground">R 倍数</span>
                 <RText value={m.rMultiple} className="text-sm font-medium" />
               </div>
+              {m.fees > 0 && (
+                <div className="flex items-baseline justify-between">
+                  <span className="text-sm text-muted-foreground">手续费</span>
+                  <span className="font-mono text-sm tabular-nums text-loss" title={`PnL 已扣除手续费；毛盈亏 ${fmtMoney(m.grossPnl, account?.currency)}`}>
+                    −{fmtMoney(m.fees, account?.currency)}
+                  </span>
+                </div>
+              )}
               {(() => {
                 const score = savedProcessScoreTotal(trade.processScore)
                 return (
@@ -714,6 +723,13 @@ export default function TradeDetailPage() {
                   <div className="rounded-lg border p-4"><p className="text-xs text-muted-foreground">Execution</p><p className="mt-1 font-mono text-lg font-semibold">{trade.executions.length}</p></div>
                   <div className="rounded-lg border p-4"><p className="text-xs text-muted-foreground">持仓时长</p><p className="mt-1 font-mono text-lg font-semibold">{fmtDuration(m.durationMs)}</p></div>
                 </div>
+                {m.fees > 0 && (
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                    <div className="rounded-lg border p-4"><p className="text-xs text-muted-foreground">毛盈亏</p>{trade.status === 'closed' ? <PnlText value={m.grossPnl} currency={account?.currency} className="mt-1 text-lg font-semibold" /> : <p className="mt-1 text-lg font-semibold text-muted-foreground">—</p>}</div>
+                    <div className="rounded-lg border p-4"><p className="text-xs text-muted-foreground">手续费</p><p className="mt-1 font-mono text-lg font-semibold tabular-nums text-loss">−{fmtMoney(m.fees, account?.currency)}</p></div>
+                    <div className="rounded-lg border p-4"><p className="text-xs text-muted-foreground">净盈亏</p>{trade.status === 'closed' ? <PnlText value={m.pnl} currency={account?.currency} className="mt-1 text-lg font-semibold" /> : <p className="mt-1 text-lg font-semibold text-muted-foreground">—</p>}</div>
+                  </div>
+                )}
                 <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
                   <div className="rounded-lg border p-4"><p className="text-xs text-muted-foreground">总仓位</p><p className="mt-1 font-mono text-lg font-semibold tabular-nums">{fmtQty(m.totalQuantity)}</p></div>
                   <div className="rounded-lg border p-4"><p className="text-xs text-muted-foreground">初始止损</p><p className="mt-1 font-mono text-lg font-semibold tabular-nums">{trade.initialStopLoss == null ? '—' : fmtPrice(trade.initialStopLoss, symbol?.pricePrecision)}</p></div>

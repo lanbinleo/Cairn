@@ -18,6 +18,7 @@ import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { useCairn } from '@/lib/store'
+import { parseFeePctInput } from '@/lib/fee'
 import type { AccountKind } from '@/lib/types'
 
 export function CreateAccountDialog() {
@@ -27,6 +28,8 @@ export function CreateAccountDialog() {
   const [kind, setKind] = useState<AccountKind>('backtest')
   const [balance, setBalance] = useState('100000')
   const [currency, setCurrency] = useState('USD')
+  const [takerFee, setTakerFee] = useState('')
+  const [makerFee, setMakerFee] = useState('')
   const [note, setNote] = useState('')
 
   function resetForm() {
@@ -34,6 +37,8 @@ export function CreateAccountDialog() {
     setKind('backtest')
     setBalance('100000')
     setCurrency('USD')
+    setTakerFee('')
+    setMakerFee('')
     setNote('')
   }
 
@@ -44,6 +49,8 @@ export function CreateAccountDialog() {
       kind,
       initialBalance: Number.isFinite(parsed) && parsed > 0 ? parsed : 100000,
       currency: currency.trim().toUpperCase() || 'USD',
+      takerFeePct: parseFeePctInput(takerFee),
+      makerFeePct: parseFeePctInput(makerFee),
       note: note.trim() === '' ? undefined : note.trim(),
     })
     setOpen(false)
@@ -97,6 +104,18 @@ export function CreateAccountDialog() {
               <Input id="new-acc-currency" value={currency} onChange={(e) => setCurrency(e.target.value)} />
             </Field>
           </div>
+
+          <div className="grid grid-cols-2 gap-4">
+            <Field>
+              <FieldLabel htmlFor="new-acc-taker-fee">Taker 费率 %</FieldLabel>
+              <Input id="new-acc-taker-fee" type="number" inputMode="decimal" placeholder="如 0.05" value={takerFee} onChange={(e) => setTakerFee(e.target.value)} />
+            </Field>
+            <Field>
+              <FieldLabel htmlFor="new-acc-maker-fee">Maker 费率 %</FieldLabel>
+              <Input id="new-acc-maker-fee" type="number" inputMode="decimal" placeholder="如 0.02" value={makerFee} onChange={(e) => setMakerFee(e.target.value)} />
+            </Field>
+          </div>
+          <FieldDescription>按成交额逐笔计提（开平双边），PnL 与统计按净额；留空不计</FieldDescription>
           <FieldDescription>创建后会立即写入本地数据库</FieldDescription>
 
           <Field>

@@ -21,6 +21,7 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { computeTradeMetrics } from '@/lib/metrics'
+import { feeRatesResolverFor } from '@/lib/fee'
 import { useCairn } from '@/lib/store'
 import {
   EMPTY_TRADE_FILTER,
@@ -64,6 +65,7 @@ export default function TradesPage() {
     [accountId, periods],
   )
   const sortedTagDefs = useMemo(() => sortTagDefsByColor(tagDefs), [tagDefs])
+  const ratesFor = useMemo(() => feeRatesResolverFor(accounts), [accounts])
 
   function toggleTag(name: string) {
     setActiveTags((prev) => {
@@ -91,9 +93,9 @@ export default function TradesPage() {
           (symbolId === ALL || t.symbolId === symbolId) &&
           (direction === ALL || t.direction === direction) &&
           (activeTags.length === 0 || activeTags.every((tag) => t.tags.some((tradeTag) => tagNamesEqual(tradeTag, tag)))) &&
-          matchesTradeFilter(t, advancedFilter),
+          matchesTradeFilter(t, advancedFilter, ratesFor(t)),
       ),
-    [trades, accountId, periodId, symbolId, direction, activeTags, advancedFilter],
+    [trades, accountId, periodId, symbolId, direction, activeTags, advancedFilter, ratesFor],
   )
   const targetPeriodOptions = useMemo(
     () => periods.filter((p) => p.accountId === targetAccountId),

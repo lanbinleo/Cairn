@@ -94,3 +94,50 @@ describe('resolveCaseCardTimesForTrade', () => {
     expect(resolved.get(cards[24].id)?.time).toBe(D1 + (48 - 1) * MIN * 60_000)
   })
 })
+
+describe('resolveCaseCardTimesForTrade 「昨天」前置卡（0.3.7）', () => {
+  // 生产 Trade#024：成交锚定 01-12 00:15（跨午夜），pre-entry 卡回顾 01-11 晚的
+  // setup（BAR 270-280 属于前一天），图表窗口 01-11 17:35 .. 01-12 02:00
+  const D0 = Date.UTC(2026, 0, 11)
+  const D1 = D0 + DAY
+  const window = { anchor: D1 + 15 * 60_000, start: D0 + 17 * 60 * 60_000 + 35 * 60_000, end: D1 + 2 * 60 * 60_000 }
+
+  let seq = 0
+  function card(barRef: number) {
+    seq += 1
+    return { id: `y${seq}`, createdAt: seq, barRef }
+  }
+
+  it('barRef 属于锚定日前一天时向前找（生产 Trade#024 回归）', () => {
+    const cards = [270, 278, 279, 280, 4, 14, 25].map(card)
+    const resolved = resolveCaseCardTimesForTrade(cards, MIN, window)
+    // 前四张落在 01-11 晚（22:25 / 23:05 / 23:10 / 23:15），不再是窗口起点的异常兜底
+    expect(resolved.get(cards[0].id)).toEqual({ time: barNumberToTime(D0, 270, MIN), invalid: false })
+    expect(resolved.get(cards[1].id)).toEqual({ time: barNumberToTime(D0, 278, MIN), invalid: false })
+    expect(resolved.get(cards[2].id)).toEqual({ time: barNumberToTime(D0, 279, MIN), invalid: false })
+    expect(resolved.get(cards[3].id)).toEqual({ time: barNumberToTime(D0, 280, MIN), invalid: false })
+    // 入场及其后卡片不受影响：锚定日 01-12 的 00:15 / 01:05 / 02:00
+    expect(resolved.get(cards[4].id)).toEqual({ time: barNumberToTime(D1, 4, MIN), invalid: false })
+    expect(resolved.get(cards[5].id)).toEqual({ time: barNumberToTime(D1, 14, MIN), invalid: false })
+    expect(resolved.get(cards[6].id)).toEqual({ time: barNumberToTime(D1, 25, MIN), invalid: false })
+    // 全序列仍单调
+    const times = cards.map((c) => resolved.get(c.id)!.time)
+    for (let i = 1; i < times.length; i += 1) expect(times[i]).toBeGreaterThanOrEqual(times[i - 1])
+  })
+
+  it('向前找违反创建顺序或早于窗口起点时维持异常兜底', () => {
+    // 先有锚定日 4 号卡（00:15），再来 270：前一天 22:25 早于上一张 → 拒绝
+    const a = card(4)
+    const b = card(270)
+    const resolved = resolveCaseCardTimesForTrade([a, b], MIN, window)
+    const aTime = barNumberToTime(D1, 4, MIN)
+    expect(resolved.get(a.id)?.invalid).toBe(false)
+    expect(resolved.get(b.id)).toEqual({ time: aTime + 1, invalid: true })
+
+    // 窗口起点就在锚定日的窄窗口：前一天不在窗口内 → 维持兜底
+    const narrow = { anchor: D1 + 15 * 60_000, start: D1, end: D1 + 2 * 60 * 60_000 }
+    const c = card(270)
+    const r2 = resolveCaseCardTimesForTrade([c], MIN, narrow)
+    expect(r2.get(c.id)).toEqual({ time: narrow.start, invalid: true })
+  })
+})

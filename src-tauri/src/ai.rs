@@ -2111,6 +2111,171 @@ pub fn parse_title(content: &str) -> Result<String, String> {
     Ok(capped)
 }
 
+// ==================== 卡片原文 AI 重写草稿（0.3.7） ====================
+
+pub fn build_rewrite_messages(phase: &str, raw_text: &str, instruction: Option<&str>) -> Vec<ChatMessage> {
+    let system = "你是交易日志的重写秘书。交易者用语音记下了这段原文，里面混着口癖、语气词、重复和离题的废话。你输出一份重写草稿，供交易者本人过目修改后决定是否采用——草稿不是成品，落笔的永远是人。
+
+重写规则：
+- 只输出一个 JSON 对象，不要 markdown 代码块和解释：{\"rewrite\": \"...\"}
+- 删掉口癖、语气词、重复表述和离题废话；保留全部实质内容：观察、推理、计划、情绪与决策。
+- 原文中出现的每一个数字（价格、数量、百分比、BAR 号、R 倍数）必须原样出现在草稿中——一个都不能丢、不能改写、不能四舍五入。
+- 保持第一人称与交易者本人的说话语气；不翻译、不过度书面化；专业术语和缩写原样保留。
+- 不新增原文没有的信息，不做总结概括；长度大约是原文的 50%–100%。
+- 明显的错别字可以顺手修正；拿不准的字保持原样（错字有专门的校对流程）。";
+    let user = format!("记录阶段：{}（{}）\n原文：\n{}", phase_label(phase), phase, raw_text);
+    let mut messages = vec![ChatMessage::system(system), ChatMessage::user(user)];
+    if let Some(extra) = instruction.map(str::trim).filter(|s| !s.is_empty()) {
+        messages.push(ChatMessage::user(format!("补充重写要求：{extra}")));
+    }
+    messages
+}
+
+/// 提取文本中的数字 token（连续数字与小数点）：数字是事实，重写一个都不能丢。
+fn number_tokens(text: &str) -> Vec<String> {
+    let mut tokens: Vec<String> = Vec::new();
+    let mut current = String::new();
+    for ch in text.chars() {
+        if ch.is_ascii_digit() || ch == '.' {
+            current.push(ch);
+        } else if !current.is_empty() {
+            let token = current.trim_matches('.').to_string();
+            if !token.is_empty() {
+                tokens.push(token);
+            }
+            current.clear();
+        }
+    }
+    if !current.is_empty() {
+        let token = current.trim_matches('.').to_string();
+        if !token.is_empty() {
+            tokens.push(token);
+        }
+    }
+    tokens
+}
+
+/// 机械校验重写草稿：长度比 30%–110%（过短=丢了实质内容，过长=编造扩写），
+/// 且原文的每个数字 token 必须原样出现。任何一条不过即 Err（调用方走修复轮，
+/// 仍失败则报错放弃——草稿绝不半成品交给用户）。
+pub fn parse_rewrite_draft(content: &str, raw_text: &str) -> Result<String, String> {
+    let json_text = extract_json_object(content);
+    let parsed: Value =
+        serde_json::from_str(json_text).map_err(|err| format!("model output is not JSON: {err}"))?;
+    let draft = parsed
+        .get("rewrite")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .ok_or_else(|| "model output has no rewrite".to_string())?
+        .to_string();
+    let raw_len = raw_text.chars().count().max(1);
+    let draft_len = draft.chars().count();
+    if draft_len * 10 < raw_len * 3 {
+        return Err(format!("rewrite is too short ({draft_len} chars vs {raw_len}); substantial content was dropped"));
+    }
+    if draft_len * 10 > raw_len * 11 {
+        return Err(format!("rewrite is too long ({draft_len} chars vs {raw_len}); content was added"));
+    }
+    let missing: Vec<String> = number_tokens(raw_text)
+        .into_iter()
+        .filter(|token| !draft.contains(token.as_str()))
+        .collect();
+    if !missing.is_empty() {
+        return Err(format!("rewrite dropped numbers from the original text: {}", missing.join(", ")));
+    }
+    Ok(draft)
+}
+
+// ==================== 卡片原文 AI 校对（0.3.7） ====================
+
+pub fn build_proofread_messages(
+    phase: &str,
+    raw_text: &str,
+    trade_facts: &str,
+    instruction: Option<&str>,
+) -> Vec<ChatMessage> {
+    let system = "你是交易日志的校对员。交易者用语音记下了这段原文，语音识别和他的口误可能留下错误。你找出「有把握是错误」的地方，给出原文→修正的替换对，供交易者逐条勾选后套用——落笔的永远是人。
+
+校对范围：
+- 错别字、明显口误、语音识别错误（同音字、断句错）。
+- 数字疑点：价格 / 数量 / 百分比 / BAR 号与下方交易事实明显不符（量级、位数），或 BAR 号超出 1-1440。
+- 方向词与交易事实矛盾（例如说「做多」但事实是做空）。
+
+规则：
+- 只输出一个 JSON 对象，不要 markdown 代码块和解释：{\"corrections\":[{\"oldText\":\"...\",\"newText\":\"...\",\"reason\":\"...\"}]}
+- oldText 必须逐字复制原文中包含错误的那个片段（保留错误写法，一字不差），并带上刚好足够的上下文使其在原文中唯一（通常 4-12 个字）。
+- newText 是修正后的写法：除修正点外与 oldText 完全一致。
+- reason 用中文、不超过 20 个字，说清为什么疑似错误。
+- 只提有把握的；拿不准的一律不提。最多 10 条。没有发现问题就输出 {\"corrections\":[]}。";
+    let mut user = format!("记录阶段：{}（{}）\n原文：\n{}", phase_label(phase), phase, raw_text);
+    if !trade_facts.is_empty() {
+        user.push_str(&format!("\n\n交易事实（仅供比对，不是本卡内容）：\n{trade_facts}"));
+    }
+    let mut messages = vec![ChatMessage::system(system), ChatMessage::user(user)];
+    if let Some(extra) = instruction.map(str::trim).filter(|s| !s.is_empty()) {
+        messages.push(ChatMessage::user(format!("补充校对要求：{extra}")));
+    }
+    messages
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ParsedCorrection {
+    pub old_text: String,
+    pub new_text: String,
+    pub reason: String,
+}
+
+/// 机械校验校对建议：oldText 必须是原文逐字子串且 newText 有效，否则该条静默
+/// 丢弃（建议列表丢一条不伤原文，与 analysis 的 label 丢弃同策略）。缺
+/// corrections 键或非数组是 schema 失败 → Err 触发修复轮（区别于空数组 =
+/// 真的没发现问题）；按 oldText 去重，≤10 条。
+pub fn parse_proofread(content: &str, raw_text: &str) -> Result<Vec<ParsedCorrection>, String> {
+    let json_text = extract_json_object(content);
+    let parsed: Value =
+        serde_json::from_str(json_text).map_err(|err| format!("model output is not JSON: {err}"))?;
+    let items = parsed
+        .get("corrections")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "model output has no corrections array".to_string())?
+        .clone();
+    if items.len() > 10 {
+        return Err(format!("model output has {} corrections (max 10)", items.len()));
+    }
+    let mut out: Vec<ParsedCorrection> = Vec::new();
+    for item in &items {
+        let Some(old_text) = item
+            .get("oldText")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|text| !text.is_empty() && raw_text.contains(text))
+            .map(str::to_string)
+        else {
+            continue;
+        };
+        let Some(new_text) = item
+            .get("newText")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|text| !text.is_empty() && *text != old_text)
+            .map(str::to_string)
+        else {
+            continue;
+        };
+        if out.iter().any(|existing| existing.old_text == old_text) {
+            continue;
+        }
+        let reason: String = item
+            .get("reason")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .map(|reason| reason.chars().take(40).collect())
+            .unwrap_or_default();
+        out.push(ParsedCorrection { old_text, new_text, reason });
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2860,5 +3025,81 @@ mod tests {
         assert_eq!(tags[0].name, "追高");
         assert_eq!(tags[1].name, "情绪上头");
         assert!(!tags.iter().any(|tag| tag.name == "完全没提过"));
+    }
+
+    #[test]
+    fn number_tokens_extracts_digits_and_decimals() {
+        assert_eq!(
+            number_tokens("65200 进 0.5 张，BAR 120，回看 89 号线"),
+            vec!["65200", "0.5", "120", "89"]
+        );
+        // 前后悬挂的点不算数字的一部分
+        assert_eq!(number_tokens("价格.100."), vec!["100"]);
+        assert!(number_tokens("没有任何数字").is_empty());
+    }
+
+    #[test]
+    fn parse_rewrite_draft_keeps_numbers_within_bounds() {
+        let raw = "89，价格选择去上涨，嗯，就是说那个 65200 这里进 0.5 张，止损 64800，有点犹豫但是还是进了。";
+        let draft = "89，65200 进 0.5 张，止损 64800，犹豫后进场。";
+        let content = format!(r#"{{"rewrite": "{draft}"}}"#);
+        assert_eq!(parse_rewrite_draft(&content, raw).unwrap(), draft);
+        // markdown 代码块包着的 JSON 也能解
+        let fenced = format!("```json\n{content}\n```");
+        assert!(parse_rewrite_draft(&fenced, raw).is_ok());
+    }
+
+    #[test]
+    fn parse_rewrite_draft_rejects_dropped_numbers() {
+        let raw = "65200 进 0.5 张，止损 64800。";
+        let content = r#"{"rewrite": "65200 进场，止损 64800。"}"#; // 丢了 0.5
+        let err = parse_rewrite_draft(content, raw).unwrap_err();
+        assert!(err.contains("0.5"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn parse_rewrite_draft_rejects_length_out_of_bounds() {
+        let raw = "这是一段五十个字左右的原文，里面说了很多内容，包括观察、计划与情绪，凑够足够长度才能测出过短与过长的边界行为，再补一句。";
+        let too_short = r#"{"rewrite": "太短了"}"#;
+        assert!(parse_rewrite_draft(too_short, raw).unwrap_err().contains("too short"));
+        let long_draft: String = raw.chars().cycle().take(raw.chars().count() * 2).collect();
+        let too_long = format!(r#"{{"rewrite": "{long_draft}"}}"#);
+        assert!(parse_rewrite_draft(&too_long, raw).unwrap_err().contains("too long"));
+        // 非 JSON → Err（触发修复轮）
+        assert!(parse_rewrite_draft("我直接把草稿写在这里", raw).is_err());
+    }
+
+    #[test]
+    fn parse_proofread_keeps_verbatim_pairs_and_drops_invalid() {
+        let raw = "6500 这里我决定做多，反正就是干了，BAR 2265 收出长上影。";
+        let content = r#"{"corrections":[
+            {"oldText":"6500 这里我决定做多","newText":"65000 这里我决定做多","reason":"价格量级与成交 65200 不符"},
+            {"oldText":"根本不存在的片段","newText":"任何","reason":"oldText 非逐字"},
+            {"oldText":"反正就是干了","newText":"反正就是干了","reason":"newText 没变"},
+            {"oldText":"反正就是干了","newText":"索性直接进场","reason":"重复条目去重"},
+            {"oldText":"反正就是干了","newText":"索性进场","reason":"重复"},
+            {"oldText":"BAR 2265","newText":"BAR 265","reason":"越界 BAR 疑似多打一位"}
+        ]}"#;
+        let out = parse_proofread(content, raw).unwrap();
+        assert_eq!(out.len(), 3);
+        assert_eq!(out[0].old_text, "6500 这里我决定做多");
+        assert_eq!(out[2].new_text, "BAR 265");
+        // 空结果合法（未发现明显错误）
+        assert!(parse_proofread(r#"{"corrections":[]}"#, raw).unwrap().is_empty());
+        // 缺 corrections 键 / 键名写错 = schema 失败 → Err（触发修复轮），不是「没发现」
+        assert!(parse_proofread("{}", raw).is_err());
+        assert!(parse_proofread(r#"{"correction":[]}"#, raw).is_err());
+        // 非 JSON → Err
+        assert!(parse_proofread("没发现问题", raw).is_err());
+    }
+
+    #[test]
+    fn parse_proofread_rejects_over_budget() {
+        let raw = "一段原文。";
+        let items: Vec<String> = (0..11)
+            .map(|i| format!(r#"{{"oldText":"一段","newText":"改{i}","reason":"r"}}"#))
+            .collect();
+        let content = format!(r#"{{"corrections":[{}]}}"#, items.join(","));
+        assert!(parse_proofread(&content, raw).unwrap_err().contains("max 10"));
     }
 }

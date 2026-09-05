@@ -13,6 +13,12 @@ export interface Account {
   /** 初始资金（账户货币单位） */
   initialBalance: number
   currency: string
+  /** Taker 手续费率（百分比数值：0.05 = 0.05%；缺省/0 不计费）。事后按成交额逐笔计提，改费率追溯重算全部统计 */
+  takerFeePct?: number
+  /** Maker 手续费率（百分比数值：0.02 = 0.02%；缺省/0 不计费） */
+  makerFeePct?: number
+  /** 临时关闭手续费（0.3.7）：费率保留，全部统计回到毛口径；删除即恢复净额 */
+  feesDisabled?: boolean
   note?: string
   /** 当前权益快照（initialBalance + 已平仓 PnL；派生数据，交易变化后由前端重算） */
   equity?: number
@@ -145,7 +151,7 @@ export interface CaseTagSuggestions {
  *  「需重试」不算完成——只有内建重试后的最终结果才落到 succeeded/failed。 */
 export interface AiTask {
   id: string
-  kind: 'analysis' | 'summary' | 'suggestions' | 'binding' | 'title' | 'split'
+  kind: 'analysis' | 'summary' | 'suggestions' | 'binding' | 'title' | 'split' | 'rewrite' | 'proofread'
   label: string
   status: 'running' | 'succeeded' | 'failed'
   startedAt: number
@@ -314,6 +320,8 @@ export interface Execution {
   anchorPrice?: number
   /** TradingView 原始信号文本，如 "TP1" / "SL" */
   signal?: string
+  /** 手续费覆盖（账户货币绝对金额，来自导入文件的 Commission/手续费 列）；优先于账户费率推算 */
+  feeOverride?: number
   /** 原始导入行引用，如 tv:trade:7:row:14 */
   sourceRef?: string
   note?: string
@@ -469,8 +477,12 @@ export interface ImportBatch {
 /* ---------- 派生计算结果 ---------- */
 
 export interface TradeMetrics {
-  /** 已实现盈亏（账户货币） */
+  /** 已实现盈亏（账户货币，已扣手续费） */
   pnl: number
+  /** 已实现盈亏（未扣手续费） */
+  grossPnl: number
+  /** 手续费合计（全部持仓腿，含未平仓的入场腿；未配费率且无 feeOverride 时为 0） */
+  fees: number
   /** 平均进场价 / 平均出场价 */
   avgEntry: number
   avgExit: number

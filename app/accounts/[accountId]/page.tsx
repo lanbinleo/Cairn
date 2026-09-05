@@ -1,7 +1,8 @@
 'use client'
 
+import { useState } from 'react'
 import { Link, Navigate, useParams } from 'react-router-dom'
-import { ChevronRight } from 'lucide-react'
+import { ChevronDown, ChevronRight } from 'lucide-react'
 
 import { PnlText } from '@/components/pnl-text'
 import { StatCard } from '@/components/stat-card'
@@ -11,23 +12,30 @@ import { EditPeriodDialog } from '@/components/edit-period-dialog'
 import { CreatePeriodDialog } from '@/components/create-period-dialog'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Switch } from '@/components/ui/switch'
+import { toast } from '@/components/ui/sonner'
 import { useCairn } from '@/lib/store'
 import { computeStats, computeEquityCurve } from '@/lib/metrics'
+import { feeRatesForAccount } from '@/lib/fee'
 import { fmtMoney, fmtCompactMoney, fmtPct, fmtDateRange, fmtUtcDate } from '@/lib/format'
+import { cn } from '@/lib/utils'
 
 export default function AccountDetailPage() {
   const { accountId = '' } = useParams()
-  const { getAccount, periods, trades, symbolLabel } = useCairn()
+  const { getAccount, periods, trades, symbolLabel, updateAccount } = useCairn()
+  const [feesOpen, setFeesOpen] = useState(false)
   const account = getAccount(accountId)
   if (!account) return <Navigate to="/accounts" replace />
 
   const accountTrades = trades.filter((t) => t.accountId === account.id)
-  const stats = computeStats(accountTrades, account.initialBalance)
-  const curve = computeEquityCurve(accountTrades, account.initialBalance)
+  const stats = computeStats(accountTrades, account.initialBalance, () => feeRatesForAccount(account))
+  const curve = computeEquityCurve(accountTrades, account.initialBalance, () => feeRatesForAccount(account))
   const accountPeriods = periods
     .filter((p) => p.accountId === account.id)
     .sort((a, b) => b.chartStart - a.chartStart)
   const equity = account.initialBalance + stats.totalPnl
+  // 只有 feeOverride（导入的真实手续费）没有费率时也能对比口径
+  const hasImportedFees = accountTrades.some((t) => t.executions.some((e) => e.feeOverride != null))
 
   return (
     <div className="flex flex-col gap-6 p-6 lg:p-8">
@@ -98,7 +106,7 @@ export default function AccountDetailPage() {
         <CardContent className="flex flex-col gap-1">
           {accountPeriods.map((period) => {
             const periodTrades = trades.filter((t) => t.periodId === period.id)
-            const pStats = computeStats(periodTrades, account.initialBalance)
+            const pStats = computeStats(periodTrades, account.initialBalance, () => feeRatesForAccount(account))
             return (
               <div
                 key={period.id}
@@ -155,6 +163,54 @@ export default function AccountDetailPage() {
             )
           })}
         </CardContent>
+      </Card>
+
+      {/* 手续费开关收在折叠区（0.3.7）：临时对比毛/净口径用，平时不打扰 */}
+      <Card>
+        <CardHeader>
+          <button
+            type="button"
+            className="flex w-full items-center justify-between gap-2 text-left"
+            aria-expanded={feesOpen}
+            onClick={() => setFeesOpen((v) => !v)}
+          >
+            <span className="flex flex-wrap items-center gap-2">
+              <CardTitle className="text-base">手续费</CardTitle>
+              <span className="text-sm text-muted-foreground">
+                {account.takerFeePct != null || account.makerFeePct != null
+                  ? `Taker ${account.takerFeePct ?? 0}% / Maker ${account.makerFeePct ?? 0}%`
+                  : hasImportedFees
+                    ? '费率未配置 · 有导入的真实手续费'
+                    : '未配置费率'}
+              </span>
+              {account.feesDisabled && <Badge variant="secondary">已临时关闭</Badge>}
+            </span>
+            <ChevronDown className={cn('size-4 shrink-0 text-muted-foreground transition-transform', feesOpen && 'rotate-180')} />
+          </button>
+        </CardHeader>
+        {feesOpen && (
+          <CardContent>
+            <div className="flex items-center justify-between gap-4 rounded-lg border p-3">
+              <div className="flex flex-col gap-0.5">
+                <span className="text-sm font-medium">临时关闭手续费</span>
+                <span className="text-xs text-muted-foreground">
+                  关闭后按费率推算的部分回到毛口径（PnL / 胜率 / R / 权益曲线）；导入文件自带的每行真实手续费仍保留
+                </span>
+              </div>
+              <Switch
+                checked={account.feesDisabled ?? false}
+                disabled={!account.takerFeePct && !account.makerFeePct && !hasImportedFees}
+                onCheckedChange={(checked) => {
+                  updateAccount(account.id, { feesDisabled: checked || undefined })
+                  const hasRates = account.takerFeePct != null || account.makerFeePct != null
+                  toast.success(checked
+                    ? (hasRates ? '已临时关闭费率推算，统计回到毛口径' : '已临时关闭费率推算（未配置费率，数字不变）')
+                    : (hasRates ? '已恢复手续费，统计回到净额' : '已重新允许费率推算（未配置费率，数字不变）'))
+                }}
+              />
+            </div>
+          </CardContent>
+        )}
       </Card>
     </div>
   )

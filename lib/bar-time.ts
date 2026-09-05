@@ -74,7 +74,10 @@ export interface ResolvedCaseCardTime {
  * 规则：
  * - barRef 先做当日合法性校验（1..barsPerDay），越界值（如语音误识别的 2265）不参与推导；
  * - 候选时间早于上一张卡片的已解析时间（序号变小）→ 判定跨 UTC 日界，日 +1；
- * - 跨日后仍越过 window.end 的（回看区间等噪声），放弃 bar 数学，紧跟上一张放置；
+ * - 候选时间越过 window.end 时先向前一天找（0.3.7）：「昨天」语境的前置卡
+ *   （pre-entry 回顾前一日的 setup）的 barRef 属于锚定日之前的图表日，落回窗口内
+ *   且不违反创建顺序即采用；
+ * - 向前找仍越窗或与上一张矛盾的（回看区间等噪声），放弃 bar 数学，紧跟上一张放置；
  * - 无 barRef 或无效的卡片沿用上一张时间 +1ms，保持创建顺序。
  * 记录顺序优先于 bar 数学：解析结果永不回退。
  */
@@ -83,9 +86,11 @@ export function resolveCaseCardTimesForTrade(
   timeframeMinutes: number,
   window: { anchor: number; start: number; end: number },
 ): Map<string, ResolvedCaseCardTime> {
+  const DAY_MS = 24 * 60 * 60_000
   const resolved = new Map<string, ResolvedCaseCardTime>()
   let prevTime: number | null = null
   let prevDay = utcDayStart(window.anchor)
+  const windowStartDay = utcDayStart(window.start)
   const ordered = [...cards].sort((a, b) => a.createdAt - b.createdAt)
   for (const card of ordered) {
     if (card.barRef == null || !isValidBarNumber(card.barRef, timeframeMinutes)) {
@@ -96,10 +101,22 @@ export function resolveCaseCardTimesForTrade(
     let day = prevDay
     let time = barNumberToTime(day, card.barRef, timeframeMinutes)
     while (prevTime != null && time < prevTime) {
-      day += 24 * 60 * 60_000
+      day += DAY_MS
       time = barNumberToTime(day, card.barRef, timeframeMinutes)
     }
     if (time > window.end) {
+      let backDay = day
+      let backTime = time
+      while (backTime > window.end && backDay - DAY_MS >= windowStartDay) {
+        backDay -= DAY_MS
+        backTime = barNumberToTime(backDay, card.barRef, timeframeMinutes)
+      }
+      if (backTime <= window.end && backTime >= window.start && (prevTime == null || backTime >= prevTime)) {
+        resolved.set(card.id, { time: backTime, invalid: false })
+        prevTime = backTime
+        prevDay = backDay
+        continue
+      }
       time = prevTime == null ? window.start : prevTime + 1
       resolved.set(card.id, { time, invalid: true })
       prevTime = time

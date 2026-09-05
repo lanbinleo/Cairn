@@ -14,6 +14,8 @@ export interface RawImportRow {
   time: number
   price: number
   quantity: number
+  /** 导出文件自带的每行手续费（绝对金额，货币同账户）；无此列时靠账户费率事后推算 */
+  commission?: number
 }
 
 export interface ProposedExecution extends RawImportRow {
@@ -43,6 +45,7 @@ const FIELD_ALIASES = {
   time: ['Date/Time', 'Date Time', 'Time', '时间', '日期时间', '日期和时间', '成交时间'],
   price: ['Price', '价格', '价格 USDT', '价格 USD', '成交价'],
   quantity: ['Qty', 'Quantity', '数量', '大小（数量）', '大小 (数量)', '合约', 'Contracts'],
+  commission: ['Commission', '手续费', '佣金', '佣金费用'],
 }
 
 const CHART_FIELD_ALIASES = {
@@ -225,6 +228,7 @@ export async function parseTradingViewRows(file: File): Promise<RawImportRow[]> 
     const quantity = toNumber(valueByAliases(row, FIELD_ALIASES.quantity))
     if (!type || time == null || price == null || quantity == null || quantity <= 0) return []
     const tradeNo = String(valueByAliases(row, FIELD_ALIASES.tradeNo) ?? '').trim()
+    const commission = toNumber(valueByAliases(row, FIELD_ALIASES.commission))
     return [{
       sourceRef: `tv:row:${index + 1}`,
       sourceTradeNo: tradeNo || undefined,
@@ -234,6 +238,7 @@ export async function parseTradingViewRows(file: File): Promise<RawImportRow[]> 
       time,
       price,
       quantity,
+      commission: commission != null && Number.isFinite(commission) && commission !== 0 ? commission : undefined,
     }]
   })
 }
