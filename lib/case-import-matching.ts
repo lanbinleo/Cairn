@@ -126,6 +126,21 @@ function resolveCaseCardTimesLoose(
       time = barNumberToTime(day, card.barRef, timeframeMinutes)
     }
     if (time > window.end) {
+      // 「昨天」语境前置卡（0.3.7，与展示规则同步）：barRef 可能属于锚定日之前的
+      // 图表日——向前一天找，落回窗口内且不违反创建顺序即采用。
+      const windowStartDay = utcDayStart(window.start)
+      let backDay = day
+      let backTime = time
+      while (backTime > window.end && backDay - 24 * 60 * 60_000 >= windowStartDay) {
+        backDay -= 24 * 60 * 60_000
+        backTime = barNumberToTime(backDay, card.barRef, timeframeMinutes)
+      }
+      if (backTime <= window.end && backTime >= window.start && (prevTime == null || backTime >= prevTime)) {
+        resolved.set(card.id, { time: backTime, valid: !clamped })
+        prevTime = backTime
+        if (!clamped) prevDay = backDay
+        continue
+      }
       const fallback: number = prevTime == null ? window.start : prevTime + 1
       resolved.set(card.id, { time: fallback, valid: false })
       prevTime = fallback
