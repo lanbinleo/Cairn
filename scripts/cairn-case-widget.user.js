@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Cairn 记一笔
 // @namespace    cairn
-// @version      0.3.3
+// @version      0.3.4
 // @description  TradingView 悬浮记录浮窗：口述或打字记录交易思考，实时写入本地 Cairn（127.0.0.1 本地 API）
 // @author       Cairn
 // @match        https://*.tradingview.com/*
@@ -1134,19 +1134,20 @@
         row.querySelector('.ec-save').addEventListener('click', () => saveCardEdit(card.id, el));
         el.append(ta, row);
       } else {
-        const barHtml = card.barRef != null
-          ? '<span class="mc-bar">BAR ' + card.barRef + '</span>'
-          : '';
         el.innerHTML = `
           <div class="mc-meta">
             <span class="mc-phase"></span>
-            ${barHtml}
+            <span class="mc-bar"></span>
             <span class="mc-time"></span>
             <button type="button" class="mc-edit" title="修改这张卡">✎</button>
             <button type="button" class="mc-del" title="删除这张卡（可从备份恢复）">✕</button>
           </div>
           <div class="mc-text"></div>`;
         el.querySelector('.mc-phase').textContent = meta.label;
+        // barRef 经 textContent 写入：后端校验 1–1440，但不给未来入口留 HTML 注入面
+        const barEl = el.querySelector('.mc-bar');
+        if (card.barRef != null) barEl.textContent = 'BAR ' + card.barRef;
+        else barEl.remove();
         el.querySelector('.mc-time').textContent = card.createdAt ? fmtTime(card.createdAt) : '';
         el.querySelector('.mc-text').textContent = card.rawText || '';
         el.querySelector('.mc-edit').addEventListener('click', () => startEditCard(card.id));
@@ -1545,6 +1546,9 @@
         return;
       }
 
+      // 单卡路径同样带幂等 id：响应超时后重按提交命中后端幂等探针返回同一张卡，
+      // 不再重复落卡（与拆卡的 clientRequestId 同模式；旧后端会忽略多出的 id 字段）
+      payload.id = batchRequestIdFor(text);
       const res = await api('POST', '/cases/' + encodeURIComponent(state.caseId) + '/cards', payload);
       if (res.status === 401) {
         state.connected = false;
@@ -1557,6 +1561,7 @@
         return;
       }
       state.cards.unshift(res.json);
+      state.lastBatchRequest = null;
       renderCards();
       const first = $('card-list').firstElementChild;
       if (first) first.classList.add('fresh');
