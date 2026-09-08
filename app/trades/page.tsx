@@ -5,7 +5,7 @@ import { Link } from 'react-router-dom'
 import { AlertTriangle, ClipboardPaste, Plus, X } from 'lucide-react'
 
 import { PageHeader } from '@/components/page-header'
-import { TradesTable } from '@/components/trades-table'
+import { TradesTable, TradesTableCopyButton } from '@/components/trades-table'
 import { TradeFilterChips, TradeFilterMenu } from '@/components/trade-filter-menu'
 import { ManageTagsDialog } from '@/components/manage-tags-dialog'
 import { tagColorClasses, tagDotClasses } from '@/components/tag-badge'
@@ -174,6 +174,7 @@ export default function TradesPage() {
         title="交易"
         actions={
           <div className="flex items-center gap-2">
+            <TradesTableCopyButton trades={sortedFiltered} />
             <ManageTagsDialog />
             <Button variant="outline" onClick={handlePasteTradeJson}>
               <ClipboardPaste data-icon="inline-start" />
