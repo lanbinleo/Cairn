@@ -140,7 +140,27 @@ export async function saveLocalRecords<T extends { id: string }>(
 /* ---------- fire-and-forget 持久化（0.3.6） ----------
  * store 里的 void save/delete 调用统一走 bg* 函数：UI 已经即时更新，
  * 落库失败必须让用户知道（toast + 前端日志），否则就是「以为存了其实没存」。
- * 需要自行处理错误的调用方请 await 对应的非 bg 函数。 */
+ * 需要自行处理错误的调用方请 await 对应的非 bg 函数。
+ *
+ * bg* 全部挂到一条模块级串行链上（0.3.8）：data-changed hydrate 的读库与在途
+ * 后台写入存在竞态——读赶在保存提交之前会把旧快照整体覆盖回内存，回滚用户
+ * 刚保存的编辑。hydrate 读库前先 await drainBackgroundWrites()。 */
+
+let writeChain: Promise<unknown> = Promise.resolve()
+
+function enqueueWrite<T>(operation: () => Promise<T>): Promise<T> {
+  const next = writeChain.then(operation, operation)
+  writeChain = next.catch(() => undefined)
+  return next
+}
+
+/** 等待所有在途后台写入落库（hydrate 读库前调用，避免读到提交前的旧快照）。 */
+export function drainBackgroundWrites(): Promise<unknown> {
+  return writeChain.then(
+    () => undefined,
+    () => undefined,
+  )
+}
 
 function notifyPersistFailure(error: unknown) {
   const message = error instanceof Error ? error.message : String(error)
@@ -149,19 +169,19 @@ function notifyPersistFailure(error: unknown) {
 }
 
 export function bgSaveRecord<T extends { id: string }>(collection: CollectionName, record: T): void {
-  saveLocalRecord(collection, record).catch(notifyPersistFailure)
+  enqueueWrite(() => saveLocalRecord(collection, record)).catch(notifyPersistFailure)
 }
 
 export function bgSaveRecords<T extends { id: string }>(collection: CollectionName, records: T[]): void {
-  saveLocalRecords(collection, records).catch(notifyPersistFailure)
+  enqueueWrite(() => saveLocalRecords(collection, records)).catch(notifyPersistFailure)
 }
 
 export function bgDeleteRecord(collection: CollectionName, id: string): void {
-  deleteLocalRecord(collection, id).catch(notifyPersistFailure)
+  enqueueWrite(() => deleteLocalRecord(collection, id)).catch(notifyPersistFailure)
 }
 
 export function bgReplaceCollection<T extends { id: string }>(collection: CollectionName, records: T[]): void {
-  replaceLocalCollection(collection, records).catch(notifyPersistFailure)
+  enqueueWrite(() => replaceLocalCollection(collection, records)).catch(notifyPersistFailure)
 }
 
 /* ---------- 本地 REST API 管理 ---------- */

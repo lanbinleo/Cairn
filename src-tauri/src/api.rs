@@ -9,7 +9,7 @@ use std::{
         atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering},
         RwLock,
     },
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use rusqlite::{params, Connection};
@@ -20,6 +20,11 @@ use tauri::{AppHandle, Emitter, Manager};
 use crate::{db, diagnostics, paths};
 
 const DEFAULT_PORT: u16 = 8787;
+/// REST 请求体上限：正常负载（语音拆卡原文等）是 KB 级，2MB 已远超所需；
+/// 无上限时恶意网页无需 token 即可借超大 body 在鉴权前把应用读爆内存。
+const MAX_BODY_BYTES: u64 = 2 * 1024 * 1024;
+/// 空闲连接回收：单线程 server 不能让挂着不发的连接无限占位。
+const RECV_TIMEOUT: Duration = Duration::from_secs(60);
 pub const DATA_CHANGED_EVENT: &str = "cairn://data-changed";
 /// AI 任务生命周期事件（Rust 后台任务 → 前端任务中心）：
 /// payload = { id, kind, status: start|succeeded|failed, label, targetType?, targetId?, error?, at }
@@ -134,6 +139,11 @@ fn load_or_create_config(app: &AppHandle) -> Result<ApiConfig, String> {
                 return Ok(config);
             }
         }
+        // 损坏/缺 token 会静默换新 token，浮窗存的旧 token 从此全部 401——至少留痕
+        diagnostics::app_log(
+            app,
+            "api-config.json is invalid or has an empty token; generating a new token (floating widgets need the new token)".to_string(),
+        );
     }
     let config = ApiConfig {
         enabled: true,
@@ -256,8 +266,9 @@ pub fn start_server(app: AppHandle) {
         diagnostics::app_log(&app, format!("local api listening on 127.0.0.1:{port}"));
 
         loop {
-            let mut request = match server.recv() {
-                Ok(request) => request,
+            let mut request = match server.recv_timeout(RECV_TIMEOUT) {
+                Ok(Some(request)) => request,
+                Ok(None) => continue, // 空闲超时：回收挂起的连接，不占住单线程循环
                 Err(err) => {
                     diagnostics::app_log(&app, format!("local api receive failed: {err}"));
                     break;
@@ -270,8 +281,20 @@ pub fn start_server(app: AppHandle) {
                 .iter()
                 .find(|header| header.field.equiv("Authorization"))
                 .map(|header| header.value.as_str().to_string());
-            let mut body = Vec::new();
-            let _ = request.as_reader().read_to_end(&mut body);
+            // 读 body 前先限流：鉴权在各 handler 内部，不能让未认证请求
+            // 先把任意大小的 body 灌进内存（take 兜底谎报 Content-Length 的流）
+            let body = match read_body_limited(&mut request, MAX_BODY_BYTES) {
+                Ok(body) => body,
+                Err(()) => {
+                    let mut response = tiny_http::Response::from_string(
+                        json!({ "error": "request body too large" }).to_string(),
+                    )
+                    .with_status_code(413);
+                    add_cors_headers(&mut response);
+                    let _ = request.respond(response);
+                    continue;
+                }
+            };
 
             let token = current_token(&app);
             let db = app.state::<db::Db>();
@@ -326,6 +349,19 @@ pub fn start_server(app: AppHandle) {
             let _ = request.respond(response);
         }
     });
+}
+
+/// 读取请求体并限制大小：Content-Length 声明超限或实际读出超限都拒绝。
+fn read_body_limited(request: &mut tiny_http::Request, limit: u64) -> Result<Vec<u8>, ()> {
+    if request.body_length().is_some_and(|len| len as u64 > limit) {
+        return Err(());
+    }
+    let mut body = Vec::new();
+    let _ = request.as_reader().take(limit + 1).read_to_end(&mut body);
+    if body.len() as u64 > limit {
+        return Err(());
+    }
+    Ok(body)
 }
 
 fn add_cors_headers<R: Read>(response: &mut tiny_http::Response<R>) {

@@ -7,7 +7,7 @@ import { PageHeader } from '@/components/page-header'
 import { StatCard } from '@/components/stat-card'
 import { PnlText } from '@/components/pnl-text'
 import { Sparkline } from '@/components/sparkline'
-import { TradesTable } from '@/components/trades-table'
+import { TradesTable, TradesTableCopyButton } from '@/components/trades-table'
 import { EquitySection } from '@/components/dashboard/equity-section'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardAction, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -164,13 +164,16 @@ export default function DashboardPage() {
         <CardHeader>
           <CardTitle className="text-base">近期交易</CardTitle>
           <CardAction>
-            <Link
-              to="/trades"
-              className="inline-flex items-center gap-1 text-sm text-muted-foreground transition-colors hover:text-foreground"
-            >
-              全部交易
-              <ArrowUpRight className="size-3.5" aria-hidden="true" />
-            </Link>
+            <div className="flex items-center gap-2">
+              <TradesTableCopyButton trades={recentTrades} />
+              <Link
+                to="/trades"
+                className="inline-flex items-center gap-1 text-sm text-muted-foreground transition-colors hover:text-foreground"
+              >
+                全部交易
+                <ArrowUpRight className="size-3.5" aria-hidden="true" />
+              </Link>
+            </div>
           </CardAction>
         </CardHeader>
         <CardContent>

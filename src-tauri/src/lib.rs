@@ -871,6 +871,11 @@ pub(crate) async fn run_card_analysis(
         let conn = db.conn()?;
         let mut current = db::read_record_by_id(&conn, "caseCards", card_id)?
             .ok_or_else(|| format!("case card not found: {card_id}"))?;
+        // data 列是合法 JSON 但非对象（如手工编辑过的备份）时，IndexMut 会 panic——
+        // 此刻正持有 Db Mutex，panic 直接毒化全局锁，拒之并以错误返回
+        if !current.is_object() {
+            return Err(format!("case card {card_id} record is not a JSON object"));
+        }
         let user_adjusted = current
             .get("aiAnalysis")
             .and_then(|value| value.get("userAdjusted"))
@@ -1241,6 +1246,10 @@ pub(crate) async fn run_execution_suggestions(
     let conn = db.conn()?;
     let mut current = db::read_record_by_id(&conn, "cases", case_id)?
         .ok_or_else(|| format!("case not found: {case_id}"))?;
+    // 同 run_card_analysis：非对象 data 行会让 IndexMut 在持锁期间 panic（毒化全局锁）
+    if !current.is_object() {
+        return Err(format!("case {case_id} record is not a JSON object"));
+    }
     let previous: Vec<Value> = current
         .get("aiExecutionSuggestions")
         .and_then(|value| value.get("suggestions"))
@@ -1706,6 +1715,14 @@ fn persist_batch_splits(
     if let Some(replayed) = collect_batch_replay(conn, client_request_id)? {
         return Ok((replayed, false));
     }
+    // 无锁 AI 窗口最长数分钟：落库前复核 Case 仍存活，别把新卡写进已删 Case
+    // 成为前端看不见的活跃孤儿行
+    if db::read_record_by_id(conn, "cases", case_id)?.is_none() {
+        return Err(format!("case not found: {case_id}"));
+    }
+    // 单事务：逐张插入要么全成要么全无，第 k 张失败时 0..k-1 不落库，
+    // 否则残缺列表会被同 clientRequestId 的重放语义当成完整结果洗白
+    let tx = conn.unchecked_transaction().map_err(|err| err.to_string())?;
     let mut created: Vec<Value> = Vec::new();
     for (index, split) in splits.into_iter().enumerate() {
         let id = format!("{client_request_id}-{index}");
@@ -1725,9 +1742,10 @@ fn persist_batch_splits(
                 data["entryDecision"] = json!(decision);
             }
         }
-        db::save_record_in_tx(conn, "caseCards", &id, data.clone())?;
+        db::save_record_in_tx(&tx, "caseCards", &id, data.clone())?;
         created.push(data);
     }
+    tx.commit().map_err(|err| err.to_string())?;
     Ok((created, true))
 }
 
@@ -2032,7 +2050,11 @@ pub(crate) fn run_card_resplit_apply(
         .to_string();
     let created_at = current.get("createdAt").and_then(Value::as_u64).unwrap_or(now);
     let rid = format!("rs-{}", ai::next_task_id());
-    let created = persist_resplit(&conn, &current, splits, &rid, created_at)?;
+    // 单事务：软删原卡 + N 张新卡 + Case 建议剔除要么全成要么全无，
+    // 中途失败留下「原卡已删、新卡残缺」的半替换状态无法自动收拾
+    let tx = conn.unchecked_transaction().map_err(|err| err.to_string())?;
+    let created = persist_resplit(&tx, &current, splits, &rid, created_at)?;
+    tx.commit().map_err(|err| err.to_string())?;
     if let Some(app) = app {
         ai::log_provider_event(app, format!("card {card_id} resplit into {} cards", created.len()));
     }
@@ -2455,9 +2477,19 @@ fn save_attachment_file(
         sanitize_file_part(&kind),
         safe_name
     );
-    let full_path = paths::app_data_dir(&app)?.join(&relative_path);
+    // sanitize_file_part 的白名单保留 '.'，单独的 ".." 组件可原样存活——写入前按
+    // 路径组件校验（拒绝 ParentDir），再对已建父目录做 canonicalize 边界复核，
+    // 与读路径的防御对称；否则 IPC 调用方可借 owner_type=".." 写到 app data 外
+    ensure_safe_relative_path(&relative_path)?;
+    let base = paths::app_data_dir(&app)?;
+    let full_path = base.join(&relative_path);
     if let Some(parent) = full_path.parent() {
         fs::create_dir_all(parent).map_err(|err| err.to_string())?;
+        let canonical_base = base.canonicalize().map_err(|err| err.to_string())?;
+        let canonical_parent = parent.canonicalize().map_err(|err| err.to_string())?;
+        if !canonical_parent.starts_with(canonical_base) {
+            return Err("attachment path escapes app data dir".to_string());
+        }
     }
     fs::write(&full_path, bytes).map_err(|err| err.to_string())?;
 
@@ -2475,6 +2507,11 @@ fn save_attachment_file(
 #[tauri::command]
 fn read_attachment_file(app: AppHandle, relative_path: String) -> Result<String, String> {
     ensure_safe_relative_path(&relative_path)?;
+    // 限定只在 attachments/ 下读：该命令是 webview 的通用读面，放行整个 app data
+    // 会连 ai-providers.json（明文 api_key）、api-config.json（REST token）一起吐出去
+    if !relative_path.replace('\\', "/").starts_with("attachments/") {
+        return Err("attachment path must stay under attachments/".to_string());
+    }
     let base = paths::app_data_dir(&app)?;
     let path = base.join(&relative_path);
     let canonical_base = base.canonicalize().map_err(|err| err.to_string())?;
@@ -2532,6 +2569,16 @@ pub fn run() {
     diagnostics::write_temp("Cairn process starting");
 
     tauri::Builder::default()
+        // 单实例（须最先注册）：主窗口关到托盘后再点 exe 若无此插件会拉起第二个
+        // 进程——两个实例各持全量快照整记录 upsert，互相静默软删对方的写入
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            diagnostics::app_log(app, "second instance blocked; focusing existing window".to_string());
+            if let Some(window) = tauri::Manager::get_webview_window(app, "main") {
+                let _ = window.unminimize();
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {

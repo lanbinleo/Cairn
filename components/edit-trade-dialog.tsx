@@ -181,6 +181,12 @@ export function EditTradeDialog({
   const [sl, setSl] = useState(trade.initialStopLoss?.toString() ?? '')
   const [tp, setTp] = useState(trade.initialTakeProfit?.toString() ?? '')
   const [ep, setEp] = useState(trade.initialEntryPrice?.toString() ?? '')
+  /**
+   * 打开时的计划价快照：表单空 + 打开时也空 + store 此刻有值 = 对话框开着期间
+   * 外部写入（REST 建绑定触发的 Entry memo 回填）——保存时跳过该键保住回填值；
+   * 打开时有值而表单空才是用户显式清空
+   */
+  const planAtOpenRef = useRef<{ sl: number | null; tp: number | null; ep: number | null }>({ sl: null, tp: null, ep: null })
   const [status, setStatus] = useState(trade.status)
   const [executionRows, setExecutionRows] = useState<Execution[]>(trade.executions.map(editableExecution))
   const [expandedExecutionIds, setExpandedExecutionIds] = useState<Set<string>>(new Set())
@@ -220,6 +226,11 @@ export function EditTradeDialog({
     setSl(trade.initialStopLoss?.toString() ?? '')
     setTp(trade.initialTakeProfit?.toString() ?? '')
     setEp(trade.initialEntryPrice?.toString() ?? '')
+    planAtOpenRef.current = {
+      sl: trade.initialStopLoss ?? null,
+      tp: trade.initialTakeProfit ?? null,
+      ep: trade.initialEntryPrice ?? null,
+    }
     setStatus(trade.status)
     setExecutionRows(trade.executions.map((execution) => editableExecution({ ...execution })))
     setExpandedExecutionIds(new Set())
@@ -250,11 +261,15 @@ export function EditTradeDialog({
     const parsedSl = sl.trim() === '' ? undefined : Number(sl)
     const parsedTp = tp.trim() === '' ? undefined : Number(tp)
     const parsedEp = ep.trim() === '' ? undefined : Number(ep)
+    // 对话框开着期间外部回填的计划价不被空表单清掉（见 planAtOpenRef 注释）
+    const keepSl = parsedSl == null && planAtOpenRef.current.sl == null && trade.initialStopLoss != null
+    const keepTp = parsedTp == null && planAtOpenRef.current.tp == null && trade.initialTakeProfit != null
+    const keepEp = parsedEp == null && planAtOpenRef.current.ep == null && trade.initialEntryPrice != null
     updateTrade(trade.id, {
       note: note.trim() === '' ? undefined : note.trim(),
-      initialStopLoss: parsedSl != null && Number.isFinite(parsedSl) ? parsedSl : undefined,
-      initialTakeProfit: parsedTp != null && Number.isFinite(parsedTp) ? parsedTp : undefined,
-      initialEntryPrice: parsedEp != null && Number.isFinite(parsedEp) ? parsedEp : undefined,
+      ...(keepSl ? {} : { initialStopLoss: parsedSl != null && Number.isFinite(parsedSl) ? parsedSl : undefined }),
+      ...(keepTp ? {} : { initialTakeProfit: parsedTp != null && Number.isFinite(parsedTp) ? parsedTp : undefined }),
+      ...(keepEp ? {} : { initialEntryPrice: parsedEp != null && Number.isFinite(parsedEp) ? parsedEp : undefined }),
       executions: executionRows
         .map((execution) => normalizeExecution(execution, trade.id))
         .filter(canSaveExecution),

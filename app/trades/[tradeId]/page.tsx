@@ -5,6 +5,7 @@ import { Link, Navigate, useNavigate, useParams } from 'react-router-dom'
 import { CheckCircle2, ChevronRight, Clipboard, Copy, ImagePlus, MoreHorizontal, NotebookPen, Trash2 } from 'lucide-react'
 
 import { AttachmentImage } from '@/components/attachment-image'
+import { useConfirm } from '@/components/confirm-dialog-provider'
 import { TradeChart, type TradeChartCaseMarker } from '@/components/trade-chart'
 import { TradeCasePanel, TradeCaseSummaryCard } from '@/components/trade-case-panel'
 import { PnlText, RText } from '@/components/pnl-text'
@@ -79,6 +80,7 @@ export default function TradeDetailPage() {
   const [suggestPrefill, setSuggestPrefill] = useState<{ execution: Execution; nonce: number } | null>(null)
   const planPromptShownRef = useRef<string | null>(null)
   const { getTrade, getAccount, getPeriod, getSymbol, getNotesMentioningTrade, symbolLabel, setTradeStatus, updateTrade, createNote, createImageAttachment, deleteAttachment, getChartCandles, tagDefs, cases, caseCards, caseBindings, prefillTradePlanFromBoundCase } = useCairn()
+  const confirm = useConfirm()
   /* 缺失计划价提醒：每笔 Trade 每次访问最多弹一次；「忽略」持久化，「待会儿提醒」下次访问再弹 */
   useEffect(() => {
     const current = getTrade(tradeId)
@@ -176,7 +178,10 @@ export default function TradeDetailPage() {
         fileName: file.name,
         contentDataUrl: dataUrl,
       })
-      const next = [...activeTrade.referenceImages]
+      // 上传跨两个 await，闭包里的 referenceImages 可能已过期（上传中删了别的图）
+      // ——以 store 里的最新值为基础应用本次增改，避免把已删除的图写回复活
+      const fresh = getTrade(activeTrade.id) ?? activeTrade
+      const next = [...fresh.referenceImages]
       if (imageEditIndex == null) {
         next.push(attachment.id)
       } else {
@@ -325,7 +330,11 @@ export default function TradeDetailPage() {
               variant="ghost"
               className="text-muted-foreground"
               onClick={() => {
-                localStorage.setItem(`cairn.trade-plan-prompt.${trade.id}`, 'ignored')
+                try {
+                  localStorage.setItem(`cairn.trade-plan-prompt.${trade.id}`, 'ignored')
+                } catch {
+                  /* 本地存储不可用：最多下次访问再提醒一次 */
+                }
                 setPlanPromptOpen(false)
               }}
             >
@@ -507,11 +516,19 @@ export default function TradeDetailPage() {
                             variant="ghost"
                             size="icon-sm"
                             aria-label="删除图片"
+                            disabled={isImageUploading}
                             onClick={() => {
-                              if (!imageRef.startsWith('data:') && !imageRef.startsWith('http://') && !imageRef.startsWith('https://')) {
-                                deleteAttachment(imageRef)
-                              }
-                              updateTrade(trade.id, { referenceImages: trade.referenceImages.filter((_, index) => index !== i) })
+                              void confirm({
+                                title: '删除这张配图？',
+                                description: '图片会从本笔交易移除（附件文件保留在数据目录，可从备份恢复）。',
+                                destructive: true,
+                              }).then((ok) => {
+                                if (!ok) return
+                                if (!imageRef.startsWith('data:') && !imageRef.startsWith('http://') && !imageRef.startsWith('https://')) {
+                                  deleteAttachment(imageRef)
+                                }
+                                updateTrade(trade.id, { referenceImages: trade.referenceImages.filter((_, index) => index !== i) })
+                              })
                             }}
                           >
                             <Trash2 />

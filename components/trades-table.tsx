@@ -66,23 +66,13 @@ export function StatusBadge({ status }: { status: Trade['status'] }) {
   )
 }
 
-export function TradesTable({
-  trades,
-  showContext = false,
-}: {
-  trades: Trade[]
-  /** 是否显示 账户/Period 列（全局交易列表用） */
-  showContext?: boolean
-}) {
-  const { getAccount, getPeriod, symbols, tagDefs, accounts, periods, trades: allTrades } = useCairn()
-  const [copied, setCopied] = useState(false)
-  const sorted = [...trades].sort((a, b) => computeTradeMetrics(b).entryTime - computeTradeMetrics(a).entryTime)
-  const ratesFor = useMemo(() => feeRatesResolverFor(accounts), [accounts])
-  /**
-   * 每笔入场前权益（PnL% 分母）。必须用全账户全量交易推导——trades prop 在
-   * 调用方可能是筛选/分页/最近的子集，按子集累计会把分母重置回初始资金。
-   */
-  const equityBefore = useMemo(() => {
+/**
+ * 每笔入场前权益（PnL% 与复制表格的分母）。必须用全账户全量交易推导——trades prop 在
+ * 调用方可能是筛选/分页/最近的子集，按子集累计会把分母重置回初始资金。
+ */
+function useEquityBeforeMap() {
+  const { accounts, trades: allTrades } = useCairn()
+  return useMemo(() => {
     const merged = new Map<string, number>()
     for (const account of accounts) {
       const accountTrades = allTrades.filter((trade) => trade.accountId === account.id)
@@ -92,13 +82,14 @@ export function TradesTable({
     }
     return merged
   }, [accounts, allTrades])
+}
 
-  const symbolLabel = (symbolId: string) => {
-    const s = symbols.find((x) => x.id === symbolId)
-    return s ? `${s.exchange}:${s.code}` : symbolId
-  }
+/** 一键复制交易表格（含元数据，TSV）——粘进 Excel 是纯表格，粘给 AI 自带上下文；放在各处标题行 */
+export function TradesTableCopyButton({ trades, className }: { trades: Trade[]; className?: string }) {
+  const { accounts, periods, symbols, tagDefs } = useCairn()
+  const equityBefore = useEquityBeforeMap()
+  const [copied, setCopied] = useState(false)
 
-  /** 一键复制当前表格视图（含元数据，TSV）——粘进 Excel 是纯表格，粘给 AI 自带上下文 */
   async function handleCopyTable() {
     const text = buildTradesTableCopy({
       trades,
@@ -109,7 +100,9 @@ export function TradesTable({
       equityBefore,
     })
     try {
-      await navigator.clipboard?.writeText(text)
+      // clipboard 可选链短路会「假成功」——不可用时显式报错走 catch
+      if (!navigator.clipboard) throw new Error('当前环境不允许访问剪贴板')
+      await navigator.clipboard.writeText(text)
       setCopied(true)
       window.setTimeout(() => setCopied(false), 2000)
       toast.success(`已复制 ${trades.length} 笔交易（含元数据）`)
@@ -119,20 +112,39 @@ export function TradesTable({
   }
 
   return (
-    <div className="flex flex-col gap-2">
-      <div className="flex items-center justify-end">
-        <Button
-          variant="ghost"
-          size="sm"
-          className="h-7 gap-1 px-2 text-xs text-muted-foreground"
-          disabled={trades.length === 0}
-          onClick={() => void handleCopyTable()}
-        >
-          <Copy className="size-3.5" />
-          {copied ? '已复制' : '复制表格'}
-        </Button>
-      </div>
-      <Table className="table-fixed">
+    <Button
+      variant="ghost"
+      size="sm"
+      className={cn('h-7 gap-1 px-2 text-xs text-muted-foreground', className)}
+      disabled={trades.length === 0}
+      onClick={() => void handleCopyTable()}
+    >
+      <Copy className="size-3.5" />
+      {copied ? '已复制' : '复制表格'}
+    </Button>
+  )
+}
+
+export function TradesTable({
+  trades,
+  showContext = false,
+}: {
+  trades: Trade[]
+  /** 是否显示 账户/Period 列（全局交易列表用） */
+  showContext?: boolean
+}) {
+  const { getAccount, getPeriod, symbols, tagDefs, accounts } = useCairn()
+  const sorted = [...trades].sort((a, b) => computeTradeMetrics(b).entryTime - computeTradeMetrics(a).entryTime)
+  const ratesFor = useMemo(() => feeRatesResolverFor(accounts), [accounts])
+  const equityBefore = useEquityBeforeMap()
+
+  const symbolLabel = (symbolId: string) => {
+    const s = symbols.find((x) => x.id === symbolId)
+    return s ? `${s.exchange}:${s.code}` : symbolId
+  }
+
+  return (
+    <Table className="table-fixed">
       <TableHeader>
         <TableRow>
           <TableHead className="w-28">交易</TableHead>
@@ -251,7 +263,6 @@ export function TradesTable({
           )
         })}
       </TableBody>
-      </Table>
-    </div>
+    </Table>
   )
 }

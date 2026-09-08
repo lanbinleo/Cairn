@@ -61,6 +61,14 @@ export function BackupCard() {
       toast.error('备份文件格式不正确，未做任何改动。')
       return
     }
+    // 恢复是整库替换（比清空更彻底的覆盖型操作，0.3.5 规则要求过确认）
+    const okToRestore = await confirm({
+      title: `用「${file.name}」替换当前全部数据？`,
+      description: '当前所有账户、交易、Case 与笔记会被备份文件内容整体替换，建议先导出一份当前数据。',
+      confirmText: '替换',
+      destructive: true,
+    })
+    if (!okToRestore) return
     try {
       await restoreState(withCaseCollections(state))
       toast.success(`已从 ${file.name} 恢复。`)

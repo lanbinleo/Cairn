@@ -6,10 +6,10 @@ import { ChevronRight } from 'lucide-react'
 import { PnlText } from '@/components/pnl-text'
 import { StatCard } from '@/components/stat-card'
 import { EquityChart } from '@/components/equity-chart'
-import { TradesTable } from '@/components/trades-table'
+import { TradesTable, TradesTableCopyButton } from '@/components/trades-table'
 import { EditPeriodDialog } from '@/components/edit-period-dialog'
 import { Badge } from '@/components/ui/badge'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Card, CardAction, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { useCairn } from '@/lib/store'
 import { computeStats, computeEquityCurve } from '@/lib/metrics'
 import { feeRatesForAccount } from '@/lib/fee'
@@ -97,6 +97,9 @@ export default function PeriodDetailPage() {
       <Card>
         <CardHeader>
           <CardTitle className="text-base">交易（{periodTrades.length}）</CardTitle>
+          <CardAction>
+            <TradesTableCopyButton trades={periodTrades} />
+          </CardAction>
         </CardHeader>
         <CardContent>
           <TradesTable trades={periodTrades} />

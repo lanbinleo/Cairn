@@ -82,7 +82,7 @@ export function bindingContextForCase(
   const candidates = trades
     .filter((trade) => trade.accountId === caseRecord.accountId && !boundTradeIds.has(trade.id))
     .map((trade) => ({ trade, rank: candidateRank(trade, caseRecord, caseCardsForCase) }))
-    .sort((a, b) => (a.rank.strong !== b.rank.strong ? Number(a.rank.strong) - Number(b.rank.strong) : a.rank.distance - b.rank.distance))
+    .sort((a, b) => (a.rank.strong !== b.rank.strong ? Number(b.rank.strong) - Number(a.rank.strong) : a.rank.distance - b.rank.distance))
     .slice(0, MAX_CANDIDATES)
     .map((item) => item.trade)
 
@@ -115,7 +115,7 @@ export function bindingContextForTrade(
       caseRecord,
       rank: candidateRank(trade, caseRecord, caseCards.filter((card) => card.caseId === caseRecord.id)),
     }))
-    .sort((a, b) => (a.rank.strong !== b.rank.strong ? Number(a.rank.strong) - Number(b.rank.strong) : a.rank.distance - b.rank.distance))
+    .sort((a, b) => (a.rank.strong !== b.rank.strong ? Number(b.rank.strong) - Number(a.rank.strong) : a.rank.distance - b.rank.distance))
     .slice(0, MAX_CANDIDATES)
     .map((item) => item.caseRecord)
 

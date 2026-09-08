@@ -123,9 +123,22 @@ export function CaseCardTimeline({ cards, showMoveToCase = true, showBatchAnalyz
     setExpandedIds(new Set(cards.map((card) => card.id)))
   }
 
-  async function runAnalysis(cardId: string, instruction?: string, options?: { registerTask?: boolean }) {
+  /** 编辑中的草稿未保存时，切到别的编辑目标 / 重写草稿前先确认（否则静默丢弃） */
+  async function confirmDiscardDraft(): Promise<boolean> {
+    if (editingCardId == null) return true
+    const current = cards.find((item) => item.id === editingCardId)
+    if (!current || editText === current.rawText) return true
+    return confirm({
+      title: '放弃未保存的原文修改？',
+      description: '当前编辑中的改动还没保存，继续会丢失这份草稿。',
+      confirmText: '放弃修改',
+      destructive: true,
+    })
+  }
+
+  async function runAnalysis(cardId: string, instruction?: string, options?: { registerTask?: boolean; skipAdjustedConfirm?: boolean }) {
     const card = cards.find((item) => item.id === cardId)
-    if (card?.aiAnalysis?.userAdjusted && !instruction) {
+    if (card?.aiAnalysis?.userAdjusted && !instruction && !options?.skipAdjustedConfirm) {
       const ok = await confirm({
         title: '重新识别这张卡？',
         description: '会覆盖你手动调整过的标签与 memo。',
@@ -167,13 +180,30 @@ export function CaseCardTimeline({ cards, showMoveToCase = true, showBatchAnalyz
     const concurrency = await getDefaultAiConcurrency().catch(() => 10)
     const failures: string[] = []
     setBatchAnalyzing(true)
-    const queue = cards.map((card) => card.id)
+    // 手动修正过的卡先逐个确认：并发 worker 各自 await confirm 会互相顶替
+    // （确认框单槽），被顶掉的卡被当取消静默跳过且不计入失败
+    const queue: string[] = []
+    let declinedAdjusted = 0
+    for (const card of cards) {
+      if (card.aiAnalysis?.userAdjusted) {
+        const ok = await confirm({
+          title: '重新识别这张卡？',
+          description: '会覆盖你手动调整过的标签与 memo。批量识别会逐张询问手动修正过的卡。',
+          confirmText: '重新识别',
+        })
+        if (!ok) {
+          declinedAdjusted += 1
+          continue
+        }
+      }
+      queue.push(card.id)
+    }
     const workers = Array.from({ length: Math.max(1, Math.min(concurrency, queue.length)) }, async () => {
       for (;;) {
         const cardId = queue.shift()
         if (cardId == null) return
         try {
-          await runAnalysis(cardId, undefined, { registerTask: false })
+          await runAnalysis(cardId, undefined, { registerTask: false, skipAdjustedConfirm: true })
         } catch (error) {
           failures.push(error instanceof Error ? error.message : String(error))
         }
@@ -181,6 +211,9 @@ export function CaseCardTimeline({ cards, showMoveToCase = true, showBatchAnalyz
     })
     await Promise.all(workers)
     setBatchAnalyzing(false)
+    if (declinedAdjusted > 0) {
+      toast.info(`已跳过 ${declinedAdjusted} 张手动修正过的卡`)
+    }
     completeAiTask(taskId, failures.length === 0
       ? { ok: true }
       : { ok: false, error: `${failures.length}/${cards.length} 张失败：${failures[0]}` })
@@ -246,6 +279,8 @@ export function CaseCardTimeline({ cards, showMoveToCase = true, showBatchAnalyz
    *  保存才落笔（历史存档照旧）。失败原因就地显示（任务中心也有）。 */
   async function runRewrite(card: CaseCard) {
     if (rewritingCardIds.has(card.id)) return
+    // 重写草稿会整体替换编辑器内容——当前有未保存修改时先确认
+    if (!(await confirmDiscardDraft())) return
     setRewritingCardIds((prev) => new Set(prev).add(card.id))
     try {
       const text = await draftCaseCardRewrite(card.id)
@@ -408,14 +443,17 @@ export function CaseCardTimeline({ cards, showMoveToCase = true, showBatchAnalyz
                                   onClick={() => {
                                     if (editingCardId === card.id) {
                                       setEditingCardId(null)
-                                    } else {
+                                      return
+                                    }
+                                    void (async () => {
+                                      if (!(await confirmDiscardDraft())) return
                                       setEditingCardId(card.id)
                                       setEditText(card.rawText)
-                                    }
+                                    })()
                                   }}
                                 >
                                   <Pencil />
-                                  编辑原文
+                                  {editingCardId === card.id ? '收起编辑' : '编辑原文'}
                                 </DropdownMenuItem>
                                 <DropdownMenuItem
                                   disabled={rewritingCardIds.has(card.id)}
@@ -611,7 +649,7 @@ export function CaseCardTimeline({ cards, showMoveToCase = true, showBatchAnalyz
                         >
                           {card.barRef != null ? `BAR ${card.barRef}` : '缺 BAR'}
                         </span>
-                        {isCaseCardAnalysisStale(card) && <span className="shrink-0 rounded-sm bg-amber-500/10 px-1.5 py-0.5 text-xs text-amber-600 dark:text-amber-400">过期</span>}
+                        {isCaseCardAnalysisStale(card) && <span className="shrink-0 rounded-sm bg-amber-500/10 px-1.5 py-0.5 text-xs text-amber-600 dark:text-amber-400">需重新识别</span>}
                         <span className="min-w-0 flex-1 truncate text-sm text-muted-foreground">{summaryLine(card)}</span>
                         <RelativeTime ms={card.createdAt} className="shrink-0 text-xs text-muted-foreground" />
                       </button>

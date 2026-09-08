@@ -168,7 +168,7 @@ export function CaseSummaryCard({
           <div className="flex min-w-0 flex-col gap-1.5">
             <CardTitle className="flex flex-wrap items-center gap-2 text-base">
               <Sparkles className="size-4 shrink-0 text-amber-500" />AI 总结
-              {stale && <span className="rounded-sm bg-amber-500/10 px-1.5 py-0.5 text-xs text-amber-600 dark:text-amber-400">卡片已更新，总结过期</span>}
+              {stale && <span className="rounded-sm bg-amber-500/10 px-1.5 py-0.5 text-xs text-amber-600 dark:text-amber-400">卡片已更新，需重新总结</span>}
             </CardTitle>
             <CardDescription className="min-w-0">
               {summary.overview} · 由 {summary.model} 生成 <RelativeTime ms={summary.analyzedAt} />
