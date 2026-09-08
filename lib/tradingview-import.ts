@@ -166,17 +166,19 @@ function compareRowsForPositionSimulation(a: IndexedImportRow, b: IndexedImportR
   const timeDiff = a.row.time - b.row.time
   if (timeDiff !== 0) return timeDiff
 
-  const sameSourceTrade = a.row.sourceTradeNo != null && a.row.sourceTradeNo === b.row.sourceTradeNo
+  // 同毫秒先按源成交编号升序：反手时旧仓 exit 的编号更小，自然排在新 entry 前。
+  // 这是全序复合比较器——旧实现按 same/跨编号分别套 entry-first / exit-first 两条
+  // 规则，三行同刻跨编号时违反传递性（A<B、B<C 却 C<A），TimSort 结果依赖输入排列
+  if (a.row.sourceTradeNo != null && b.row.sourceTradeNo != null && a.row.sourceTradeNo !== b.row.sourceTradeNo) {
+    return compareSourceTradeNo(a.row.sourceTradeNo, b.row.sourceTradeNo)
+  }
   const aEntry = isEntry(a.row.type)
   const bEntry = isEntry(b.row.type)
   const aExit = isExit(a.row.type)
   const bExit = isExit(b.row.type)
-
-  if (sameSourceTrade && aEntry !== bEntry && (aExit || bExit)) {
+  // 同编号（或缺失编号）内：entry 先于 exit（同笔瞬间开平）
+  if (aEntry !== bEntry && (aExit || bExit)) {
     return aEntry ? -1 : 1
-  }
-  if (!sameSourceTrade && aExit !== bExit && (aEntry || bEntry)) {
-    return aExit ? -1 : 1
   }
   return a.index - b.index
 }

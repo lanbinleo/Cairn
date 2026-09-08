@@ -325,7 +325,11 @@ export default function TradeDetailPage() {
               variant="ghost"
               className="text-muted-foreground"
               onClick={() => {
-                localStorage.setItem(`cairn.trade-plan-prompt.${trade.id}`, 'ignored')
+                try {
+                  localStorage.setItem(`cairn.trade-plan-prompt.${trade.id}`, 'ignored')
+                } catch {
+                  /* 本地存储不可用：最多下次访问再提醒一次 */
+                }
                 setPlanPromptOpen(false)
               }}
             >

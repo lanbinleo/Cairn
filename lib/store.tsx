@@ -7,7 +7,7 @@
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import { listen } from '@tauri-apps/api/event'
-import { loadLocalState, saveLocalRecord, deleteLocalRecord, restoreLocalState, exportLocalBackup, saveAttachmentFile, isTauriRuntime, bgSaveRecord, bgSaveRecords, bgDeleteRecord, analyzeCaseCard as analyzeCaseCardRemote, previewCaseCardResplit as previewCaseCardResplitRemote, applyCaseCardResplit as applyCaseCardResplitRemote, draftCaseTitle as draftCaseTitleRemote, suggestCaseExecutions as suggestCaseExecutionsRemote, summarizeCase as summarizeCaseRemote, getAiSettings, draftCaseCardRewrite as draftCaseCardRewriteRemote, proofreadCaseCard as proofreadCaseCardRemote, type CaseCardCorrection, type CaseCardResplitSegment } from './local-db'
+import { loadLocalState, saveLocalRecord, deleteLocalRecord, restoreLocalState, exportLocalBackup, saveAttachmentFile, isTauriRuntime, bgSaveRecord, bgSaveRecords, bgDeleteRecord, drainBackgroundWrites, analyzeCaseCard as analyzeCaseCardRemote, previewCaseCardResplit as previewCaseCardResplitRemote, applyCaseCardResplit as applyCaseCardResplitRemote, draftCaseTitle as draftCaseTitleRemote, suggestCaseExecutions as suggestCaseExecutionsRemote, summarizeCase as summarizeCaseRemote, getAiSettings, draftCaseCardRewrite as draftCaseCardRewriteRemote, proofreadCaseCard as proofreadCaseCardRemote, type CaseCardCorrection, type CaseCardResplitSegment } from './local-db'
 import { buildCaseSummaryContext } from './case-summary'
 import { deriveAutoCloseCases } from './case-auto-close'
 import type { CairnStateSnapshot } from './seed'
@@ -882,6 +882,13 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
     setTrades((prev) => {
       const removed = prev.filter((trade) => trade.importBatchId === batchId)
       removed.forEach((trade) => void bgDeleteRecord('trades', trade.id))
+      // 与 Rust soft_delete_trade 的级联对齐：GUI 写库不发 data-changed，
+      // 不清内存 binding 的话它们会指向已删 trade 占用 Case（绑定查重误伤），
+      // 直到重启才自愈
+      const removedTradeIds = new Set(removed.map((trade) => trade.id))
+      if (removedTradeIds.size > 0) {
+        setCaseBindings((bindings) => bindings.filter((binding) => !removedTradeIds.has(binding.tradeId)))
+      }
       return prev.filter((trade) => trade.importBatchId !== batchId)
     })
     setImportBatches((prev) =>
@@ -905,6 +912,12 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
     setTrades((prev) => {
       const removed = prev.filter((trade) => trade.periodId === id)
       removed.forEach((trade) => void bgDeleteRecord('trades', trade.id))
+      // Period 的 Trade 被删但其 Case 属于别的 period（或无 period）时，
+      // binding 同样要按 tradeId 清——只按 case 清会漏掉跨 period 绑定
+      const removedTradeIds = new Set(removed.map((trade) => trade.id))
+      if (removedTradeIds.size > 0) {
+        setCaseBindings((bindings) => bindings.filter((binding) => !removedTradeIds.has(binding.tradeId)))
+      }
       return prev.filter((trade) => trade.periodId !== id)
     })
     setCases((prev) => {
@@ -926,6 +939,10 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
       setTrades((tp) => {
         const removedTrades = tp.filter((trade) => trade.accountId === id)
         removedTrades.forEach((trade) => void bgDeleteRecord('trades', trade.id))
+        const removedTradeIds = new Set(removedTrades.map((trade) => trade.id))
+        if (removedTradeIds.size > 0) {
+          setCaseBindings((bindings) => bindings.filter((binding) => !removedTradeIds.has(binding.tradeId)))
+        }
         return tp.filter((trade) => trade.accountId !== id)
       })
       setCases((cp) => {
@@ -989,7 +1006,10 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
     let disposeStreamListener: (() => void) | undefined
 
     const hydrate = () => {
-      loadLocalState()
+      // 先等在途后台写入落库再读：读赶在保存提交前会把旧快照覆盖回内存，
+      // 回滚用户刚保存的编辑（REST 触发的 data-changed 与 GUI 编辑的竞态窗口）
+      drainBackgroundWrites()
+        .then(() => loadLocalState())
         .then((snapshot) => {
           if (cancelled) return
           const normalized = normalizeSnapshot(snapshot)
@@ -1169,6 +1189,15 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
    * 后重启不被填回），与缺失提醒弹窗的 localStorage 口径一致。
    */
   useEffect(() => {
+    // 存储被禁用/写满时 setItem 会抛（QuotaExceeded/SecurityError），
+    // 在 effect 里冒泡就是整页白屏——静默吞掉，代价只是重启后多试一次回填
+    const markPrefillDone = (key: string) => {
+      try {
+        window.localStorage.setItem(key, 'done')
+      } catch {
+        /* 忽略：本地存储不可用 */
+      }
+    }
     for (const binding of caseBindings) {
       const prefillKey = `cairn.trade-plan-prefill.${binding.tradeId}`
       if (window.localStorage.getItem(prefillKey) === 'done') continue
@@ -1176,13 +1205,13 @@ export function CairnProvider({ children }: { children: React.ReactNode }) {
       if (!trade) continue
       const hasGap = trade.initialEntryPrice == null || trade.initialStopLoss == null || trade.initialTakeProfit == null
       if (!hasGap) {
-        window.localStorage.setItem(prefillKey, 'done')
+        markPrefillDone(prefillKey)
         continue
       }
       const memo = caseCards.find((card) => card.caseId === binding.caseId && card.phase === 'entry')?.aiAnalysis?.memo
       if (memo == null) continue
       prefillTradePlanFromBoundCase(binding.tradeId)
-      window.localStorage.setItem(prefillKey, 'done')
+      markPrefillDone(prefillKey)
     }
   }, [caseBindings, trades, caseCards, prefillTradePlanFromBoundCase])
 
