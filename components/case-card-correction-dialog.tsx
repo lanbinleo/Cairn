@@ -80,7 +80,7 @@ export function CaseCardCorrectionDialog({
         <DialogHeader>
           <DialogTitle>AI 校对 · {draft.corrections.length} 处疑似修正</DialogTitle>
           <DialogDescription>
-            逐条勾选后一次套用；原表述自动进历史存档，AI 识别会标记过期、可一键重跑。AI 只提建议，落笔永远是你。
+            逐条勾选后一次套用；原表述自动进历史存档，AI 识别会标记需重新识别、可一键重跑。AI 只提建议，落笔永远是你。
           </DialogDescription>
         </DialogHeader>
 
@@ -126,14 +126,14 @@ export function CaseCardCorrectionDialog({
                 placeholder="原文片段（保留错误写法）"
                 value={oldDraft}
                 onChange={(event) => setOldDraft(event.target.value)}
-                onKeyDown={(event) => { if (event.key === 'Enter') addManualPair() }}
+                onKeyDown={(event) => { if (event.key === 'Enter' && !event.nativeEvent.isComposing && event.keyCode !== 229) addManualPair() }}
               />
               <Input
                 className="h-8"
                 placeholder="改为"
                 value={newDraft}
                 onChange={(event) => setNewDraft(event.target.value)}
-                onKeyDown={(event) => { if (event.key === 'Enter') addManualPair() }}
+                onKeyDown={(event) => { if (event.key === 'Enter' && !event.nativeEvent.isComposing && event.keyCode !== 229) addManualPair() }}
               />
               <Button variant="outline" size="sm" className="h-8 shrink-0" disabled={!oldDraft.trim() || !newDraft.trim()} onClick={addManualPair}>
                 <Plus className="size-3.5" data-icon="inline-start" />

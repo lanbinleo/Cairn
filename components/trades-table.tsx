@@ -100,7 +100,9 @@ export function TradesTableCopyButton({ trades, className }: { trades: Trade[]; 
       equityBefore,
     })
     try {
-      await navigator.clipboard?.writeText(text)
+      // clipboard 可选链短路会「假成功」——不可用时显式报错走 catch
+      if (!navigator.clipboard) throw new Error('当前环境不允许访问剪贴板')
+      await navigator.clipboard.writeText(text)
       setCopied(true)
       window.setTimeout(() => setCopied(false), 2000)
       toast.success(`已复制 ${trades.length} 笔交易（含元数据）`)

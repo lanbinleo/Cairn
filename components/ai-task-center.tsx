@@ -6,6 +6,7 @@ import { CheckCircle2, ChevronDown, ChevronRight, CircleAlert, Loader2, Sparkles
 
 import { RelativeTime } from '@/components/relative-time'
 import { Button } from '@/components/ui/button'
+import { toast } from '@/components/ui/sonner'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { useCairn } from '@/lib/store'
@@ -28,8 +29,8 @@ export function AiTaskCenter() {
   const hasFailed = finished.some((task) => task.status === 'failed')
 
   function jump(task: AiTask) {
-    setOpen(false)
     if (task.targetType === 'trade' && task.targetId) {
+      setOpen(false)
       navigate(`/trades/${task.targetId}`)
       return
     }
@@ -38,7 +39,13 @@ export function AiTaskCenter() {
       const caseId = task.targetType === 'card'
         ? caseCards.find((card) => card.id === task.targetId)?.caseId
         : task.targetId
-      if (caseId) navigate(`/cases/${caseId}`)
+      if (caseId) {
+        setOpen(false)
+        navigate(`/cases/${caseId}`)
+      } else {
+        // 卡片已被删除：弹层保持打开并说明，别「点了没反应」
+        toast.info('目标卡片已删除，无法跳转')
+      }
     }
   }
 

@@ -24,7 +24,9 @@ export function TradesFeeMenu() {
   const rows = useMemo(
     () =>
       accounts.map((account) => {
-        const hasRates = account.takerFeePct != null || account.makerFeePct != null
+        // 0 与缺省同语义（不计费）：全 0 的「配置」对开关无意义，
+        // 摘要按未配置展示，避免出现一行永久禁用的 0%/0% 开关
+        const hasRates = !!(account.takerFeePct || account.makerFeePct)
         const hasImportedFees = trades.some(
           (t) => t.accountId === account.id && t.executions.some((e) => e.feeOverride != null),
         )

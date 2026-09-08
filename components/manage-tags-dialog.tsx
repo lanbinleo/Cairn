@@ -70,7 +70,13 @@ function TagRow({ tag }: { tag: TagDef }) {
   }, [tag.name])
 
   function commitName() {
-    if (!normalizedName || duplicate) {
+    if (!normalizedName) {
+      setName(tag.name)
+      return
+    }
+    if (duplicate) {
+      // 撞重名：说明原因再回弹，别让输入框无声变回去
+      toast.warning('已存在同名标签，未保存这次修改')
       setName(tag.name)
       return
     }

@@ -50,18 +50,30 @@ function NumberField({ label, value, onChange, placeholder }: {
   onChange: (next: number | undefined) => void
   placeholder?: string
 }) {
+  /** 草稿态：允许「-」「1.」这类半成品留在框里（受控数字会直接把负号弹回去） */
+  const [draft, setDraft] = useState(value == null ? '' : String(value))
+  useEffect(() => {
+    const parsed = Number(draft)
+    // 仅当外部值与草稿表达的不是同一个数（清空/应用预设）才回写，别打断输入
+    if (value == null ? draft.trim() !== '' : !Number.isFinite(parsed) || parsed !== value) {
+      setDraft(value == null ? '' : String(value))
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [value])
   return (
     <div className="flex flex-col gap-1.5">
       <Label className="text-xs text-muted-foreground">{label}</Label>
       <Input
         className="h-8 w-24"
         inputMode="decimal"
-        value={value == null ? '' : String(value)}
+        value={draft}
         placeholder={placeholder}
         onChange={(event) => {
-          const text = event.target.value.trim()
-          if (text === '') return onChange(undefined)
-          const parsed = Number(text)
+          const text = event.target.value
+          setDraft(text)
+          const trimmed = text.trim()
+          if (trimmed === '') return onChange(undefined)
+          const parsed = Number(trimmed)
           if (Number.isFinite(parsed)) onChange(parsed)
         }}
       />

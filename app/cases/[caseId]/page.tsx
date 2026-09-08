@@ -170,7 +170,10 @@ export default function CaseDetailPage() {
             onChange={(event) => setTitleDraft(event.target.value)}
             onBlur={saveTitle}
             onKeyDown={(event) => {
-              if (event.key === 'Enter') event.currentTarget.blur()
+              // IME 组合中的 Enter 是确认候选词，不当提交（isComposing 兼容旧内核的 229）
+              if (event.key === 'Enter' && !event.nativeEvent.isComposing && event.keyCode !== 229) {
+                event.currentTarget.blur()
+              }
               if (event.key === 'Escape') {
                 setTitleDraft(activeCase.title)
                 event.currentTarget.blur()

@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { ArrowRight, Link2, Plus, Unlink } from 'lucide-react'
 
@@ -81,6 +81,8 @@ export function TradeCasePanel({
   const [provenance, setProvenance] = useState<CaseProvenance>('forward')
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
+  /** 新建并关联的半完成态记忆：Case 已建但绑定失败时，重试复用它而不是再建一个 */
+  const createdCaseRef = useRef<string | null>(null)
 
   const binding = caseBindings.find((item) => item.tradeId === trade.id)
   const caseRecord = binding ? cases.find((item) => item.id === binding.caseId) : undefined
@@ -117,15 +119,23 @@ export function TradeCasePanel({
     setBusy(true)
     setError('')
     try {
-      const created = createCase({
-        accountId: trade.accountId,
-        periodId: trade.periodId,
-        title: newTitle,
-        status: 'active',
-        provenance,
-        tagIds: [],
-      })
-      await createCaseBinding(created.id, trade.id)
+      // 半完成态（Case 已建、绑定失败）重试不重复建 Case——记住 id，只重绑
+      const remembered = createdCaseRef.current
+      const reusable =
+        remembered != null && cases.some((item) => item.id === remembered) && !occupiedCaseIds.has(remembered)
+      const target = reusable
+        ? remembered
+        : createCase({
+            accountId: trade.accountId,
+            periodId: trade.periodId,
+            title: newTitle,
+            status: 'active',
+            provenance,
+            tagIds: [],
+          }).id
+      createdCaseRef.current = target
+      await createCaseBinding(target, trade.id)
+      createdCaseRef.current = null
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause))
     } finally {

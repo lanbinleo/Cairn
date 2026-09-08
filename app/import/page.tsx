@@ -168,6 +168,9 @@ export default function ImportPage() {
   const [chartEvents, setChartEvents] = useState<ParsedChartEvent[]>([])
   const [referenceImage, setReferenceImage] = useState('')
   const [importError, setImportError] = useState('')
+  const [importing, setImporting] = useState(false)
+  /** step2 最近一次解析所用文件：文件没换时「上一步→下一步」不重置手动归组 */
+  const [parsedTradesFile, setParsedTradesFile] = useState<File | null>(null)
   const [createdBatchId, setCreatedBatchId] = useState('')
   const [matchRows, setMatchRows] = useState<ImportMatchRow[]>([])
   const [batchBindings, setBatchBindings] = useState<Array<{ bindingId: string; caseId: string; tradeId: string }>>([])
@@ -201,32 +204,43 @@ export default function ImportPage() {
   }, [symbolId, symbols])
 
   async function handleNext() {
-    if (!canNext) return
+    if (!canNext || importing) return
     if (step === 1) {
       setImportError('')
-      try {
-        const rows = await parseTradingViewRows(files.trades as File)
-        const grouped = groupRows(rows)
-        setProposedTrades(grouped)
-        const maxSeq = trades.reduce((max, trade) => Math.max(max, trade.seq), 0)
-        setSelectedTradeIds(
-          grouped
-            .filter((trade, index) => {
-              const candidate = proposedTradeCandidate(trade, { accountId, periodId, symbolId, seq: maxSeq + index + 1 })
-              return !trade.warning && !getPossibleDuplicateTrade(candidate, trades)
-            })
-            .map((trade) => trade.id),
-        )
-        setChartBars(files.chart ? await parseChartBars(files.chart) : [])
-        setChartEvents(files.chart ? await parseChartEvents(files.chart) : [])
-        setReferenceImage(files.reference ? await readFileAsDataUrl(files.reference) : '')
-      } catch (err) {
-        setImportError(err instanceof Error ? err.message : String(err))
-        return
+      // 回到上一步再前进且文件没换时，保留 step2 的手动归组/勾选调整——
+      // 重新 parse 会把一切重置回自动归组，无警告地丢掉用户的修改
+      if (parsedTradesFile !== files.trades) {
+        try {
+          const rows = await parseTradingViewRows(files.trades as File)
+          const grouped = groupRows(rows)
+          setProposedTrades(grouped)
+          const maxSeq = trades.reduce((max, trade) => Math.max(max, trade.seq), 0)
+          setSelectedTradeIds(
+            grouped
+              .filter((trade, index) => {
+                const candidate = proposedTradeCandidate(trade, { accountId, periodId, symbolId, seq: maxSeq + index + 1 })
+                return !trade.warning && !getPossibleDuplicateTrade(candidate, trades)
+              })
+              .map((trade) => trade.id),
+          )
+          setChartBars(files.chart ? await parseChartBars(files.chart) : [])
+          setChartEvents(files.chart ? await parseChartEvents(files.chart) : [])
+          setReferenceImage(files.reference ? await readFileAsDataUrl(files.reference) : '')
+          setParsedTradesFile(files.trades ?? null)
+        } catch (err) {
+          setImportError(err instanceof Error ? err.message : String(err))
+          return
+        }
       }
     }
     if (step === 2) {
-      await confirmImport()
+      // 落库 + 逐条 Case 匹配是秒级异步（按钮无反馈时连点会整批重复导入）
+      setImporting(true)
+      try {
+        await confirmImport()
+      } finally {
+        setImporting(false)
+      }
       return
     }
     setStep((s) => s + 1)
@@ -755,6 +769,8 @@ export default function ImportPage() {
                 {selectedTradeIds.length} 个 Trade 已归入所选 Period。
               </p>
             </div>
+            {/* 人工关联失败（如 Case 恰被其它 Trade 抢绑）也在这里可见，不再无反馈 */}
+            {importError && <p className="text-sm text-loss">{importError}</p>}
             {matchRows.length > 0 && (
               <div className="flex w-full max-w-3xl flex-col gap-2 text-left">
                 <h3 className="text-sm font-medium">Case 关联</h3>
@@ -885,12 +901,12 @@ export default function ImportPage() {
       {/* 底部导航 */}
       {step < 3 && (
         <div className="flex items-center justify-between">
-          <Button variant="outline" disabled={step === 0} onClick={() => setStep((s) => s - 1)}>
+          <Button variant="outline" disabled={step === 0 || importing} onClick={() => setStep((s) => s - 1)}>
             <ChevronLeft data-icon="inline-start" />
             上一步
           </Button>
-          <Button disabled={!canNext} onClick={() => void handleNext()}>
-            {step === 2 ? '确认导入' : '下一步'}
+          <Button disabled={!canNext || importing} onClick={() => void handleNext()}>
+            {importing ? '导入中…' : step === 2 ? '确认导入' : '下一步'}
             <ChevronRight data-icon="inline-end" />
           </Button>
         </div>
