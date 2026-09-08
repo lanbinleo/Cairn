@@ -1203,9 +1203,21 @@ pub fn spawn_auto_analysis(app: &AppHandle, card_id: String) {
             std::thread::sleep(std::time::Duration::from_millis(150));
         }
         ACTIVE_AUTO_ANALYSIS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let result =
-            tauri::async_runtime::block_on(crate::run_card_analysis(&app, &db, &card_id, None, false));
-        ACTIVE_AUTO_ANALYSIS.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+        // RAII 减计数：block_on 若 panic，手工 fetch_sub 会被跳过——配额永久少一个，
+        // 泄漏满后所有自动识别线程在轮询里永久自旋，任务中心永远停在 start
+        struct ActiveAutoAnalysisGuard;
+        impl Drop for ActiveAutoAnalysisGuard {
+            fn drop(&mut self) {
+                ACTIVE_AUTO_ANALYSIS.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+        let _active_guard = ActiveAutoAnalysisGuard;
+        let result = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            tauri::async_runtime::block_on(crate::run_card_analysis(&app, &db, &card_id, None, false))
+        })) {
+            Ok(result) => result,
+            Err(_) => Err("auto analysis panicked (see logs)".to_string()),
+        };
         match result {
             Ok(Some(card)) => {
                 emit_task_event(&app, &task_id, "analysis", "succeeded", "识别卡片", Some("card"), Some(&card_id), None);
@@ -1430,7 +1442,12 @@ pub fn parse_analysis(
 
     let bar_ref = match parsed.get("barRef") {
         Some(Value::Object(map)) => {
-            let bar = map.get("bar").and_then(Value::as_i64).filter(|bar| *bar >= 1);
+            // 与 create/update/batch 各入口同口径：barRef 全链路 1–1440，
+            // AI 回填是唯一没有上限检查的写入口
+            let bar = map
+                .get("bar")
+                .and_then(Value::as_i64)
+                .filter(|bar| (1..=1440).contains(bar));
             match bar {
                 Some(bar) => {
                     let quote = map

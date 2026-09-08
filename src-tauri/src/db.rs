@@ -65,6 +65,9 @@ pub fn init(app: &AppHandle) -> Result<Db, String> {
         fs::create_dir_all(parent).map_err(|err| err.to_string())?;
     }
     let conn = Connection::open(db_path).map_err(|err| err.to_string())?;
+    // 双实例/外部工具同时写库时给 SQLite 一点等待余地，而不是立刻报 database is locked
+    conn.busy_timeout(std::time::Duration::from_secs(5))
+        .map_err(|err| err.to_string())?;
     let migration_backup = backup_before_migration_if_needed(app, &conn)?;
     if let Err(err) = migrate(&conn) {
         let backup_hint = migration_backup
@@ -310,7 +313,9 @@ fn backup_before_migration_if_needed(
         "cairn-migration-backup-v{version}-to-v{CURRENT_SCHEMA_VERSION}-{}.json",
         now_ms()
     ));
-    write_backup_file(conn, path.clone(), "pre-migration")?;
+    // 迁移发生在 init（连接尚未被 Mutex 共享），此处持原始连接读快照即可
+    let state = read_state(conn)?;
+    write_backup_state(path.clone(), "pre-migration", state)?;
     Ok(Some(path))
 }
 
@@ -378,31 +383,32 @@ pub fn save_records(db: &Db, collection: &str, records: Vec<Value>) -> Result<()
 }
 
 pub fn delete_record(db: &Db, collection: &str, id: &str) -> Result<(), String> {
+    // 多语句级联软删包在一个事务里：中途失败留下「case 已删、binding 仍活跃」
+    // 之类的半删除状态，用户无法自救（绑定查重会指向已删对象）
     let conn = db.conn.lock().map_err(|err| err.to_string())?;
+    let tx = conn.unchecked_transaction().map_err(|err| err.to_string())?;
     if collection == "trades" {
-        soft_delete_trade(&conn, id)?;
-        return Ok(());
-    }
-    if collection == "cases" {
-        soft_delete_case(&conn, id)?;
-        return Ok(());
-    }
-    if collection == "caseCards" {
-        return soft_delete_case_card(&conn, id);
-    }
-    if collection == "caseTagDefs" {
-        conn.execute(
-            "UPDATE case_tag_links SET deleted_at = unixepoch() * 1000 WHERE tag_id = ?1 AND deleted_at IS NULL",
+        soft_delete_trade(&tx, id)?;
+    } else if collection == "cases" {
+        soft_delete_case(&tx, id)?;
+    } else if collection == "caseCards" {
+        soft_delete_case_card(&tx, id)?;
+    } else {
+        if collection == "caseTagDefs" {
+            tx.execute(
+                "UPDATE case_tag_links SET deleted_at = unixepoch() * 1000 WHERE tag_id = ?1 AND deleted_at IS NULL",
+                params![id],
+            )
+            .map_err(|err| err.to_string())?;
+        }
+        let table = table_for_collection(collection)?;
+        tx.execute(
+            &format!("UPDATE {table} SET deleted_at = unixepoch() * 1000 WHERE id = ?1"),
             params![id],
         )
         .map_err(|err| err.to_string())?;
     }
-    let table = table_for_collection(collection)?;
-    conn.execute(
-        &format!("UPDATE {table} SET deleted_at = unixepoch() * 1000 WHERE id = ?1"),
-        params![id],
-    )
-    .map_err(|err| err.to_string())?;
+    tx.commit().map_err(|err| err.to_string())?;
     Ok(())
 }
 
@@ -459,12 +465,17 @@ pub fn restore_state(db: &Db, state: AppState) -> Result<AppState, String> {
 }
 
 pub fn export_backup(app: &AppHandle, db: &Db) -> Result<PathBuf, String> {
-    let conn = db.conn.lock().map_err(|err| err.to_string())?;
     let now = now_ms();
     let dir = paths::app_data_dir(app)?.join("backups");
     fs::create_dir_all(&dir).map_err(|err| err.to_string())?;
     let path = dir.join(format!("cairn-backup-{now}.json"));
-    write_backup_file(&conn, path.clone(), "manual")?;
+    // 锁内只取快照：序列化 + 写盘可能秒级（chartCandles 可达数十万行），
+    // 拿着全局 Mutex 走完全程会卡死所有 GUI 命令
+    let state = {
+        let conn = db.conn.lock().map_err(|err| err.to_string())?;
+        read_state(&conn)?
+    };
+    write_backup_state(path.clone(), "manual", state)?;
     Ok(path)
 }
 
@@ -480,13 +491,15 @@ pub fn export_daily_backup_if_due(app: &AppHandle, db: &Db) -> Result<Option<Pat
     }
 
     let conn = db.conn.lock().map_err(|err| err.to_string())?;
-    write_backup_file(&conn, path.clone(), "daily-auto")?;
+    let state = read_state(&conn)?;
+    drop(conn);
+    write_backup_state(path.clone(), "daily-auto", state)?;
     prune_auto_backups(&dir, today)?;
     Ok(Some(path))
 }
 
-fn write_backup_file(conn: &Connection, path: PathBuf, backup_kind: &str) -> Result<(), String> {
-    let state = read_state(conn)?;
+/// 纯写盘段（无锁）：快照序列化 + tmp/rename 原子落盘。
+fn write_backup_state(path: PathBuf, backup_kind: &str, state: AppState) -> Result<(), String> {
     let now = now_ms();
     let backup = serde_json::json!({
         "version": 3,
@@ -1161,7 +1174,15 @@ fn read_json_rows(
     let mut out = Vec::new();
     for row in rows {
         let data = row.map_err(|err| err.to_string())?;
-        out.push(serde_json::from_str(&data).map_err(|err| err.to_string())?);
+        // 单行坏 JSON（断电/位翻转/外部工具改库）跳过而不是拖死整个 load——
+        // 否则应用无数据可用、当日备份与迁移前置备份全部失败
+        match serde_json::from_str(&data) {
+            Ok(value) => out.push(value),
+            Err(err) => {
+                let snippet: String = data.chars().take(80).collect();
+                eprintln!("[db] skipping corrupt record row ({err}): {snippet}");
+            }
+        }
     }
     Ok(out)
 }
